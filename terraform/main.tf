@@ -7,6 +7,11 @@ terraform {
   }
 }
 
+variable "secret_file_path" {
+  description = "path to service account secret for creating infrastructure"
+}
+
+
 variable "common_name" {
   description = "common name to identify resources"
 }
@@ -24,7 +29,7 @@ variable "zone" {
 }
 
 provider "google" {
-  credentials = file("../google-secret.json")
+  credentials = file(var.secret_file_path)
   project = var.project_id
   region  = var.region
 }

@@ -33,7 +33,10 @@ spec:
         {{- toYaml .affinity | nindent 8 }}
       volumes:
         {{- toYaml .volumes | nindent 8 }}
-      {{- template "common.deployment" .containers | nindent 6 }}
+      containers:
+      {{- range .containers }}
+      {{- template "common.container" . }}
+      {{- end }}
       imagePullSecrets:
         {{- toYaml .imagePullSecrets | nindent 8 }}
       nodeSelector:

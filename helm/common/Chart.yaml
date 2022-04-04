@@ -1,5 +1,5 @@
 apiVersion: v2
-name: chunkedgraph-ingest
+name: common
 description: A Helm chart for running chunkedgraph ingest.
 type: library
 version: 0.1.0

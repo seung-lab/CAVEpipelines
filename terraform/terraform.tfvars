@@ -9,15 +9,18 @@ preemptible_workers = true
 
 worker_types        = {
   low = {
-    count   = 100
+    count   = 0
     machine = "e2-standard-2"
+    disk_size_gb = 15
   },
   # mid = {
   #   count   = 0
   #   machine = "e2-standard-4"
+  #   disk_size_gb = 15
   # },
   # high = {
   #   count   = 0
   #   machine = "e2-standard-8"
+  #   disk_size_gb = 15
   # },
 }

@@ -40,6 +40,8 @@ resource "google_container_node_pool" "master" {
 
     preemptible  = var.preemptible_master
     machine_type = "e2-small"
+    disk_size_gb = 15
+
     tags         = ["${var.common_name}-master"]
     metadata = {
       disable-legacy-endpoints = "true"

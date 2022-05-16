@@ -1,0 +1,6 @@
+# secrets
+*.json
+values.yaml
+values.yml
+
+Chart.lock

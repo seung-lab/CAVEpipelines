@@ -45,7 +45,7 @@ resource "google_container_node_pool" "pool" {
     }
     preemptible  = var.preemptible_workers
     machine_type = each.value.machine
-    disk_size_gb = each.disk_size_gb
+    disk_size_gb = each.value.disk_size_gb
 
     tags         = ["${var.common_name}-${each.key}"]
     metadata     = {

@@ -57,12 +57,11 @@ secrets:
 
 deployments:
   - enabled: true
-    name: master
+    name: &name master
     nodeSelector:
       cloud.google.com/gke-nodepool: master
-    image: &image
-      repository: &imageRep "<gcr_repo>"
-      tag: &tag "<image_tag>"
+    hpa:
+      enabled: false
     volumes: &commonVolumes
     - name: *cloudVolumeSecrets
       secret:
@@ -73,102 +72,119 @@ deployments:
     - name: &bashrcVolume bashrc-volume
       configMap:
         name: *bashrc
-    volumeMounts: &commonVolumeMounts
-    - name: *cloudVolumeSecrets
-      mountPath: /root/.cloudvolume/secrets
-      readOnly: true
-    - name: *datasetsVolume
-      mountPath: /app/datasets
-    - name: *bashrcVolume
-      mountPath: /root/
-    env:
-    - name: *commonEnvVars
-    resources:
-      requests:
-        memory: 500M
-    hpa:
-      enabled: false
+    containers:
+    - name: *name
+      image: &image
+        repository: &imageRep <image_repo>
+        tag: &tag "<image_tag>"
+      volumeMounts: &commonVolumeMounts
+      - name: *cloudVolumeSecrets
+        mountPath: /root/.cloudvolume/secrets
+        readOnly: true
+      - name: *datasetsVolume
+        mountPath: /app/datasets
+      - name: *bashrcVolume
+        mountPath: /root/
+      env:
+      - name: *commonEnvVars
+      resources:
+        requests:
+          memory: 500M
+
 
 workerDeployments:
   - enabled: true
     name: &name l2
     nodeSelector:
       cloud.google.com/gke-nodepool: low
-    command: [rq, worker, *name]
-    image: *image
-    volumes: *commonVolumes
-    volumeMounts: *commonVolumeMounts
-    env:
-    - name: *commonEnvVars
-    resources:
-      requests:
-        memory: 1G
     hpa:
       enabled: true
       minReplicas: 4
+    volumes: *commonVolumes
+    containers:
+    - name: *name
+      command: [rq, worker, *name]
+      image: *image
+      volumeMounts: *commonVolumeMounts
+      env:
+      - name: *commonEnvVars
+      resources:
+        requests:
+          memory: 1G
+
 
   - enabled: true
     name: &name l3
     nodeSelector:
       cloud.google.com/gke-nodepool: low
-    command: [rq, worker, *name]
-    image: *image
-    volumes: *commonVolumes
-    volumeMounts: *commonVolumeMounts
-    env:
-    - name: *commonEnvVars
-    resources:
-      requests:
-        memory: 1.5G
     hpa:
       enabled: true
       minReplicas: 2
+    volumes: *commonVolumes
+    containers:
+    - name: *name
+      command: [rq, worker, *name]
+      image: *image
+      volumeMounts: *commonVolumeMounts
+      env:
+      - name: *commonEnvVars
+      resources:
+        requests:
+          memory: 1.5G
+
 
   - enabled: true
     name: &name l4
     nodeSelector:
       cloud.google.com/gke-nodepool: low
-    command: [rq, worker, *name]
-    image: *image
-    volumes: *commonVolumes
-    volumeMounts: *commonVolumeMounts
-    env:
-    - name: *commonEnvVars
-    resources:
-      requests:
-        memory: 2G
     hpa:
       enabled: false
+    volumes: *commonVolumes
+    containers:
+    - name: *name
+      command: [rq, worker, *name]
+      image: *image
+      volumeMounts: *commonVolumeMounts
+      env:
+      - name: *commonEnvVars
+      resources:
+        requests:
+          memory: 2G
+
 
 trackerDeployments:
   - enabled: true
     name: &name t2
-    command: [rq, worker, *name]
-    image:
-      repository: *imageRep
-      tag: *tag
-    volumes: *commonVolumes
-    volumeMounts: *commonVolumeMounts
-    env:
-    - name: *commonEnvVars
-    resources:
-      requests:
-        memory: 250M
     hpa:
       enabled: false
+    volumes: *commonVolumes
+    containers:
+    - name: *name
+      command: [rq, worker, *name]
+      image:
+        repository: *imageRep
+        tag: *tag
+      volumeMounts: *commonVolumeMounts
+      env:
+      - name: *commonEnvVars
+      resources:
+        requests:
+          memory: 250M
 
   - enabled: true
     name: &name t3
-    command: [rq, worker, *name]
-    image:
-      repository: *imageRep
-      tag: *tag
-    volumes: *commonVolumes
-    volumeMounts: *commonVolumeMounts
-    env:
-    - name: *commonEnvVars
-    resources:
-      requests:
-        memory: 250M
     hpa:
       enabled: false
+    volumes: *commonVolumes
+    containers:
+    - name: *name
+      command: [rq, worker, *name]
+      image:
+        repository: *imageRep
+        tag: *tag
+      volumeMounts: *commonVolumeMounts
+      env:
+      - name: *commonEnvVars
+      resources:
+        requests:
+          memory: 250M

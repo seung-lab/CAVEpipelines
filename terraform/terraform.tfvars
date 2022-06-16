@@ -1,7 +1,7 @@
-secret_file_path = "../cave-pipeline-fanc-fly.json"
+secret_file_path = "../google-secret.json"
 
 common_name         = "cave-pipeline"
-project_id          = "fanc-fly"
+project_id          = "<>"
 region              = "us-east1"
 zone                = "us-east1-c"
 preemptible_master  = false

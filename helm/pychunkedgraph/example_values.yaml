@@ -4,8 +4,8 @@ env:
     REDIS_HOST: "<redis_host>" # refer to output of terraform apply
     REDIS_PORT: 6379
     REDIS_PASSWORD: ""
-    BIGTABLE_PROJECT: "<google_project>"
-    BIGTABLE_INSTANCE: "<bigtable_instance>"
+    BIGTABLE_PROJECT: &bt_project "<google_project>"
+    BIGTABLE_INSTANCE: &bt_instance "<bigtable_instance>"
     GOOGLE_APPLICATION_CREDENTIALS: /root/.cloudvolume/secrets/google-secret.json
     SHELL: /bin/bash
     FLASK_APP: run_dev.py
@@ -41,6 +41,8 @@ configyamls:
         CONFIG:
           ADMIN: true
           READ_ONLY: false
+          BIGTABLE_PROJECT: *bt_project
+          BIGTABLE_INSTANCE: *bt_instance
 
 secrets:
 - name: &cloudVolumeSecrets cloud-volume-secrets

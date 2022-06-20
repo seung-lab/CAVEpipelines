@@ -41,8 +41,8 @@ configyamls:
         CONFIG:
           ADMIN: true
           READ_ONLY: false
-          BIGTABLE_PROJECT: *bt_project
-          BIGTABLE_INSTANCE: *bt_instance
+          PROJECT: *bt_project
+          INSTANCE: *bt_instance
 
 secrets:
 - name: &cloudVolumeSecrets cloud-volume-secrets

@@ -4,20 +4,26 @@ resource "google_container_cluster" "cluster" {
   remove_default_node_pool = true
   initial_node_count       = 1
 
-  network                  = google_compute_network.vpc.name
-  subnetwork               = google_compute_subnetwork.subnet.name
+  network                  = google_compute_network.vpc.self_link
+  subnetwork               = google_compute_subnetwork.subnet.self_link
   networking_mode          = "VPC_NATIVE"
-  enable_shielded_nodes    = false
 
   release_channel {
     channel = "STABLE"
   }
 
   ip_allocation_policy {}
+
   addons_config {
     http_load_balancing {
       disabled = true
     }
+  }
+
+  timeouts {
+    create = "30m"
+    update = "30m"
+    delete = "30m"
   }
 }
 

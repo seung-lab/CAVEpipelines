@@ -1,15 +1,16 @@
-secret_file_path = "../google-secret.json"
+secret_file_path     = "../google-secret.json"
 
-common_name         = "cave-pipeline"
-project_id          = "<>"
-region              = "us-east1"
-zone                = "us-east1-c"
-preemptible_master  = false
-preemptible_workers = true
+common_name          = "cave-pipeline"
+project_id           = "<>"
+region               = "us-east1"
+zone                 = "us-east1-c"
+preemptible_master   = false
+preemptible_workers  = true
+redis_memory_size_gb = 1
 
-worker_types        = {
+worker_types = {
   low = {
-    count   = 0
+    count   = 1
     machine = "e2-standard-2"
     disk_size_gb = 15
   },

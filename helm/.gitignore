@@ -4,3 +4,6 @@ values.yaml
 values.yml
 
 Chart.lock
+
+# depending charts
+*.tgz

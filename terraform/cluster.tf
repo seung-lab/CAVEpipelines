@@ -27,6 +27,13 @@ resource "google_container_cluster" "cluster" {
   }
 }
 
+
+variable "master_machine_type" {
+  type        = string
+  default     = "e2-small"
+  description = "VM instance type for master pod"
+}
+
 variable "preemptible_master" {
   type        = bool
   default     = false
@@ -45,7 +52,7 @@ resource "google_container_node_pool" "master" {
     }
 
     preemptible  = var.preemptible_master
-    machine_type = "e2-small"
+    machine_type = var.master_machine_type
     disk_size_gb = 15
 
     tags         = ["${var.common_name}-master"]

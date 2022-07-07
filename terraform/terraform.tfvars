@@ -4,6 +4,7 @@ common_name          = "cave-pipeline"
 project_id           = "<>"
 region               = "us-east1"
 zone                 = "us-east1-c"
+master_machine_type  = "e2-small"
 preemptible_master   = false
 preemptible_workers  = true
 redis_memory_size_gb = 1

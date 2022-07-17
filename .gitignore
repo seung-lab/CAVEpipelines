@@ -1,5 +1,6 @@
 # secrets
 *.json
+meshing.yaml
 
 # terraform
 .terraform/

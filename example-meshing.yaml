@@ -1,0 +1,65 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: meshing-secrets
+type: Opaque
+data:
+  google-secret.json: |-
+    {
+      ...
+    }
+  chunkedgraph-secret.json: |-
+    {
+      "token": "<>"
+    }
+  aws-secret.json: |-
+    {
+      "AWS_ACCESS_KEY_ID": "<>",
+      "AWS_SECRET_ACCESS_KEY": "<>"
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: meshing-worker
+  labels:
+    app: meshing-worker
+spec:
+  selector:
+    matchLabels:
+      app: meshing-worker
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: meshing-worker
+    spec:
+      dnsPolicy: Default
+      volumes:
+      - name: meshing-secrets
+        secret:
+          secretName: meshing-secrets
+      containers:
+      - name: meshing-worker
+        image: gcr.io/the-bestest-gcloud-project/pychunkedgraph:MyCoolDockerImage
+        imagePullPolicy: Always
+        resources:
+          requests:
+            memory: 8G
+        env:
+        - name: APP_SETTINGS
+          value: pychunkedgraph.app.config.DeploymentWithRedisConfig
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: /root/.cloudvolume/secrets/google-secret.json
+        - name: BIGTABLE_PROJECT
+          value: the-bestest-gcloud-project
+        - name: FLASK_APP
+          value: run_dev.py
+        volumeMounts:
+        - name: meshing-secrets
+          mountPath: /root/.cloudvolume/secrets/
+          readOnly: true
+        command: ["python"]
+        args: ["pychunkedgraph/meshing/mesh_worker.py", "--qurl", "https://sqs.us-east-1.amazonaws.com/10000101010/my-cool-queue", "--lease_seconds", "30"]
+      nodeSelector:
+        cloud.google.com/gke-nodepool: <node-pool-name>

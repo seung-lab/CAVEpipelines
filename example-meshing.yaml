@@ -53,6 +53,8 @@ spec:
           value: /root/.cloudvolume/secrets/google-secret.json
         - name: BIGTABLE_PROJECT
           value: the-bestest-gcloud-project
+        - name: BIGTABLE_INSTANCE
+          value: <bigtable_instance>
         - name: FLASK_APP
           value: run_dev.py
         volumeMounts:

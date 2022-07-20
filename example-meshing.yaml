@@ -16,15 +16,15 @@ spec:
     spec:
       dnsPolicy: Default
       volumes:
-        - name: google-secret
-          secret:
-            secretName: google-secret
-        - name: chunkedgraph-secret
-          secret:
-            secretName: chunkedgraph-secret
-        - name: aws-secret
-          secret:
-            secretName: aws-secret
+      - name: google-secret
+        secret:
+          secretName: google-secret
+      - name: cave-secret
+        secret:
+          secretName: cave-secret
+      - name: aws-secret
+        secret:
+          secretName: aws-secret
       containers:
       - name: meshing-worker
         image: gcr.io/the-bestest-gcloud-project/pychunkedgraph:MyCoolDockerImage
@@ -43,19 +43,19 @@ spec:
           value: <bigtable_instance>
         - name: FLASK_APP
           value: run_dev.py
-          volumeMounts:
-          - name: google-secret
-            mountPath: /root/.cloudvolume/secrets/google-secret.json
-            subPath: google-secret.json
-            readOnly: true
-          - name: chunkedgraph-secret
-            mountPath: /root/.cloudvolume/secrets/chunkedgraph-secret.json
-            subPath: chunkedgraph-secret.json
-            readOnly: true
-          - name: aws-secret
-            mountPath: /root/.cloudvolume/secrets/aws-secret.json
-            subPath: aws-secret.json
-            readOnly: true
+        volumeMounts:
+        - name: google-secret
+          mountPath: /root/.cloudvolume/secrets/google-secret.json
+          subPath: google-secret.json
+          readOnly: true
+        - name: cave-secret
+          mountPath: /root/.cloudvolume/secrets/cave-secret.json
+          subPath: cave-secret.json
+          readOnly: true
+        - name: aws-secret
+          mountPath: /root/.cloudvolume/secrets/aws-secret.json
+          subPath: aws-secret.json
+          readOnly: true
         command: ["python"]
         args: ["pychunkedgraph/meshing/mesh_worker.py", "--qurl", "https://sqs.us-east-1.amazonaws.com/10000101010/my-cool-queue", "--lease_seconds", "30"]
       nodeSelector:

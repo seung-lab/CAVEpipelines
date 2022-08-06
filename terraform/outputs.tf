@@ -13,6 +13,11 @@ output "project_id" {
   description = "GCloud Project ID"
 }
 
+output "worker_service_account" {
+  value       = module.google_service_account.email
+  description = "Service Account used by GKE workers to run ingest"
+}
+
 output "kubernetes_cluster_name" {
   value       = google_container_cluster.cluster.name
   description = "GKE Cluster Name"

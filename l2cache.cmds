@@ -1,0 +1,9 @@
+```shell
+export PROJECT_ID=$(gcloud config get-value project)
+git clone https://github.com/seung-lab/PCGL2Cache.git -b pcgv2-ingest
+cd PCGL2Cache/
+gcloud builds submit --config=cloudbuild.v2.ingest.yaml .
+
+ingest v2 l2cache_aibs_v1dd aibs_v1dd \
+graphene://https://api.em.brain.allentech.org/segmentation/table/aibs_v1dd "2022-09-16 12:00:00" --create
+```

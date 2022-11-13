@@ -1,0 +1,14 @@
+
+{{- range untilStep 2 ($.Values.trackerDeployments.count | int) 1 }}
+
+{{- $tname   := print "t" .}}
+{{- $command := list "rq" "worker" (print "t" .)}}
+{{- $_ := set $.Values.trackerDeployments "name" $tname}}
+{{- $first := first $.Values.trackerDeployments.containers}}
+
+{{- $_ = set $first "name" $tname}}
+{{- $_ = set $first "command" $command}}
+
+{{- template "common.deployment" $.Values.trackerDeployments }}
+
+{{- end }}

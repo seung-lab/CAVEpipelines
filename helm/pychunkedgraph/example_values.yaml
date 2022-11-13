@@ -11,7 +11,6 @@ env:
     FLASK_APP: run_dev.py
     APP_SETTINGS: pychunkedgraph.app.config.DeploymentWithRedisConfig
 
-
 configfiles:
 - name: &bashrc "bashrc"
   files:
@@ -58,135 +57,109 @@ secrets:
       }
 
 deployments:
-  - enabled: true
-    name: &name master
-    nodeSelector:
-      cloud.google.com/gke-nodepool: master
-    hpa:
-      enabled: false
-    volumes: &commonVolumes
+- enabled: true
+  name: &name master
+  nodeSelector:
+    cloud.google.com/gke-nodepool: master
+  hpa:
+    enabled: false
+  volumes: &commonVolumes
+  - name: *cloudVolumeSecrets
+    secret:
+      secretName: *cloudVolumeSecrets
+  - name: &datasetsVolume datasets-volume
+    configMap:
+      name: *dataset
+  - name: &bashrcVolume bashrc-volume
+    configMap:
+      name: *bashrc
+  containers:
+  - name: *name
+    image: &image
+      repository: <image_repo>
+      tag: "<image_tag>"
+    volumeMounts: &commonVolumeMounts
     - name: *cloudVolumeSecrets
-      secret:
-        secretName: *cloudVolumeSecrets
-    - name: &datasetsVolume datasets-volume
-      configMap:
-        name: *dataset
-    - name: &bashrcVolume bashrc-volume
-      configMap:
-        name: *bashrc
-    containers:
-    - name: *name
-      image: &image
-        repository: &imageRep <image_repo>
-        tag: &tag "<image_tag>"
-      volumeMounts: &commonVolumeMounts
-      - name: *cloudVolumeSecrets
-        mountPath: /root/.cloudvolume/secrets
-        readOnly: true
-      - name: *datasetsVolume
-        mountPath: /app/datasets
-      - name: *bashrcVolume
-        mountPath: /root/
-      env:
-      - name: *commonEnvVars
-      resources:
-        requests:
-          memory: 500M
-
+      mountPath: /root/.cloudvolume/secrets
+      readOnly: true
+    - name: *datasetsVolume
+      mountPath: /app/datasets
+    - name: *bashrcVolume
+      mountPath: /root/
+    env:
+    - name: *commonEnvVars
+    resources:
+      requests:
+        memory: 500M
 
 workerDeployments:
-  - enabled: true
-    name: &name l2
-    nodeSelector:
-      cloud.google.com/gke-nodepool: low
-    hpa:
-      enabled: true
-      minReplicas: 4
-    volumes: *commonVolumes
-    containers:
-    - name: *name
-      command: [rq, worker, *name]
-      image: *image
-      volumeMounts: *commonVolumeMounts
-      env:
-      - name: *commonEnvVars
-      resources:
-        requests:
-          memory: 1G
+- enabled: true
+  name: &name l2
+  nodeSelector:
+    cloud.google.com/gke-nodepool: low
+  hpa:
+    enabled: true
+    minReplicas: 4
+  volumes: *commonVolumes
+  containers:
+  - name: *name
+    command: [rq, worker, *name]
+    image: *image
+    volumeMounts: *commonVolumeMounts
+    env:
+    - name: *commonEnvVars
+    resources:
+      requests:
+        memory: 1G
 
+- enabled: true
+  name: &name l3
+  nodeSelector:
+    cloud.google.com/gke-nodepool: low
+  hpa:
+    enabled: true
+    minReplicas: 2
+  volumes: *commonVolumes
+  containers:
+  - name: *name
+    command: [rq, worker, *name]
+    image: *image
+    volumeMounts: *commonVolumeMounts
+    env:
+    - name: *commonEnvVars
+    resources:
+      requests:
+        memory: 1.5G
 
-  - enabled: true
-    name: &name l3
-    nodeSelector:
-      cloud.google.com/gke-nodepool: low
-    hpa:
-      enabled: true
-      minReplicas: 2
-    volumes: *commonVolumes
-    containers:
-    - name: *name
-      command: [rq, worker, *name]
-      image: *image
-      volumeMounts: *commonVolumeMounts
-      env:
-      - name: *commonEnvVars
-      resources:
-        requests:
-          memory: 1.5G
-
-
-  - enabled: true
-    name: &name l4
-    nodeSelector:
-      cloud.google.com/gke-nodepool: low
-    hpa:
-      enabled: false
-    volumes: *commonVolumes
-    containers:
-    - name: *name
-      command: [rq, worker, *name]
-      image: *image
-      volumeMounts: *commonVolumeMounts
-      env:
-      - name: *commonEnvVars
-      resources:
-        requests:
-          memory: 2G
-
+- enabled: true
+  name: &name l4
+  nodeSelector:
+    cloud.google.com/gke-nodepool: low
+  hpa:
+    enabled: false
+  volumes: *commonVolumes
+  containers:
+  - name: *name
+    command: [rq, worker, *name]
+    image: *image
+    volumeMounts: *commonVolumeMounts
+    env:
+    - name: *commonEnvVars
+    resources:
+      requests:
+        memory: 2G
 
 trackerDeployments:
-  - enabled: true
-    name: &name t2
-    hpa:
-      enabled: false
-    volumes: *commonVolumes
-    containers:
-    - name: *name
-      command: [rq, worker, *name]
-      image:
-        repository: *imageRep
-        tag: *tag
-      volumeMounts: *commonVolumeMounts
-      env:
-      - name: *commonEnvVars
-      resources:
-        requests:
-          memory: 250M
-
-  - enabled: true
-    name: &name t3
-    hpa:
-      enabled: false
-    volumes: *commonVolumes
-    containers:
-    - name: *name
-      command: [rq, worker, *name]
-      image:
-        repository: *imageRep
-        tag: *tag
-      volumeMounts: *commonVolumeMounts
-      env:
-      - name: *commonEnvVars
-      resources:
-        requests:
-          memory: 250M
+  count: 4 # number of layers in the chunkedgraph
+  enabled: true
+  volumes: *commonVolumes
+  hpa:
+    enabled: false
+  containers:
+  - image: *image
+    volumeMounts: *commonVolumeMounts
+    env:
+    - name: *commonEnvVars
+    resources:
+      requests:
+        memory: 100M

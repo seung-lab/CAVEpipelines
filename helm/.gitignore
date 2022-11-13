@@ -1,7 +1,7 @@
 # secrets
 *.json
-values.yaml
-values.yml
+values*.yaml
+values*.yml
 
 Chart.lock
 

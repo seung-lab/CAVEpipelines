@@ -42,6 +42,7 @@ resource "google_container_node_pool" "pool" {
   node_config {
     labels = {
       project = var.common_name
+      owner   = var.owner
     }
     preemptible  = var.preemptible_workers
     machine_type = each.value.machine

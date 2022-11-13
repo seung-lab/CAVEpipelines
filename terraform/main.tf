@@ -16,6 +16,12 @@ variable "common_name" {
   description = "common name to identify resources"
 }
 
+variable "owner" {
+  type = string
+  description = "added as label to resources, convenient to filter costs based on labels"
+  default = "na"
+}
+
 variable "project_id" {
   description = "project id"
 }
@@ -29,7 +35,6 @@ variable "zone" {
 }
 
 provider "google" {
-  credentials = file(var.secret_file_path)
   project = var.project_id
   region  = var.region
 }

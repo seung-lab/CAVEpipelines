@@ -1,7 +1,7 @@
 resource "google_compute_network" "vpc" {
-  name                            = var.common_name
-  routing_mode                    = "REGIONAL"
-  auto_create_subnetworks         = false
+  name                     = var.common_name
+  routing_mode             = "REGIONAL"
+  auto_create_subnetworks  = false
 }
 
 resource "google_compute_subnetwork" "subnet" {

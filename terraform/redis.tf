@@ -12,5 +12,9 @@ resource "google_redis_instance" "redis" {
   region             = var.region
   redis_version      = "REDIS_6_X"
   authorized_network = google_compute_network.vpc.name
+  labels = {
+    project = var.common_name
+    owner   = var.owner
+  }
 }
 

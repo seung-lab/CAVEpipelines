@@ -7,10 +7,6 @@ terraform {
   }
 }
 
-variable "secret_file_path" {
-  description = "path to service account secret for creating infrastructure"
-}
-
 
 variable "common_name" {
   description = "common name to identify resources"

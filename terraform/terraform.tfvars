@@ -1,5 +1,3 @@
-secret_file_path     = "../google-secret.json"
-
 common_name          = "cave-pipeline"
 project_id           = "<>"
 region               = "us-east1"

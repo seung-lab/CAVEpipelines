@@ -2,7 +2,7 @@
 {{- range untilStep 2 ($.Values.trackerDeployments.count | int) 1 }}
 
 {{- $tname   := print "t" .}}
-{{- $command := list "rq" "worker" (print "t" .)}}
+{{- $command := list "python" "tracker.py" (print "t" .)}}
 {{- $_ := set $.Values.trackerDeployments "name" $tname}}
 {{- $first := first $.Values.trackerDeployments.containers}}
 

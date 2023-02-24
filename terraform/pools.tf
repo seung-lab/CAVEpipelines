@@ -48,7 +48,6 @@ resource "google_container_node_pool" "pool" {
     machine_type = each.value.machine
     disk_size_gb = each.value.disk_size_gb
 
-    tags         = ["${var.common_name}-${each.key}"]
     metadata     = {
       disable-legacy-endpoints = "true"
     }

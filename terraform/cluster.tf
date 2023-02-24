@@ -68,7 +68,6 @@ resource "google_container_node_pool" "master" {
     machine_type = var.master_machine_type
     disk_size_gb = 15
 
-    tags = ["${var.common_name}-master"]
     metadata = {
       disable-legacy-endpoints = "true"
     }

@@ -98,8 +98,7 @@ workerDeployments:
   nodeSelector:
     cloud.google.com/gke-nodepool: low
   hpa:
-    enabled: true
-    minReplicas: 4
+    enabled: false
   volumes: *commonVolumes
   containers:
   - name: *name
@@ -117,8 +116,7 @@ workerDeployments:
   nodeSelector:
     cloud.google.com/gke-nodepool: low
   hpa:
-    enabled: true
-    minReplicas: 2
+    enabled: false
   volumes: *commonVolumes
   containers:
   - name: *name

@@ -86,8 +86,13 @@ deployments:
       mountPath: /app/datasets
     - name: *bashrcVolume
       mountPath: /root/
+    envFromConfigMap:
+    - *commonEnvVars
     env:
-    - name: *commonEnvVars
+    - name: MY_POD_IP
+      valueFrom:
+        fieldRef:
+          fieldPath: status.podIP
     resources:
       requests:
         memory: 500M
@@ -105,8 +110,8 @@ workerDeployments:
     command: [rq, worker, *name]
     image: *image
     volumeMounts: *commonVolumeMounts
-    env:
-    - name: *commonEnvVars
+    envFromConfigMap:
+    - *commonEnvVars
     resources:
       requests:
         memory: 1G
@@ -123,8 +128,8 @@ workerDeployments:
     command: [rq, worker, *name]
     image: *image
     volumeMounts: *commonVolumeMounts
-    env:
-    - name: *commonEnvVars
+    envFromConfigMap:
+    - *commonEnvVars
     resources:
       requests:
         memory: 1.5G
@@ -141,15 +146,15 @@ workerDeployments:
     command: [rq, worker, *name]
     image: *image
     volumeMounts: *commonVolumeMounts
-    env:
-    - name: *commonEnvVars
+    envFromConfigMap:
+    - *commonEnvVars
     resources:
       requests:
         memory: 2G
 
 trackerDeployments:
   count: 4 # number of layers in the chunkedgraph
-  enabled: true
+  enabled: false
   volumes: *commonVolumes
   hpa:
     enabled: false

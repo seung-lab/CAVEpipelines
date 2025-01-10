@@ -11,13 +11,17 @@
         {{- if .resources }}
           {{- toYaml .resources | nindent 10 }}
         {{- end }}
+        env:
+        {{- if .env }}
+          {{- toYaml .env | nindent 10 }}
+        {{- end }}
         envFrom:
         {{- if .envFrom }}
           {{- toYaml .envFrom | nindent 10 }}
         {{- end }}
-        {{- range .env }}
+        {{- range .envFromConfigMap }}
         - configMapRef:
-            name: {{ .name }}
+            name: {{ . }}
         {{- end }}
         volumeMounts:
         {{- if .volumeMounts }}

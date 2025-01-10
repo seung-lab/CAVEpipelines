@@ -29,6 +29,7 @@ spec:
         {{ $key }}: {{ $val | quote }}
         {{- end }}
     spec:
+      hostNetwork: {{ .hostNetwork | default false }}
       affinity:
         {{- toYaml .affinity | nindent 8 }}
       volumes:

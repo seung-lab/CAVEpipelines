@@ -19,13 +19,17 @@ spec:
     - type: Resource
       resource:
         name: cpu
-        targetAverageUtilization: {{ .hpa.targetCPU }}
+        target:
+          type: Utilization
+          averageUtilization: {{ .hpa.targetCPU }}
   {{- end }}
   {{- if .hpa.targetMem }}
     - type: Resource
       resource:
         name: memory
-        targetAverageUtilization: {{ .hpa.targetMem }}
+        target:
+          type: Utilization
+          averageUtilization: {{ .hpa.targetMem }}
   {{- end }}
 ---
 {{- end }}

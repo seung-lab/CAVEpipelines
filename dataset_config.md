@@ -17,6 +17,14 @@ backend_client:
   CONFIG:
     ADMIN: true
     READ_ONLY: false
+
+mesh_config:
+  dir: "graphene_meshes"
+  mip: <int>
+  max_layer: <int>
+  max_error: <int>
+  chunk_size: [X, Y, Z]
+  minishard_bits: {2: 1, 3: 3, 4: 6}
 ```
 
 ### `data_source`
@@ -37,3 +45,11 @@ For more information refer to this well documented [graphene](https://github.com
 ### `backend_client`
 This can be left as is. Currently bigtable is the only supported backend to store the chunkedgraph.
 
+### `mesh_config`
+* `dir` - mesh directory inside the watershed CloudVolume (e.g. `graphene_meshes`).
+* `mip` - mip level to mesh at.
+* `max_layer` - highest layer to mesh and stitch up to.
+* `max_error` - marching-cubes simplification error.
+* `chunk_size` - mesh chunk size in [x, y, z] (mip-adjusted).
+* `minishard_bits` - sharded-mesh minishard bits per layer, `{layer: bits}`.
+* `dynamic_mesh_dir` - directory for dynamically-created (post-edit) meshes. Use `dynamic` on `main`; on the `pcgv3` branch the graph id is appended automatically (default `dynamic_<graph_id>`).

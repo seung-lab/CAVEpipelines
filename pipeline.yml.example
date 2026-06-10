@@ -1,0 +1,64 @@
+# Copy to pipeline.yml (gitignored) — the SINGLE file the operator edits.
+# Drives both the helm static infra and the per-layer Indexed Jobs; values appear
+# once (e.g. bigtable project/instance is injected into the worker env AND the
+# dataset's backend_client automatically). Secret files go in ./secrets, never here.
+
+namespace: default
+graph_id: my_graph
+workload: ingest          # ingest | l2cache | meshing — one at a time
+persistent_util: true     # keep the (spot) util pod alive between layers; false = on-demand (idle 0 nodes)
+
+secret_files:             # {container_filename: local_path under ./secrets}; {} = Workload Identity only
+  google-secret.json: projectA/google-secret.json   # local file may be named/nested differently
+  cave-secret.json: cave-secret-projectA.json
+
+images:
+  pcg: caveconnectome/pychunkedgraph:latest
+  l2cache: caveconnectome/pcgl2cache:latest
+
+workload_identity:
+  service_account: pipeline
+  gsa_email: cave-pipeline-worker@PROJECT.iam.gserviceaccount.com   # terraform output worker_service_account
+
+bigtable:
+  project: PROJECT
+  instance: INSTANCE
+
+# Read only by `setup` (workers read meta from Bigtable). Same yml the graph was
+# always configured with. PROJECT/INSTANCE are filled from `bigtable:` above.
+dataset:
+  data_source:
+    EDGES: gs://bucket/edges
+    COMPONENTS: gs://bucket/components
+    WATERSHED: gs://bucket/ws
+  graph_config:
+    CHUNK_SIZE: [512, 512, 128]
+    FANOUT: 2
+    SPATIAL_BITS: 10
+    LAYER_ID_BITS: 8
+  backend_client:
+    TYPE: bigtable
+    CONFIG:
+      ADMIN: true
+      READ_ONLY: false
+
+job:
+  perm_seed: 42
+  batch_size: 1000
+  n_threads: 1
+  cpu: "1"
+  memory: 2Gi
+  compute_class: ""          # empty = Autopilot default; e.g. Balanced for high-memory layers
+  backoff_limit_per_index: 3
+  max_failed_indexes: 50
+
+ramp:                        # parallelism: start, x factor every period (s), up to max
+  start: 4
+  factor: 2
+  period: 60
+  max: 256
+
+# Batch entrypoints for l2cache / meshing (pending in their repos):
+# commands:
+#   l2cache: ["python", "-m", "pcgl2cache.batch"]
+#   meshing: ["python", "pychunkedgraph/meshing/batch.py"]

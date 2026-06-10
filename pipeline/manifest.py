@@ -5,7 +5,8 @@ from kubernetes import client
 
 from . import config as cfgmod
 
-INGEST_COMMAND = ["python", "-m", "pychunkedgraph.ingest.jobs"]
+INGEST_COMMAND = ["python", "-m", "pychunkedgraph.pipeline.ingest"]
+MESHING_COMMAND = ["python", "-m", "pychunkedgraph.pipeline.meshing"]
 SPOT_SELECTOR = {"cloud.google.com/gke-spot": "true"}
 SPOT_TOLERATION = {
     "key": "cloud.google.com/gke-spot",
@@ -23,7 +24,9 @@ def job_name(cfg, layer: int) -> str:
 def command_for(cfg):
     if cfg.workload == "ingest":
         return INGEST_COMMAND
-    return cfg.commands.get(cfg.workload)  # l2cache/meshing entrypoints from pipeline.yml
+    if cfg.workload == "meshing":
+        return MESHING_COMMAND
+    return cfg.commands.get(cfg.workload)  # l2cache entrypoint from pipeline.yml
 
 
 def _spot_tolerations():

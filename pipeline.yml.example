@@ -41,6 +41,13 @@ dataset:
     CONFIG:
       ADMIN: true
       READ_ONLY: false
+  mesh_config:                 # only for meshing — `pipeline mesh-meta` reads this block
+    dir: graphene_meshes
+    mip: 0
+    max_layer: 6
+    max_error: 40
+    chunk_size: [512, 512, 256]
+    minishard_bits: {2: 1, 3: 3, 4: 6, 5: 9, 6: 12}
 
 job:
   perm_seed: 42

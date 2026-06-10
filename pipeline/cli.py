@@ -56,10 +56,16 @@ def deploy(cfg, args):
 
 def setup(cfg, args):
     """Create the graph table + meta (in the util pod, or a one-shot pod)."""
-    argv = ["python", "-m", "pychunkedgraph.ingest.jobs.setup", cfg.graph_id]
+    argv = ["python", "-m", "pychunkedgraph.pipeline.ingest.setup", cfg.graph_id]
     if args.raw:
         argv.append("--raw")
     print(util.run_pcg(cfg, "setup", argv))
+
+
+def mesh_meta(cfg, args):
+    """Write mesh metadata once (after ingest reaches root); needs `mesh_config:` in the dataset."""
+    argv = ["python", "-m", "pychunkedgraph.pipeline.meshing.setup", cfg.graph_id]
+    print(util.run_pcg(cfg, "mesh-meta", argv))
 
 
 def submit(cfg, args):
@@ -238,6 +244,11 @@ def main(argv=None):
     )
     s.add_argument("-r", "--raw", action="store_true", help="raw agglomeration input")
     s.set_defaults(fn=setup)
+
+    mm = sub.add_parser(
+        "mesh-meta", help="write mesh metadata once (after ingest reaches the root layer)"
+    )
+    mm.set_defaults(fn=mesh_meta)
 
     su = sub.add_parser(
         "submit", help="submit one layer's Indexed Job and ramp parallelism"

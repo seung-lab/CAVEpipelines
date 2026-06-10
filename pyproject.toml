@@ -1,0 +1,29 @@
+[project]
+name = "cave-pipeline"
+version = "0.1.0"
+description = "Operator CLI to run PyChunkedGraph ingest / l2cache / meshing as GKE Autopilot Indexed Jobs"
+requires-python = ">=3.12"
+dependencies = [
+    "kubernetes>=29",
+    "PyYAML>=6.0",
+    "rich>=13",
+]
+
+[project.optional-dependencies]
+dev = ["black", "pre-commit", "pytest"]
+
+[project.scripts]
+pipeline = "pipeline.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["pipeline"]
+
+[tool.black]
+line-length = 90
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

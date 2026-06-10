@@ -1,6 +1,14 @@
 # secrets
 *.json
 mesh*.yaml
+secrets/
+pipeline.yml
+
+# python
+.venv/
+venv/
+__pycache__/
+*.egg-info/
 
 # terraform
 .terraform/

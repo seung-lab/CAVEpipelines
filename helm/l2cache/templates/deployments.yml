@@ -1,8 +1,0 @@
-{{- range .Values.deployments }}
-{{- template "common.deployment" . }}
-{{- end }}
-
-
-{{- range .Values.workerDeployments }}
-{{- template "common.deployment" . }}
-{{- end }}

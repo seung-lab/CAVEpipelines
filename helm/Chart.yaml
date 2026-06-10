@@ -1,0 +1,6 @@
+apiVersion: v2
+name: pipeline
+description: Static infra (service account, ConfigMaps, optional util pod) for the chunk-batch pipelines
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

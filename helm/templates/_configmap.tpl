@@ -1,6 +1,6 @@
-{{/* Create kubernetes configmap object from env list */}}
+{{/* ConfigMap from an env list */}}
 
-{{- define "common.configmap-from-env" }}
+{{- define "pipeline.configmap-from-env" }}
 {{- range . }}
 apiVersion: v1
 kind: ConfigMap
@@ -16,9 +16,9 @@ data:
 {{- end }}
 
 
-{{/* Create kubernetes configmap object from YAML values*/}}
+{{/* ConfigMap from YAML values */}}
 
-{{- define "common.configmap-from-yaml" }}
+{{- define "pipeline.configmap-from-yaml" }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -33,9 +33,9 @@ data:
 {{- end }}
 
 
-{{/* Create kubernetes configmap object from file strings*/}}
+{{/* ConfigMap from file strings */}}
 
-{{- define "common.configmap-from-file-strings" }}
+{{- define "pipeline.configmap-from-file-strings" }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

@@ -2,7 +2,7 @@ terraform {
   required_providers {
     google = {
       source  = "hashicorp/google"
-      version = "4.15.0"
+      version = "~> 7.0"
     }
   }
 }
@@ -13,9 +13,9 @@ variable "common_name" {
 }
 
 variable "owner" {
-  type = string
+  type        = string
   description = "added as label to resources, convenient to filter costs based on labels"
-  default = "na"
+  default     = "na"
 }
 
 variable "project_id" {
@@ -23,11 +23,19 @@ variable "project_id" {
 }
 
 variable "region" {
-  description = "region"
+  description = "region (Autopilot clusters are regional)"
 }
 
-variable "zone" {
-  description = "zone"
+variable "namespace" {
+  type        = string
+  default     = "default"
+  description = "kubernetes namespace the pipeline pods run in"
+}
+
+variable "ksa_name" {
+  type        = string
+  default     = "pipeline"
+  description = "kubernetes service account the pipeline pods use (bound to the worker GSA via Workload Identity)"
 }
 
 provider "google" {

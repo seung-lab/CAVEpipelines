@@ -1,79 +1,28 @@
+# GKE Autopilot: Google manages the nodes, so we declare no node pools. Pods
+# request CPU/memory and select spot + machine class via nodeSelectors
+# (cloud.google.com/gke-spot, cloud.google.com/compute-class). Workload Identity,
+# autoscaling, and scale-to-zero between layers are on by default.
 resource "google_container_cluster" "cluster" {
-  name                     = var.common_name
-  location                 = var.zone
-  remove_default_node_pool = true
-  initial_node_count       = 1
+  name     = var.common_name
+  location = var.region
 
-  network         = google_compute_network.vpc.self_link
-  subnetwork      = google_compute_subnetwork.subnet.self_link
-  networking_mode = "VPC_NATIVE"
+  enable_autopilot = true
+
+  # Ephemeral pipeline cluster — allow `terraform destroy` to tear it down.
+  deletion_protection = false
+
+  release_channel {
+    channel = "REGULAR" # >= 1.33: backoffLimitPerIndex / podFailurePolicy:FailIndex are GA
+  }
 
   resource_labels = {
     project = var.common_name
     owner   = var.owner
   }
 
-  release_channel {
-    channel = "STABLE"
-  }
-
-  ip_allocation_policy {}
-
-  addons_config {
-    http_load_balancing {
-      disabled = true
-    }
-  }
-
   timeouts {
     create = "30m"
     update = "30m"
     delete = "30m"
-  }
-
-  node_config {
-    service_account = module.google_service_account.email
-    oauth_scopes = [
-      "https://www.googleapis.com/auth/cloud-platform"
-    ]
-  }
-}
-
-
-variable "master_machine_type" {
-  type        = string
-  default     = "e2-small"
-  description = "VM instance type for master pod"
-}
-
-variable "preemptible_master" {
-  type        = bool
-  default     = false
-  description = "should master be preemptible?"
-}
-
-resource "google_container_node_pool" "master" {
-  name       = "master"
-  location   = var.zone
-  cluster    = google_container_cluster.cluster.name
-  node_count = 1
-
-  node_config {
-    labels = {
-      project = var.common_name
-      owner   = var.owner
-    }
-
-    preemptible  = var.preemptible_master
-    machine_type = var.master_machine_type
-    disk_size_gb = 15
-
-    metadata = {
-      disable-legacy-endpoints = "true"
-    }
-    service_account = module.google_service_account.email
-    oauth_scopes = [
-      "https://www.googleapis.com/auth/cloud-platform"
-    ]
   }
 }

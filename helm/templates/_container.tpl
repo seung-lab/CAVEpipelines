@@ -1,6 +1,6 @@
-{{/* container within pod/deployment*/}}
+{{/* Container spec */}}
 
-{{- define "common.container" }}
+{{- define "pipeline.container" }}
       - name: {{ .name | quote }}
         image: >-
           {{ required "repo" .image.repository }}:{{ required "tag" .image.tag }}

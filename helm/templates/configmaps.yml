@@ -1,0 +1,9 @@
+{{- template "pipeline.configmap-from-env" .Values.env }}
+
+{{- range .Values.configfiles }}
+{{- template "pipeline.configmap-from-file-strings" . }}
+{{- end }}
+
+{{- range .Values.configyamls }}
+{{- template "pipeline.configmap-from-yaml" . }}
+{{- end }}

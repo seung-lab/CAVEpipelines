@@ -1,6 +1,6 @@
-{{/* Create kubernetes deployment object */}}
+{{/* Kubernetes Deployment */}}
 
-{{- define "common.deployment" }}
+{{- define "pipeline.deployment" }}
 {{- if .enabled }}
 apiVersion: apps/v1
 kind: Deployment
@@ -29,6 +29,7 @@ spec:
         {{ $key }}: {{ $val | quote }}
         {{- end }}
     spec:
+      serviceAccountName: {{ .serviceAccountName | default "default" | quote }}
       hostNetwork: {{ .hostNetwork | default false }}
       affinity:
         {{- toYaml .affinity | nindent 8 }}
@@ -36,12 +37,16 @@ spec:
         {{- toYaml .volumes | nindent 8 }}
       containers:
       {{- range .containers }}
-      {{- template "common.container" . }}
+      {{- template "pipeline.container" . }}
       {{- end }}
       imagePullSecrets:
         {{- toYaml .imagePullSecrets | nindent 8 }}
       nodeSelector:
         {{- toYaml .nodeSelector | nindent 8 }}
+      {{- with .tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
 ---
 {{- end }}
 {{- end }}

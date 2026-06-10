@@ -41,8 +41,9 @@ dataset:
     CONFIG:
       ADMIN: true
       READ_ONLY: false
-  mesh_config:                 # only for meshing — `pipeline mesh-meta` reads this block
+  mesh_config:
     dir: graphene_meshes
+    dynamic_mesh_dir: "dynamic"
     mip: 0
     max_layer: 6
     max_error: 40
@@ -65,7 +66,6 @@ ramp:                        # parallelism: start, x factor every period (s), up
   period: 60
   max: 256
 
-# Batch entrypoints for l2cache / meshing (pending in their repos):
+# l2cache batch entrypoint (in the PCGL2Cache repo); ingest + meshing are built in:
 # commands:
 #   l2cache: ["python", "-m", "pcgl2cache.batch"]
-#   meshing: ["python", "pychunkedgraph/meshing/batch.py"]

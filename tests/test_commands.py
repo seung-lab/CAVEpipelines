@@ -7,7 +7,11 @@ def test_command_for_routes_per_workload(cfg):
     cfg.workload = "ingest"
     assert manifest.command_for(cfg) == ["python", "-m", "pychunkedgraph.pipeline.ingest"]
     cfg.workload = "meshing"
-    assert manifest.command_for(cfg) == ["python", "-m", "pychunkedgraph.pipeline.meshing"]
+    assert manifest.command_for(cfg) == [
+        "python",
+        "-m",
+        "pychunkedgraph.pipeline.meshing",
+    ]
     cfg.workload = "l2cache"  # no built-in entrypoint -> from cfg.commands (empty here)
     assert manifest.command_for(cfg) is None
 
@@ -23,14 +27,24 @@ def _capture_run_pcg(monkeypatch):
 def test_setup_runs_pipeline_ingest_setup(monkeypatch, cfg):
     seen = _capture_run_pcg(monkeypatch)
     cli.setup(cfg, SimpleNamespace(raw=False))
-    assert seen["argv"] == ["python", "-m", "pychunkedgraph.pipeline.ingest.setup", cfg.graph_id]
+    assert seen["argv"] == [
+        "python",
+        "-m",
+        "pychunkedgraph.pipeline.ingest.setup",
+        cfg.graph_id,
+    ]
 
 
 def test_mesh_meta_runs_pipeline_meshing_setup(monkeypatch, cfg):
     seen = _capture_run_pcg(monkeypatch)
     cli.mesh_meta(cfg, SimpleNamespace())
     assert seen["name"] == "mesh-meta"
-    assert seen["argv"] == ["python", "-m", "pychunkedgraph.pipeline.meshing.setup", cfg.graph_id]
+    assert seen["argv"] == [
+        "python",
+        "-m",
+        "pychunkedgraph.pipeline.meshing.setup",
+        cfg.graph_id,
+    ]
 
 
 def test_mesh_meta_subcommand_is_registered(monkeypatch, cfg):

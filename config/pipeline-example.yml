@@ -1,0 +1,43 @@
+namespace: default
+graph_id: my_graph
+workload: ingest
+persistent_util: true
+
+secret_files:
+  google-secret.json: projectA/google-secret.json
+  cave-secret.json: cave-secret-projectA.json
+
+images:
+  pcg: caveconnectome/pychunkedgraph:latest
+  l2cache: caveconnectome/pcgl2cache:latest
+
+workload_identity:
+  service_account: pipeline
+  gsa_email: cave-pipeline-worker@PROJECT.iam.gserviceaccount.com
+
+bigtable:
+  project: PROJECT
+  instance: INSTANCE
+
+job:
+  perm_seed: 42
+  batch_size: 1000
+  n_threads: 1
+  cpu: "1"
+  memory: 2Gi
+  compute_class: ""
+  backoff_limit_per_index: 3
+  max_failed_indexes: 50
+
+ramp:
+  start: 4
+  factor: 2
+  period: 60
+  max: 1024
+
+env:
+  BIGTABLE_PROJECT:
+  BIGTABLE_INSTANCE:
+
+commands:
+  l2cache: ["python", "-m", "pcgl2cache.batch"]

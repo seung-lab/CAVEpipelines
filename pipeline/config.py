@@ -5,6 +5,7 @@ always configured with) and passed through to `setup`. One graph and one workloa
 run at a time, so both live in the config — no command repeats them.
 """
 
+import os
 from dataclasses import dataclass, field
 
 import yaml
@@ -72,11 +73,11 @@ class Config:
         return self.images.l2cache if self.workload == "l2cache" else self.images.pcg
 
 
-def load(path: str = "pipeline.yml") -> Config:
-    with open(path) as stream:
+def load(config_dir: str = "config") -> Config:
+    with open(os.path.join(config_dir, "pipeline.yml")) as stream:
         raw = yaml.safe_load(stream) or {}
     bt = Bigtable(**raw.get("bigtable", {}))
-    dataset = _with_bigtable(raw.get("dataset", {}), bt)
+    dataset = _with_bigtable(_read_dataset(config_dir), bt)
     return Config(
         namespace=raw.get("namespace", "default"),
         graph_id=raw["graph_id"],
@@ -93,6 +94,15 @@ def load(path: str = "pipeline.yml") -> Config:
         commands=raw.get("commands", {}),
         env=raw.get("env", {}),
     )
+
+
+def _read_dataset(config_dir: str) -> dict:
+    """The graph definition lives in dataset.yml (empty for graph-less workloads)."""
+    path = os.path.join(config_dir, "dataset.yml")
+    if not os.path.exists(path):
+        return {}
+    with open(path) as stream:
+        return yaml.safe_load(stream) or {}
 
 
 def _with_bigtable(dataset: dict, bt: Bigtable) -> dict:

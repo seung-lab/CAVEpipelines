@@ -16,16 +16,16 @@ pods absorb preemption; a cold Bigtable is ramped into gradually.
 | Path | What |
 |---|---|
 | `pipeline/` | the **`pipeline` CLI** (Python, kubernetes client) — the only thing you run |
-| `pipeline.yml` | the **only file you edit** (copy from `pipeline.yml.example`); single source of truth |
+| `config/` | `pipeline.yml` + `dataset.yml` (copy the `*-example.yml` templates) — see [config/README.md](config/README.md) |
 | `secrets/` | local secret files (gitignored); `secret_files:` in `pipeline.yml` picks which to load |
 | `terraform/` | the GKE Autopilot cluster + Workload-Identity service account |
 | `helm/` | static infra only (service account, ConfigMaps, an optional spot util pod) — driven by the CLI |
 
-**One config, no duplication.** `pipeline.yml` holds everything; the CLI feeds it to
-both helm and the Jobs. The Bigtable project/instance, image, and service account
-each appear once. The dataset block stays the same yaml the graph was always
-configured with — it's nested in `pipeline.yml` and only `setup` reads it (workers
-read graph meta from Bigtable).
+**Config, no duplication.** `pipeline.yml` holds everything except the graph
+definition, which is its own `dataset.yml` — the same yaml the graph was always
+configured with, read only by `setup` (workers read graph meta from Bigtable). The CLI
+feeds both to helm and the Jobs; the Bigtable project/instance, image, and service
+account each appear once.
 
 **Secrets & the util pod.** `secret_files` is a `{container_filename: local_path}` map —
 `deploy` reads each local file under `secrets/` and bundles it into one k8s Secret mounted
@@ -114,9 +114,10 @@ Pin the tags in `pipeline.yml` (`images:`).
 ## 3. Config + deploy
 
 ```shell
-cp pipeline.yml.example pipeline.yml
+cp config/pipeline-example.yml config/pipeline.yml
+cp config/dataset-example.yml config/dataset.yml
 
-# fill in pipeline.yml: graph_id, bigtable, image tags, gsa_email, dataset
+# fill in pipeline.yml (graph_id, bigtable, images, gsa_email) and dataset.yml (data_source, graph_config)
 # optional: map credential files in secret_files: (local files under ./secrets); GCP auth is Workload Identity
 
 pipeline deploy   # static infra (helm) + secret
@@ -144,7 +145,7 @@ and the ramp per layer in `pipeline.yml`; to size memory/CPU first, `pipeline sa
 ## 5. Meshing
 
 Set `workload: meshing` and add a `mesh_config:` block to the dataset (fields in
-[dataset_config.md](dataset_config.md)). Meshes are written in the [sharded
+[config/README.md](config/README.md)). Meshes are written in the [sharded
 format](https://github.com/seung-lab/cloud-volume/wiki/Sharding:-Reducing-Load-on-the-Filesystem)
 into the segmentation GCS bucket (the worker service account needs `storage.objectAdmin`). Run
 it after ingest reaches the root layer:
@@ -309,4 +310,4 @@ they are left intact.
 
 ## Reference
 
-- [dataset_config.md](dataset_config.md) — the dataset / `mesh_config` field reference.
+- [config/README.md](config/README.md) — the dataset / `mesh_config` field reference.

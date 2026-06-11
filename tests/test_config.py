@@ -2,17 +2,14 @@ from pipeline import config
 
 
 def test_load_defaults_and_bigtable_injection(tmp_path):
-    yml = tmp_path / "pipeline.yml"
-    yml.write_text("""
+    (tmp_path / "pipeline.yml").write_text("""
 graph_id: g
 images: {pcg: repo/pcg:tag}
 bigtable: {project: proj, instance: inst}
 secret_files: {google-secret.json: projA/g.json}
-dataset:
-  backend_client:
-    CONFIG: {ADMIN: true}
 """)
-    cfg = config.load(str(yml))
+    (tmp_path / "dataset.yml").write_text("backend_client:\n  CONFIG: {ADMIN: true}\n")
+    cfg = config.load(str(tmp_path))
     assert cfg.graph_id == "g"
     assert cfg.namespace == "default"  # default
     assert cfg.workload == "ingest"  # default
@@ -25,9 +22,8 @@ dataset:
 
 
 def test_bigtable_not_injected_when_absent(tmp_path):
-    yml = tmp_path / "pipeline.yml"
-    yml.write_text("graph_id: g\nimages: {pcg: x:1}\ndataset: {}\n")
-    cfg = config.load(str(yml))
+    (tmp_path / "pipeline.yml").write_text("graph_id: g\nimages: {pcg: x:1}\n")
+    cfg = config.load(str(tmp_path))
     assert "backend_client" not in cfg.dataset
 
 

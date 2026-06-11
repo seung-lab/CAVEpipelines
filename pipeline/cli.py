@@ -7,6 +7,7 @@ next (a layer's writes are non-idempotent).
 """
 
 import argparse
+import logging
 import subprocess
 import tempfile
 import time
@@ -19,6 +20,15 @@ from rich.table import Table
 from . import config, kube, manifest, util
 
 HELM_CHART = "helm"
+
+# One level above INFO so the CLI's own messages show but libraries' INFO logs do not.
+NOTE = logging.INFO + 5
+logging.addLevelName(NOTE, "NOTE")
+log = logging.getLogger("pipeline")
+
+
+def note(msg):
+    log.log(NOTE, msg)
 
 
 def deploy(cfg, args):
@@ -44,7 +54,7 @@ def deploy(cfg, args):
     applied = kube.apply_secret(
         cfg.namespace, cfg.secret_name, args.secrets, cfg.secret_files
     )
-    print(
+    note(
         f"deployed static infra in ns '{cfg.namespace}'; "
         + (
             f"secret '{cfg.secret_name}' <- {applied}"
@@ -62,13 +72,13 @@ def setup(cfg, args):
         argv = ["python", "-m", "pychunkedgraph.pipeline.ingest.setup", cfg.graph_id]
         if args.raw:
             argv.append("--raw")
-    print(util.run_pcg(cfg, "setup", argv))
+    note(util.run_pcg(cfg, "setup", argv))
 
 
 def mesh_meta(cfg, args):
     """Write mesh metadata once (after ingest reaches root); needs `mesh_config:` in the dataset."""
     argv = ["python", "-m", "pychunkedgraph.pipeline.meshing.setup", cfg.graph_id]
-    print(util.run_pcg(cfg, "mesh-meta", argv))
+    note(util.run_pcg(cfg, "mesh-meta", argv))
 
 
 def submit(cfg, args):
@@ -80,21 +90,24 @@ def submit(cfg, args):
     spec = manifest.job_spec(cfg, args.layer, n, completions, parallelism)
     name = spec.metadata.name
     kube.recreate_job(cfg.namespace, spec)
-    print(f"{name}: N={n} completions={completions} parallelism={parallelism}->{pmax}")
+    note(
+        f"{name}: {n} chunks / batch {cfg.job.batch_size} = {completions} tasks; "
+        f"workers {parallelism}->{pmax} (ramp.max {cfg.ramp.max})"
+    )
     p = parallelism
     while p < pmax:
         time.sleep(cfg.ramp.period)
         p = min(p * cfg.ramp.factor, pmax)
         kube.set_parallelism(cfg.namespace, name, p)
-        print(f"  parallelism -> {p}/{pmax}")
-    print("at full parallelism; watch with `pipeline status`")
+        note(f"  parallelism -> {p}/{pmax}")
+    note("at full parallelism; watch with `pipeline status`")
 
 
 def scale(cfg, args):
     """Resize the running layer's workers: set its Indexed Job parallelism."""
     name = manifest.job_name(cfg, args.layer)
     kube.set_parallelism(cfg.namespace, name, args.parallelism)
-    print(f"{name}: parallelism -> {args.parallelism}")
+    note(f"{name}: parallelism -> {args.parallelism}")
 
 
 def sample(cfg, args):
@@ -105,7 +118,7 @@ def sample(cfg, args):
     )
     name = spec.metadata.name
     kube.recreate_job(cfg.namespace, spec)
-    print(f"{name}: running {count} sample chunks; size with `pipeline top {args.layer}`")
+    note(f"{name}: running {count} sample chunks; size with `pipeline top {args.layer}`")
 
 
 def inspect(cfg, args):
@@ -113,8 +126,8 @@ def inspect(cfg, args):
     name = manifest.job_name(cfg, args.layer)
     if args.index is None:
         s = kube.batch().read_namespaced_job(name, cfg.namespace).status
-        print(f"{name}: succeeded={s.succeeded} active={s.active} failed={s.failed}")
-        print(f"failed indexes: {getattr(s, 'failed_indexes', None) or 'none'}")
+        note(f"{name}: succeeded={s.succeeded} active={s.active} failed={s.failed}")
+        note(f"failed indexes: {getattr(s, 'failed_indexes', None) or 'none'}")
         return
     pods_ = (
         kube.core()
@@ -126,18 +139,18 @@ def inspect(cfg, args):
         .items
     )
     if not pods_:
-        print(f"no pod for index {args.index} of {name}")
+        note(f"no pod for index {args.index} of {name}")
         return
     for pod in pods_:
-        print(f"== {pod.metadata.name} ({pod.status.phase}) ==")
+        note(f"== {pod.metadata.name} ({pod.status.phase}) ==")
         try:
-            print(
+            note(
                 kube.core().read_namespaced_pod_log(
                     pod.metadata.name, cfg.namespace, tail_lines=40
                 )
             )
         except Exception as exc:  # noqa: BLE001 - best-effort log fetch
-            print(exc)
+            note(exc)
 
 
 def pods(cfg, args):
@@ -177,7 +190,7 @@ def events(cfg, args):
     name = manifest.job_name(cfg, args.layer)
     for e in kube.job_events(cfg.namespace, name):
         when = e.last_timestamp or e.event_time or e.metadata.creation_timestamp
-        print(
+        note(
             f"{when:%H:%M:%S} {e.type:7} {e.reason:22} "
             f"{e.involved_object.kind}/{e.involved_object.name}: {e.message}"
         )
@@ -187,7 +200,7 @@ def delete(cfg, args):
     """Delete the layer's Job and its pods."""
     name = manifest.job_name(cfg, args.layer)
     kube.delete_job(cfg.namespace, name)
-    print(f"deleting {name}")
+    note(f"deleting {name}")
 
 
 def top(cfg, args):
@@ -195,7 +208,7 @@ def top(cfg, args):
     name = manifest.job_name(cfg, args.layer)
     items = kube.pod_metrics(cfg.namespace, name)
     if not items:
-        print("no metrics (metrics-server unavailable, or no running pods)")
+        note("no metrics (metrics-server unavailable, or no running pods)")
         return
     table = Table(title=f"{name} usage")
     for col in ("pod", "cpu", "memory"):
@@ -224,12 +237,13 @@ def status(cfg, args):
 
 
 def main(argv=None):
+    logging.basicConfig(level=NOTE, format="%(message)s")
     p = argparse.ArgumentParser(prog="pipeline", description=__doc__)
     p.add_argument(
         "-c",
         "--config",
-        default="pipeline.yml",
-        help="config file (default: pipeline.yml)",
+        default="config",
+        help="config dir with pipeline.yml + dataset.yml (default: config)",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -301,7 +315,3 @@ def main(argv=None):
 
     args = p.parse_args(argv)
     args.fn(config.load(args.config), args)
-
-
-if __name__ == "__main__":
-    main()

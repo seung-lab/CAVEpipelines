@@ -2,7 +2,8 @@
 *.json
 mesh*.yaml
 secrets/
-pipeline.yml
+config/pipeline.yml
+config/dataset.yml
 
 # python
 .venv/

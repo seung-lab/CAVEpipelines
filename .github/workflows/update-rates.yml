@@ -1,0 +1,30 @@
+name: update-rates
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"  # weekly, Monday 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - run: python -m pipeline.rates
+        env:
+          GCP_BILLING_API_KEY: ${{ secrets.GCP_BILLING_API_KEY }}
+      - uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "chore(rates): refresh GKE Autopilot rates from Catalog API"
+          title: "chore(rates): refresh GKE Autopilot rates"
+          body: Automated refresh of pipeline/rates.csv from the Cloud Billing Catalog API.
+          branch: update-rates
+          add-paths: pipeline/rates.csv

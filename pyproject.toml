@@ -22,6 +22,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = ["pipeline"]
 
+[tool.setuptools.package-data]
+pipeline = ["rates.csv"]
+
 [tool.black]
 line-length = 90
 

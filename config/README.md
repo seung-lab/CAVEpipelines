@@ -31,6 +31,8 @@ from `pipeline.yml`'s `bigtable:`.
 | `workload_identity.service_account` | KSA bound to the worker GSA |
 | `workload_identity.gsa_email` | the worker GSA (terraform output `worker_service_account`) |
 | `bigtable.project` / `bigtable.instance` | Bigtable target; also injected into `dataset.yml`'s `backend_client` |
+| `region` | GKE region — selects the cost rate row in `rates.csv` (required for cost estimates) |
+| `zone` | optional: pin worker pods to one zone (e.g. Bigtable's) for lower latency — trades Spot capacity |
 | `job.*` | per-layer sizing: `perm_seed`, `batch_size`, `n_threads`, `cpu`, `memory`, `compute_class`, `backoff_limit_per_index`, `max_failed_indexes` |
 | `ramp.*` | parallelism ramp: `start`, `factor`, `period` (s), `max` |
 | `env` | extra env on every worker + setup pod (below) |
@@ -43,6 +45,14 @@ plumbing — whatever the workload's code reads from the environment:
 
 - `BIGTABLE_PROJECT`, `BIGTABLE_INSTANCE` — **required**; the PCG image connects to Bigtable through them.
 - migration tuning (`migrate` / `migrate_cleanup`): `TASK_SIZE`, `PROCESS_MULTIPLIER`, `PARENT_CACHE_LIMIT`, `MAX_CHEBYSHEV_DISTANCE`.
+
+### Cost
+
+`pipeline costs <layer>` (and the `cost` column + final total in `pipeline status`) estimate the
+Autopilot **Spot** spend = pod requests x runtime x the `region` rate from `rates.csv` (refreshed by
+the `update-rates` workflow). It is an estimate (requests-based), never the invoice, and never fatal —
+any failure shows as a warning or `err`. Needs `region:` set; node-based compute classes
+(`Performance` / GPU) bill per VM and are not priced.
 
 ### Tuning per dataset
 

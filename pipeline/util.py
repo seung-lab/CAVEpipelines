@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from rich.table import Table
 
-from . import kube, manifest
+from . import costs, kube, manifest
 
 _N_CODE = """
 import numpy as np
@@ -70,8 +70,10 @@ def status_table(cfg) -> Table:
         title=f"{cfg.workload} · {cfg.graph_id} · {nodes}",
         caption="active−ready ≈ pods waiting on Autopilot nodes / spot capacity",
     )
-    for col in ("layer", "done", "total", "%", "active", "ready", "failed", "elapsed"):
+    cols = ("layer", "done", "total", "%", "active", "ready", "failed", "elapsed", "cost")
+    for col in cols:
         table.add_column(col, justify="right")
+    rate = costs.rate_for(cfg.region)
     for job in jobs:
         s = job.status
         ann = job.metadata.annotations or {}
@@ -81,6 +83,10 @@ def status_table(cfg) -> Table:
         pct = 100 * done // total if total else 0
         color = {"complete": "green", "failed": "red"}.get(job_state(job))
         failed = s.failed or 0
+        cost_cell = "-"
+        if rate:
+            est = costs.estimate_job_cost(job, [], rate)
+            cost_cell = f"${est['total']:.2f}" if "total" in est else "err"
         table.add_row(
             (job.metadata.labels or {}).get("layer", "?"),
             str(done) if total else "-",
@@ -90,5 +96,6 @@ def status_table(cfg) -> Table:
             str(getattr(s, "ready", None) or 0),
             f"[red]{failed}[/]" if failed else "0",
             elapsed(job),
+            cost_cell,
         )
     return table

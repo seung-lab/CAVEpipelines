@@ -68,6 +68,10 @@ class Config:
     secret_files: dict = field(default_factory=dict)
     commands: dict = field(default_factory=dict)
     env: dict = field(default_factory=dict)
+    region: str = (
+        ""  # GKE region; selects the cost rate row (no default — set per cluster)
+    )
+    zone: str = ""  # optional: pin worker pods to one zone (topology.kubernetes.io/zone)
 
     def image(self) -> str:
         return self.images.l2cache if self.workload == "l2cache" else self.images.pcg
@@ -93,6 +97,8 @@ def load(config_dir: str = "config") -> Config:
         secret_files=raw.get("secret_files", {}),
         commands=raw.get("commands", {}),
         env=raw.get("env", {}),
+        region=raw.get("region", ""),
+        zone=raw.get("zone", ""),
     )
 
 

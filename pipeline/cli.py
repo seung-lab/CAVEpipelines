@@ -17,7 +17,7 @@ from rich.console import Console
 from rich.live import Live
 from rich.table import Table
 
-from . import config, kube, manifest, util
+from . import config, costs, kube, manifest, util
 
 HELM_CHART = "helm"
 
@@ -101,6 +101,18 @@ def submit(cfg, args):
         kube.set_parallelism(cfg.namespace, name, p)
         note(f"  parallelism -> {p}/{pmax}")
     note("at full parallelism; watch with `pipeline status`")
+    rate = costs.rate_for(cfg.region)
+    if rate:
+        try:
+            burn = (
+                costs.parse_cpu(cfg.job.cpu) * rate["cpu_spot"]
+                + costs.parse_mem(cfg.job.memory) * rate["mem_spot"]
+            )
+            note(
+                f"~${burn:.4f}/pod-hr spot; `pipeline costs {args.layer}` for the running total"
+            )
+        except Exception:  # noqa: BLE001 - cost is auxiliary, never fatal
+            pass
 
 
 def scale(cfg, args):
@@ -233,7 +245,37 @@ def status(cfg, args):
                     break
                 time.sleep(args.interval)
     except KeyboardInterrupt:
-        pass
+        return
+    rate = costs.rate_for(cfg.region)
+    if rate:
+        try:
+            total = sum(
+                costs.estimate_job_cost(
+                    job, kube.pods_of(cfg.namespace, job.metadata.name), rate
+                ).get("total", 0.0)
+                for job in kube.list_jobs(cfg.namespace, cfg.workload)
+            )
+            note(f"workload complete · estimated cost ~${total:.2f}")
+        except Exception as exc:  # noqa: BLE001 - cost is auxiliary, never fatal
+            note(f"final cost unavailable: {exc}")
+
+
+def show_costs(cfg, args):
+    """Estimate a layer's Autopilot spot cost from pod requests x runtime."""
+    rate = costs.rate_for(cfg.region)
+    if rate is None:
+        note(
+            f"no cost rate for region '{cfg.region}'; set `region:` in config/pipeline.yml "
+            f"or run `python -m pipeline.rates`"
+        )
+        return
+    name = manifest.job_name(cfg, args.layer)
+    try:
+        job = kube.batch().read_namespaced_job(name, cfg.namespace)
+        est = costs.estimate_job_cost(job, kube.pods_of(cfg.namespace, name), rate)
+        note(f"{name}: {costs.format_cost(est)}")
+    except Exception as exc:  # noqa: BLE001 - cost is auxiliary, never fatal
+        note(f"cost unavailable: {exc}")
 
 
 def main(argv=None):
@@ -308,6 +350,7 @@ def main(argv=None):
         ("events", events, "show the layer's Job + pod events"),
         ("top", top, "per-pod CPU/memory usage (needs metrics-server)"),
         ("delete", delete, "delete the layer's Job and pods"),
+        ("costs", show_costs, "estimate the layer's spot cost (pod requests x runtime)"),
     ):
         sp = sub.add_parser(cmd, help=helptext)
         sp.add_argument("layer", type=int)

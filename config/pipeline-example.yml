@@ -19,6 +19,9 @@ bigtable:
   project: PROJECT
   instance: INSTANCE
 
+region: us-east1
+zone: ""
+
 job:
   perm_seed: 42
   batch_size: 1000

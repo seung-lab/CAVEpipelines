@@ -71,6 +71,15 @@ def test_env_injected_into_job_and_oneshot(cfg):
     assert pod_env["TASK_SIZE"] == "1"
 
 
+def test_zone_pins_worker_pods(cfg):
+    cfg.zone = "us-east1-b"
+    ns = manifest.job_spec(cfg, 2, 100, 1, 1).spec.template.spec.node_selector
+    assert ns["topology.kubernetes.io/zone"] == "us-east1-b"
+    cfg.zone = ""
+    ns = manifest.job_spec(cfg, 2, 100, 1, 1).spec.template.spec.node_selector
+    assert "topology.kubernetes.io/zone" not in ns
+
+
 def test_mesh_meta_runs_pipeline_meshing_setup(monkeypatch, cfg):
     seen = _capture_run_pcg(monkeypatch)
     cli.mesh_meta(cfg, SimpleNamespace())

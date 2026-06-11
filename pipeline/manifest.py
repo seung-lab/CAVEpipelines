@@ -84,6 +84,9 @@ def job_spec(
     node_selector = dict(SPOT_SELECTOR)
     if cfg.job.compute_class:
         node_selector["cloud.google.com/compute-class"] = cfg.job.compute_class
+    # optional: co-locate workers in one zone (e.g. Bigtable's) for lower latency
+    if cfg.zone:
+        node_selector["topology.kubernetes.io/zone"] = cfg.zone
 
     container = client.V1Container(
         name=cfg.workload,

@@ -61,11 +61,13 @@ def test_setup_runs_migrate_setup_for_migrate_workload(monkeypatch, cfg):
 
 
 def test_env_injected_into_job_and_oneshot(cfg):
-    cfg.env = {"TASK_SIZE": "1", "PROCESS_MULTIPLIER": "5"}
+    cfg.env = {"TASK_SIZE": "1", "PROCESS_MULTIPLIER": "5", "BIGTABLE_PROJECT": None}
     job = manifest.job_spec(cfg, layer=2, chunks=100, completions=1, parallelism=1)
     job_env = {e.name: e.value for e in job.spec.template.spec.containers[0].env}
     assert job_env["TASK_SIZE"] == "1" and job_env["PROCESS_MULTIPLIER"] == "5"
     assert job_env["PCG_GRAPH_ID"] == cfg.graph_id  # alongside the built-in PCG_* vars
+    # unset keys must be skipped, not injected as "None" (would override the ConfigMap)
+    assert "BIGTABLE_PROJECT" not in job_env
     pod = manifest.oneshot_pod_spec(cfg, "u", ["python", "-c", "pass"])
     pod_env = {e.name: e.value for e in pod.spec.containers[0].env}
     assert pod_env["TASK_SIZE"] == "1"

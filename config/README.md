@@ -43,8 +43,10 @@ from `pipeline.yml`'s `bigtable:`.
 Arbitrary env injected into every worker and setup pod, on top of the built-in `PCG_*`
 plumbing — whatever the workload's code reads from the environment:
 
-- `BIGTABLE_PROJECT`, `BIGTABLE_INSTANCE` — **required**; the PCG image connects to Bigtable through them.
 - migration tuning (`migrate` / `migrate_cleanup`): `TASK_SIZE`, `PROCESS_MULTIPLIER`, `PARENT_CACHE_LIMIT`, `MAX_CHEBYSHEV_DISTANCE`.
+
+`BIGTABLE_PROJECT` / `BIGTABLE_INSTANCE` are set automatically on every pod from `bigtable:` —
+don't list them here. Unset keys are skipped (a per-pod env entry overrides the ConfigMap).
 
 ### Cost
 

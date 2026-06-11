@@ -7,9 +7,11 @@ graph_id: g
 images: {pcg: repo/pcg:tag}
 bigtable: {project: proj, instance: inst}
 secret_files: {google-secret.json: projA/g.json}
+env:
 """)
     (tmp_path / "dataset.yml").write_text("backend_client:\n  CONFIG: {ADMIN: true}\n")
     cfg = config.load(str(tmp_path))
+    assert cfg.env == {}  # bare `env:` parses to None; load normalizes it
     assert cfg.graph_id == "g"
     assert cfg.namespace == "default"  # default
     assert cfg.workload == "ingest"  # default

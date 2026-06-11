@@ -60,8 +60,14 @@ def _env_from():
 
 
 def _extra_env(cfg):
-    """Operator env from pipeline.yml ``env:`` — injected into worker + util containers."""
-    return [client.V1EnvVar(name=k, value=str(v)) for k, v in cfg.env.items()]
+    """Operator env from pipeline.yml ``env:`` — injected into worker + util containers.
+    Unset keys are skipped: container env overrides the ConfigMap, so injecting an
+    empty value would clobber vars published there (e.g. BIGTABLE_*)."""
+    return [
+        client.V1EnvVar(name=k, value=str(v))
+        for k, v in cfg.env.items()
+        if v is not None and v != ""
+    ]
 
 
 def job_spec(

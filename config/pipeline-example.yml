@@ -38,9 +38,10 @@ ramp:
   period: 60
   max: 1024
 
+# extra env on every worker + setup pod (BIGTABLE_* is set automatically from bigtable:)
 env:
-  BIGTABLE_PROJECT:
-  BIGTABLE_INSTANCE:
+  # TASK_SIZE: "1"
+  # PROCESS_MULTIPLIER: "5"
 
 commands:
   l2cache: ["python", "-m", "pcgl2cache.batch"]

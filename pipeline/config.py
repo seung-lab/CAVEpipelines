@@ -96,7 +96,7 @@ def load(config_dir: str = "config") -> Config:
         persistent_util=raw.get("persistent_util", True),
         secret_files=raw.get("secret_files", {}),
         commands=raw.get("commands", {}),
-        env=raw.get("env", {}),
+        env=raw.get("env") or {},  # `env:` left empty in yaml parses to None
         region=raw.get("region", ""),
         zone=raw.get("zone", ""),
     )

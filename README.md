@@ -226,6 +226,29 @@ instead of hammering a single Bigtable row.
   `pipeline.yml` and re-`submit` the layer (recreates the Job) — done chunks are skipped (ingest
   markers; migrate/meshing/l2cache idempotent), so it resumes rather than restarts.
 
+## Cost-effective compute
+
+Autopilot bills pod **requests** (not usage) per second; Spot Pods are 60–91% off. The pipeline
+defaults already capture the big levers — operators mainly right-size requests and keep the default
+compute class.
+
+- **Spot** (default) — 60–91% off; every worker Job runs on Spot.
+- **Default (general-purpose) compute class** — the cheapest pod-based class; `Balanced` (~+45%) and
+  `Scale-Out` (~+26%) cost more per vCPU/GiB. Leave `compute_class: ""` unless a layer truly needs
+  the extra capacity or higher per-pod limits.
+- **Right-size `job.cpu` / `job.memory`** per layer — you pay for what you request. Measure with
+  `pipeline sample <layer> <n>` then `pipeline top <layer>`, and set requests just above the real
+  peak. Keep each pod **≥ 250m CPU / 512Mi** and within a **1:1–1:6.5 cpu:mem ratio**, or Autopilot
+  rounds the smaller resource up and bills it.
+- **Scale to zero between layers** — `persistent_util: false` runs setup/meta in a one-shot pod, so
+  the cluster idles at zero nodes when no Job is running (no pods = no compute cost).
+- **Region** — us-central1/us-east1/us-west1 are the cheapest tier; other regions run ~10–30% more.
+- **Cluster fee** — flat $0.10/hr/cluster (~$74/mo). A $74.40/mo free-tier credit covers exactly
+  one Autopilot/zonal cluster **per billing account** (not per project) — if another cluster under
+  the same billing account already consumes it, this cluster's fee applies in full.
+
+`pipeline costs <layer>` reports the actual Spot spend, so you can see the effect of each change.
+
 ## Debugging failures
 
 When a layer shows `failed > 0` (or a red `%` — the Job gave up), trace it from the

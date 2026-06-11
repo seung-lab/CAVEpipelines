@@ -49,10 +49,11 @@ plumbing — whatever the workload's code reads from the environment:
 ### Cost
 
 `pipeline costs <layer>` (and the `cost` column + final total in `pipeline status`) estimate the
-Autopilot **Spot** spend = pod requests x runtime x the `region` rate from `rates.csv` (refreshed by
-the `update-rates` workflow). It is an estimate (requests-based), never the invoice, and never fatal —
-any failure shows as a warning or `err`. Needs `region:` set; node-based compute classes
-(`Performance` / GPU) bill per VM and are not priced.
+Autopilot **Spot** spend = pod requests x runtime x the (`region`, compute class) rate from
+`rates.csv` (refreshed by the `update-rates` workflow; pod-based classes — general-purpose /
+Balanced / Scale-Out — are priced separately). It is an estimate (requests-based), never the
+invoice, and never fatal — any failure shows as a warning or `err`. Needs `region:` set;
+node-based compute classes (`Performance` / GPU) bill per VM and are not priced.
 
 ### Tuning per dataset
 

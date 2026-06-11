@@ -101,7 +101,7 @@ def submit(cfg, args):
         kube.set_parallelism(cfg.namespace, name, p)
         note(f"  parallelism -> {p}/{pmax}")
     note("at full parallelism; watch with `pipeline status`")
-    rate = costs.rate_for(cfg.region)
+    rate = costs.rate_for(costs.load_table(), cfg.region, cfg.job.compute_class)
     if rate:
         try:
             burn = (
@@ -246,12 +246,12 @@ def status(cfg, args):
                 time.sleep(args.interval)
     except KeyboardInterrupt:
         return
-    rate = costs.rate_for(cfg.region)
-    if rate:
+    table = costs.load_table()
+    if cfg.region and table:
         try:
             total = sum(
                 costs.estimate_job_cost(
-                    job, kube.pods_of(cfg.namespace, job.metadata.name), rate
+                    job, kube.pods_of(cfg.namespace, job.metadata.name), table, cfg.region
                 ).get("total", 0.0)
                 for job in kube.list_jobs(cfg.namespace, cfg.workload)
             )
@@ -262,17 +262,19 @@ def status(cfg, args):
 
 def show_costs(cfg, args):
     """Estimate a layer's Autopilot spot cost from pod requests x runtime."""
-    rate = costs.rate_for(cfg.region)
-    if rate is None:
+    table = costs.load_table()
+    if not cfg.region or not table:
         note(
-            f"no cost rate for region '{cfg.region}'; set `region:` in config/pipeline.yml "
+            f"no cost rates (region '{cfg.region}'); set `region:` in config/pipeline.yml "
             f"or run `python -m pipeline.rates`"
         )
         return
     name = manifest.job_name(cfg, args.layer)
     try:
         job = kube.batch().read_namespaced_job(name, cfg.namespace)
-        est = costs.estimate_job_cost(job, kube.pods_of(cfg.namespace, name), rate)
+        est = costs.estimate_job_cost(
+            job, kube.pods_of(cfg.namespace, name), table, cfg.region
+        )
         note(f"{name}: {costs.format_cost(est)}")
     except Exception as exc:  # noqa: BLE001 - cost is auxiliary, never fatal
         note(f"cost unavailable: {exc}")

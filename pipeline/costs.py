@@ -1,17 +1,16 @@
 """Estimate GKE Autopilot Spot cluster cost for a layer from pod requests x runtime.
 
-Autopilot bills pod resource *requests* (not usage) per second; for the pod-based compute
-classes (default / Balanced / Scale-Out) the node machine type is irrelevant, so summing
-requests x lifetime x rate is structurally exact. Node-based classes (Performance / GPU)
-bill per VM and are not estimated here. This is an estimate, not the invoice.
+Autopilot bills pod resource *requests* (not usage) per second; for pod-based compute classes
+(general-purpose / Balanced / Scale-Out) the node machine type is irrelevant, so requests x lifetime
+x the class rate is structurally exact. Node-based classes (Performance / GPU) bill per VM and are
+absent from the rate table, so they aren't priced. This is an estimate, not the invoice.
 """
 
 from datetime import datetime, timezone
 
 from . import rates
 
-# Compute classes billed per pod-request (general-purpose). Anything else is node-based.
-POD_BASED_CLASSES = {"", "Balanced", "Scale-Out"}
+_GENERAL = "general-purpose"  # GKE default compute class (empty compute_class maps here)
 _CLASS_KEY = "cloud.google.com/compute-class"
 _MEM_UNITS = {
     "Ki": 2**10,
@@ -40,14 +39,17 @@ def parse_mem(value) -> float:
     return float(text) / 2**30  # bare bytes
 
 
-def rate_for(region: str):
-    """Rate dict for the region, or None when unset/absent/unreadable — never raises."""
-    if not region:
-        return None
+def load_table() -> dict:
+    """Per-(region, class) rate table; {} on any failure (cost is auxiliary, never fatal)."""
     try:
-        return rates.load().get(region)
+        return rates.load()
     except Exception:  # noqa: BLE001 - cost is auxiliary, never fatal
-        return None
+        return {}
+
+
+def rate_for(table: dict, region: str, compute_class: str):
+    """Rate dict for (region, compute_class), or None. Empty class -> general-purpose."""
+    return table.get(region, {}).get(compute_class or _GENERAL)
 
 
 def _container_requests(job):
@@ -84,13 +86,15 @@ def _pod_hours(pods) -> float:
     return total
 
 
-def estimate_job_cost(job, pods, rate: dict, *, spot: bool = True) -> dict:
-    """Cost estimate for one layer Job — never raises; returns {error} on any failure."""
+def estimate_job_cost(job, pods, table: dict, region: str, *, spot: bool = True) -> dict:
+    """Cost estimate for one layer Job — never raises; {error} for node-based/missing rates."""
     try:
         cls = _compute_class(job)
-        if cls not in POD_BASED_CLASSES:
+        rate = rate_for(table, region, cls)
+        if rate is None:
             return {
-                "error": f"compute-class '{cls}' bills per VM (node-based); not estimated"
+                "error": f"no rate for class '{cls or _GENERAL}' in region '{region}' "
+                f"(node-based class or region missing)"
             }
         cpu, mem = _container_requests(job)
         wall = _wall_hours(job)

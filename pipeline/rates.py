@@ -1,10 +1,9 @@
-"""GKE Autopilot per-region rate table, read offline from rates.csv.
+"""GKE Autopilot per-(region, compute-class) rate table, read offline from rates.csv.
 
-rates.csv is the source of truth; the committed values are a us-central1 baseline bootstrap.
-Regenerate the real per-region rates from the public Cloud Billing Catalog API via CI
-(.github/workflows/update-rates.yml) or `python -m pipeline.rates` (needs GCP_BILLING_API_KEY).
-Rates cover the pod-based compute classes (default / Balanced / Scale-Out share one
-general-purpose rate); node-based classes (Performance / GPU) bill per VM and are not priced here.
+rates.csv is the source of truth, generated from the public Cloud Billing Catalog API —
+refreshed by CI (.github/workflows/update-rates.yml) or `python -m pipeline.rates`
+(needs GCP_BILLING_API_KEY). Pod-based classes (general-purpose / Balanced / Scale-Out)
+each have their own rate; node-based classes (Performance / GPU) bill per VM and are absent here.
 """
 
 import csv
@@ -26,12 +25,13 @@ _CLUSTER_FEE_HR = 0.10  # flat Autopilot cluster-management fee (published const
 
 
 def load() -> dict:
-    """{region: {cpu_on_demand, cpu_spot, mem_on_demand, mem_spot, cluster_fee_hr}} (floats)."""
+    """{region: {compute_class: {cpu_on_demand, cpu_spot, mem_on_demand, mem_spot, cluster_fee_hr}}}."""
+    table = {}
     with open(_CSV) as stream:
-        return {
-            row["region"]: {k: float(row[k]) for k in _RATE_FIELDS}
-            for row in csv.DictReader(stream)
-        }
+        for row in csv.DictReader(stream):
+            rates = {k: float(row[k]) for k in _RATE_FIELDS}
+            table.setdefault(row["region"], {})[row["compute_class"]] = rates
+    return table
 
 
 def _skus(api_key: str):
@@ -50,26 +50,46 @@ def _unit_price(sku) -> float:
     return int(tier.get("units", 0)) + tier.get("nanos", 0) / 1e9
 
 
+def _compute_class(desc: str):
+    """Map an Autopilot Pod SKU description to its compute class (None = not modeled)."""
+    if "Balanced" in desc:
+        return "Balanced"
+    if "Scale-Out" in desc:
+        return "Scale-Out"
+    if "Arm" in desc:
+        return None  # Arm Scale-Out not modeled (pipeline runs x86)
+    return "general-purpose"
+
+
 def fetch(api_key: str) -> dict:
-    """Per-region table from the Catalog API: Autopilot Pod {mCPU,Memory} Requests SKUs."""
-    table = {}
+    """Per-(region, class) table from the 'Autopilot [Class ][Spot ]Pod {mCPU,Memory} Requests' SKUs."""
+    raw = {}  # {region: {class: {field: price}}}
     for sku in _skus(api_key):
         desc = sku.get("description", "")
         if "Autopilot" not in desc or "Pod" not in desc or "Requests" not in desc:
             continue
-        spot = sku.get("category", {}).get("usageType") == "Preemptible"
         if "mCPU" in desc:
-            field = "cpu_spot" if spot else "cpu_on_demand"
-            price = _unit_price(sku) * 1000  # per mCPU-hour -> per vCPU-hour
+            dim, price = "cpu", _unit_price(sku) * 1000  # per mCPU-hour -> per vCPU-hour
         elif "Memory" in desc:
-            field = "mem_spot" if spot else "mem_on_demand"
-            price = _unit_price(sku)  # per GiB-hour
+            dim, price = "mem", _unit_price(sku)  # per GiB-hour
         else:
+            continue  # ephemeral storage etc.
+        cls = _compute_class(desc)
+        if cls is None:
             continue
+        spot = sku.get("category", {}).get("usageType") == "Preemptible"
+        field = f"{dim}_{'spot' if spot else 'on_demand'}"
         for region in sku.get("serviceRegions", []):
-            row = table.setdefault(region, {"cluster_fee_hr": _CLUSTER_FEE_HR})
-            row[field] = round(price, 6)
-    return {r: v for r, v in table.items() if len(v) == len(_RATE_FIELDS)}
+            row = raw.setdefault(region, {}).setdefault(
+                cls, {"cluster_fee_hr": _CLUSTER_FEE_HR}
+            )
+            row[field] = round(price, 8)
+    table = {}
+    for region, classes in raw.items():
+        for cls, row in classes.items():
+            if all(k in row for k in _RATE_FIELDS):
+                table.setdefault(region, {})[cls] = row
+    return table
 
 
 def main():
@@ -81,10 +101,13 @@ def main():
         sys.exit("no Autopilot pod SKUs returned")
     with open(_CSV, "w", newline="") as stream:
         writer = csv.writer(stream)
-        writer.writerow(["region"] + _RATE_FIELDS)
+        writer.writerow(["region", "compute_class"] + _RATE_FIELDS)
         for region in sorted(table):
-            writer.writerow([region] + [table[region][k] for k in _RATE_FIELDS])
-    print(f"wrote {len(table)} regions to {_CSV}")
+            for cls in sorted(table[region]):
+                writer.writerow(
+                    [region, cls] + [table[region][cls][k] for k in _RATE_FIELDS]
+                )
+    print(f"wrote {sum(len(v) for v in table.values())} rows ({len(table)} regions)")
 
 
 if __name__ == "__main__":

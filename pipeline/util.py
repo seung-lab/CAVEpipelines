@@ -73,7 +73,7 @@ def status_table(cfg) -> Table:
     cols = ("layer", "done", "total", "%", "active", "ready", "failed", "elapsed", "cost")
     for col in cols:
         table.add_column(col, justify="right")
-    rate = costs.rate_for(cfg.region)
+    rate_table = costs.load_table()
     for job in jobs:
         s = job.status
         ann = job.metadata.annotations or {}
@@ -84,8 +84,8 @@ def status_table(cfg) -> Table:
         color = {"complete": "green", "failed": "red"}.get(job_state(job))
         failed = s.failed or 0
         cost_cell = "-"
-        if rate:
-            est = costs.estimate_job_cost(job, [], rate)
+        if cfg.region and rate_table:
+            est = costs.estimate_job_cost(job, [], rate_table, cfg.region)
             cost_cell = f"${est['total']:.2f}" if "total" in est else "err"
         table.add_row(
             (job.metadata.labels or {}).get("layer", "?"),

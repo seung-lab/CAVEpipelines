@@ -9,6 +9,8 @@ from kubernetes import client, config as kube_config
 from kubernetes.client import ApiException
 from kubernetes.stream import stream
 
+from . import note
+
 
 def _load():
     try:
@@ -32,14 +34,41 @@ def custom():
     return client.CustomObjectsApi()
 
 
-def util_pod(namespace: str, selector: str = "app=pipeline-util") -> str:
-    pods = core().list_namespaced_pod(namespace, label_selector=selector).items
-    running = [p for p in pods if p.status.phase == "Running"]
-    if not running:
-        raise SystemExit(
-            f"no running pipeline-util pod in ns '{namespace}'; run `pipeline deploy` first"
+def util_pod(
+    namespace: str, selector: str = "app=pipeline-util", timeout: int = 600
+) -> str:
+    """Name of the running util pod; waits while it's Pending (Autopilot node spin-up)."""
+    c = core()
+    waiting = False
+    for _ in range(timeout // 2):
+        pods = c.list_namespaced_pod(namespace, label_selector=selector).items
+        running = [
+            p
+            for p in pods
+            if p.status.phase == "Running" and not p.metadata.deletion_timestamp
+        ]
+        if running:
+            return running[0].metadata.name
+        if not pods:
+            raise SystemExit(
+                f"no pipeline-util pod in ns '{namespace}'; run `pipeline deploy` first"
+            )
+        # terminating pods are phase Running but dying (e.g. mid helm rollout) — wait
+        transitional = any(
+            p.status.phase == "Pending" or p.metadata.deletion_timestamp for p in pods
         )
-    return running[0].metadata.name
+        if not transitional:
+            raise SystemExit(
+                f"pipeline-util pod is {pods[0].status.phase}; re-run `pipeline deploy`"
+            )
+        if not waiting:
+            note("waiting for util pod to start...")
+            waiting = True
+        time.sleep(2)
+    raise SystemExit(
+        f"util pod not running after {timeout}s; "
+        f"kubectl describe pod -n {namespace} -l app=pipeline-util"
+    )
 
 
 def list_jobs(namespace: str, workload: str = None):
@@ -51,24 +80,30 @@ def list_jobs(namespace: str, workload: str = None):
 def node_summary():
     """(total, spot, {instance_type: count}) for the cluster — Autopilot capacity."""
     labels = [n.metadata.labels or {} for n in core().list_node().items]
-    by_type = Counter(l.get("node.kubernetes.io/instance-type", "?") for l in labels)
-    spot = sum(1 for l in labels if l.get("cloud.google.com/gke-spot") == "true")
+    by_type = Counter(lbl.get("node.kubernetes.io/instance-type", "?") for lbl in labels)
+    spot = sum(1 for lbl in labels if lbl.get("cloud.google.com/gke-spot") == "true")
     return len(labels), spot, dict(by_type)
 
 
 def exec_cmd(namespace: str, pod: str, argv: list) -> str:
     """Run argv in the pod and return its stdout."""
-    return stream(
-        core().connect_get_namespaced_pod_exec,
-        pod,
-        namespace,
-        command=argv,
-        stderr=True,
-        stdout=True,
-        stdin=False,
-        tty=False,
-        _preload_content=True,
-    ).strip()
+    try:
+        return stream(
+            core().connect_get_namespaced_pod_exec,
+            pod,
+            namespace,
+            command=argv,
+            stderr=True,
+            stdout=True,
+            stdin=False,
+            tty=False,
+            _preload_content=True,
+        ).strip()
+    except ApiException as exc:
+        raise SystemExit(
+            f"exec into pod '{pod}' failed ({exc.status} {exc.reason}); "
+            f"the pod may have just restarted — retry"
+        )
 
 
 def secret_data(secrets_dir: str, mapping) -> dict:
@@ -134,6 +169,7 @@ def recreate_job(namespace: str, spec):
     b = batch()
     try:
         b.delete_namespaced_job(name, namespace, propagation_policy="Foreground")
+        note(f"replacing existing job '{name}' (waiting for delete)...")
         for _ in range(60):
             try:
                 b.read_namespaced_job(name, namespace)
@@ -170,6 +206,7 @@ def run_oneshot(namespace: str, pod_spec) -> str:
     name = pod_spec.metadata.name
     _delete_pod_if_exists(c, namespace, name)
     c.create_namespaced_pod(namespace, pod_spec)
+    note(f"one-shot pod '{name}' created; waiting for it to finish...")
     phase = "Pending"
     try:
         for _ in range(600):  # allow time for an Autopilot node to be provisioned
@@ -177,6 +214,11 @@ def run_oneshot(namespace: str, pod_spec) -> str:
             if phase in ("Succeeded", "Failed"):
                 break
             time.sleep(2)
+        if phase not in ("Succeeded", "Failed"):
+            raise SystemExit(
+                f"one-shot pod '{name}' still {phase} after 20m (deleting it); "
+                f"check capacity/quota: kubectl get events -n {namespace}"
+            )
         log = c.read_namespaced_pod_log(name, namespace)
         if phase != "Succeeded":
             raise SystemExit(f"{name} {phase}:\n{log}")

@@ -1,5 +1,8 @@
 from types import SimpleNamespace
 
+import pytest
+from kubernetes.client import ApiException
+
 from pipeline import cli, manifest
 
 
@@ -71,6 +74,25 @@ def test_env_injected_into_job_and_oneshot(cfg):
     pod = manifest.oneshot_pod_spec(cfg, "u", ["python", "-c", "pass"])
     pod_env = {e.name: e.value for e in pod.spec.containers[0].env}
     assert pod_env["TASK_SIZE"] == "1"
+
+
+def test_api_errors_exit_cleanly(monkeypatch, cfg):
+    monkeypatch.setattr(cli.config, "load", lambda path: cfg)
+
+    def boom(ns, workload=None):
+        raise ApiException(status=403, reason="Forbidden")
+
+    monkeypatch.setattr(cli.kube, "list_jobs", boom)
+    with pytest.raises(SystemExit, match="403"):
+        cli.main(["status"])
+
+
+def test_status_quiet_when_no_jobs(monkeypatch, cfg):
+    monkeypatch.setattr(cli.kube, "list_jobs", lambda ns, workload=None: [])
+    built = {}
+    monkeypatch.setattr(cli.util, "status_table", lambda c: built.setdefault("yes", True))
+    cli.status(cfg, SimpleNamespace(once=True))
+    assert not built  # no table rendered, just a note
 
 
 def test_undeploy_deletes_jobs_then_uninstalls_release(monkeypatch, cfg):

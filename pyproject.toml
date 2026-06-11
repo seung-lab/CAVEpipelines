@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["black", "pre-commit", "pytest"]
+dev = ["pre-commit", "pytest", "ruff"]
 
 [project.scripts]
 pipeline = "pipeline.cli:main"
@@ -25,7 +25,7 @@ packages = ["pipeline"]
 [tool.setuptools.package-data]
 pipeline = ["rates.csv"]
 
-[tool.black]
+[tool.ruff]
 line-length = 90
 
 [tool.pytest.ini_options]

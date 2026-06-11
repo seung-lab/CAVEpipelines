@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from rich.table import Table
 
-from . import costs, kube, manifest
+from . import costs, kube, manifest, note
 
 _N_CODE = """
 import numpy as np
@@ -22,7 +22,10 @@ def ceil_div(a, b):
 def run_pcg(cfg, name, argv):
     """Run a command in the PCG image: the persistent util pod, or a one-shot pod."""
     if cfg.persistent_util:
-        return kube.exec_cmd(cfg.namespace, kube.util_pod(cfg.namespace), argv)
+        pod = kube.util_pod(cfg.namespace)
+        note(f"{name}: running in util pod '{pod}'...")
+        return kube.exec_cmd(cfg.namespace, pod, argv)
+    note(f"{name}: running in a one-shot pod...")
     return kube.run_oneshot(cfg.namespace, manifest.oneshot_pod_spec(cfg, name, argv))
 
 
@@ -33,7 +36,14 @@ def read_n(cfg, layer):
         f"nread-l{layer}",
         ["python", "-c", _N_CODE.format(gid=cfg.graph_id, layer=layer)],
     )
-    return int(out.strip())
+    # last all-digit line = the count; anything else is import noise or a traceback
+    for line in reversed(out.splitlines()):
+        if line.strip().isdigit():
+            return int(line.strip())
+    raise SystemExit(
+        f"could not read the layer {layer} chunk count for '{cfg.graph_id}'; "
+        f"pod output:\n{out or '(empty — pod may be restarting; retry)'}"
+    )
 
 
 def job_state(job):

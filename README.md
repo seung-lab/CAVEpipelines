@@ -266,6 +266,8 @@ compute class.
 
 ## Debugging failures
 
+Any command accepts `-v` — debug logging, including every kubernetes API request.
+
 When a layer shows `failed > 0` (or a red `%` — the Job gave up), trace it from the
 batch index down to the offending chunk and its traceback:
 

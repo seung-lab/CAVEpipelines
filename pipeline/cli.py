@@ -12,46 +12,49 @@ import subprocess
 import tempfile
 import time
 
+import urllib3
 import yaml
+from kubernetes.client import ApiException
 from rich.console import Console
 from rich.live import Live
 from rich.table import Table
 
-from . import config, costs, kube, manifest, util
+from . import NOTE, config, costs, kube, manifest, note, util
 
 HELM_CHART = "helm"
-
-# One level above INFO so the CLI's own messages show but libraries' INFO logs do not.
-NOTE = logging.INFO + 5
-logging.addLevelName(NOTE, "NOTE")
-log = logging.getLogger("pipeline")
-
-
-def note(msg):
-    log.log(NOTE, msg)
 
 
 def deploy(cfg, args):
     """helm upgrade --install the static infra, incl. the Secret built from ./secrets."""
     data = kube.secret_data(args.secrets, cfg.secret_files)
+    note(
+        f"deploy -> ns '{cfg.namespace}': helm release 'pcg' "
+        f"(secret files: {list(data) or 'none'}, util pod: "
+        f"{'persistent' if cfg.persistent_util else 'one-shot'})"
+    )
     with tempfile.NamedTemporaryFile("w", suffix=".yaml") as f:
         yaml.safe_dump(manifest.helm_values(cfg, data), f)
         f.flush()
-        subprocess.run(
-            [
-                "helm",
-                "upgrade",
-                "--install",
-                "pcg",
-                HELM_CHART,
-                "-n",
-                cfg.namespace,
-                "--create-namespace",
-                "-f",
-                f.name,
-            ],
-            check=True,
-        )
+        try:
+            subprocess.run(
+                [
+                    "helm",
+                    "upgrade",
+                    "--install",
+                    "pcg",
+                    HELM_CHART,
+                    "-n",
+                    cfg.namespace,
+                    "--create-namespace",
+                    "-f",
+                    f.name,
+                ],
+                check=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise SystemExit(
+                f"helm upgrade failed (exit {exc.returncode}); see helm output above"
+            )
     note(
         f"deployed static infra in ns '{cfg.namespace}'; "
         + (
@@ -64,6 +67,7 @@ def deploy(cfg, args):
 
 def undeploy(cfg, args):
     """Tear down everything deploy/submit created: all pipeline Jobs, then the helm release."""
+    note(f"undeploy ns '{cfg.namespace}': deleting pipeline jobs + helm release 'pcg'")
     for job in kube.list_jobs(cfg.namespace):
         kube.delete_job(cfg.namespace, job.metadata.name)
         note(f"deleted job {job.metadata.name}")
@@ -81,27 +85,36 @@ def setup(cfg, args):
         argv = ["python", "-m", "pychunkedgraph.pipeline.ingest.setup", cfg.graph_id]
         if args.raw:
             argv.append("--raw")
-    note(util.run_pcg(cfg, "setup", argv))
+    note(
+        f"setup[{cfg.workload}] graph '{cfg.graph_id}' in ns '{cfg.namespace}': "
+        + " ".join(argv)
+    )
+    note(util.run_pcg(cfg, "setup", argv) or "setup done")
 
 
 def mesh_meta(cfg, args):
     """Write mesh metadata once (after ingest reaches root); needs `mesh_config:` in the dataset."""
     argv = ["python", "-m", "pychunkedgraph.pipeline.meshing.setup", cfg.graph_id]
-    note(util.run_pcg(cfg, "mesh-meta", argv))
+    note(f"mesh-meta graph '{cfg.graph_id}' in ns '{cfg.namespace}': " + " ".join(argv))
+    note(util.run_pcg(cfg, "mesh-meta", argv) or "mesh metadata written")
 
 
 def submit(cfg, args):
     """Create one layer's Indexed Job (completions from cg.meta) and ramp parallelism."""
+    note(f"submit layer {args.layer} [{cfg.workload}] graph '{cfg.graph_id}'")
     n = util.read_n(cfg, args.layer)
     completions = util.ceil_div(n, cfg.job.batch_size)
     pmax = min(cfg.ramp.max, completions)
     parallelism = min(cfg.ramp.start, pmax)
     spec = manifest.job_spec(cfg, args.layer, n, completions, parallelism)
     name = spec.metadata.name
-    kube.recreate_job(cfg.namespace, spec)
     note(
         f"{name}: {n} chunks / batch {cfg.job.batch_size} = {completions} tasks; "
         f"workers {parallelism}->{pmax} (ramp.max {cfg.ramp.max})"
+    )
+    kube.recreate_job(cfg.namespace, spec)
+    note(
+        f"{name}: job created; ramping parallelism x{cfg.ramp.factor} every {cfg.ramp.period}s"
     )
     p = parallelism
     while p < pmax:
@@ -138,8 +151,10 @@ def sample(cfg, args):
         cfg, args.layer, count, count, min(count, cfg.ramp.max), batch_size=1
     )
     name = spec.metadata.name
+    note(
+        f"{name}: launching {count} sample chunks; size with `pipeline top {args.layer}`"
+    )
     kube.recreate_job(cfg.namespace, spec)
-    note(f"{name}: running {count} sample chunks; size with `pipeline top {args.layer}`")
 
 
 def inspect(cfg, args):
@@ -220,7 +235,13 @@ def events(cfg, args):
 def delete(cfg, args):
     """Delete the layer's Job and its pods."""
     name = manifest.job_name(cfg, args.layer)
-    kube.delete_job(cfg.namespace, name)
+    try:
+        kube.delete_job(cfg.namespace, name)
+    except ApiException as exc:
+        if exc.status == 404:
+            note(f"no job '{name}' in ns '{cfg.namespace}'")
+            return
+        raise
     note(f"deleting {name}")
 
 
@@ -242,6 +263,9 @@ def top(cfg, args):
 
 def status(cfg, args):
     """Live per-layer progress table (the configured workload); Ctrl-C to stop."""
+    if not kube.list_jobs(cfg.namespace, cfg.workload):
+        note(f"no {cfg.workload} jobs in ns '{cfg.namespace}'")
+        return
     if args.once:
         Console().print(util.status_table(cfg))
         return
@@ -290,13 +314,18 @@ def show_costs(cfg, args):
 
 
 def main(argv=None):
-    logging.basicConfig(level=NOTE, format="%(message)s")
     p = argparse.ArgumentParser(prog="pipeline", description=__doc__)
     p.add_argument(
         "-c",
         "--config",
         default="config",
         help="config dir with pipeline.yml + dataset.yml (default: config)",
+    )
+    p.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="debug logging, incl. every kubernetes API request",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -373,4 +402,20 @@ def main(argv=None):
         sp.set_defaults(fn=handler)
 
     args = p.parse_args(argv)
-    args.fn(config.load(args.config), args)
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else NOTE, format="%(message)s"
+    )
+    try:
+        args.fn(config.load(args.config), args)
+    except ApiException as exc:
+        body = (exc.body or "").strip()
+        raise SystemExit(
+            f"kubernetes API error {exc.status} {exc.reason}"
+            + (f": {body[:300]}" if body else "")
+            + " — rerun with -v for the full exchange"
+        )
+    except urllib3.exceptions.HTTPError as exc:
+        raise SystemExit(
+            f"cannot reach the cluster: {exc} — check kubeconfig "
+            f"(terraform output kubernetes_cluster_context), rerun with -v"
+        )

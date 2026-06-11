@@ -5,7 +5,7 @@
 
 namespace: default
 graph_id: my_graph
-workload: ingest          # ingest | l2cache | meshing — one at a time
+workload: ingest          # ingest | l2cache | meshing | migrate | migrate_cleanup — one at a time
 persistent_util: true     # keep the (spot) util pod alive between layers; false = on-demand (idle 0 nodes)
 
 secret_files:             # {container_filename: local_path under ./secrets}; {} = Workload Identity only
@@ -65,6 +65,14 @@ ramp:                        # parallelism: start, x factor every period (s), up
   factor: 2
   period: 60
   max: 256
+
+# Extra env on every worker + setup pod (on top of the built-in PCG_* + bigtable).
+# Anything the workload's code reads from the env — e.g. migration upgrade tuning.
+# env:
+#   TASK_SIZE: "1"
+#   PROCESS_MULTIPLIER: "5"
+#   PARENT_CACHE_LIMIT: "1024"
+#   MAX_CHEBYSHEV_DISTANCE: "3"
 
 # l2cache batch entrypoint (in the PCGL2Cache repo); ingest + meshing are built in:
 # commands:

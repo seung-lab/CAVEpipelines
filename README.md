@@ -184,6 +184,30 @@ pipeline submit 2
 L2cache is a single-layer, idempotent overwrite (no per-chunk lock) into its own Bigtable cache
 table. The online L2Cache query frontend stays a normal Deployment, separate from this batch pass.
 
+## 7. Migration
+
+> **Safety**: migration rewrites the graph in place. Run it against a *copy* of the table first,
+> verify the result, and only then migrate the production table.
+
+Upgrade a pcgv2 graph to pcgv3 in place: recompute each chunk's cross-chunk edges, bottom-up.
+Idempotent (overwrites), no per-chunk lock. Two full passes over all layers — an optional cleanup
+that fixes corrupt nodes, then the upgrade itself — selected by `workload`:
+
+```shell
+pipeline setup                          # prep the existing table (version, column family, cache earliest_ts)
+
+# workload: migrate_cleanup  (optional) — fix corrupt nodes, every layer (L2 -> root)
+pipeline submit 2 ; pipeline submit 3 ; ... ; pipeline submit <root>
+
+# workload: migrate — the upgrade, every layer (L2 -> root)
+pipeline submit 2 ; pipeline submit 3 ; ... ; pipeline submit <root>
+```
+
+`migrate_cleanup` is the same worker run with `--clean`. Upgrade tuning comes from the `env:` block
+in `pipeline.yml` (`TASK_SIZE`, `PROCESS_MULTIPLIER`, `PARENT_CACHE_LIMIT`, `MAX_CHEBYSHEV_DISTANCE` —
+any env the upgrade code reads). `setup` caches `earliest_ts` into graph meta so workers read it once
+instead of hammering a single Bigtable row.
+
 ## How a layer behaves
 
 - **Spot preemption** is absorbed by the Job's pod failure policy (it doesn't spend
@@ -195,6 +219,11 @@ table. The online L2Cache query frontend stays a normal Deployment, separate fro
   burning retries; `pipeline inspect <layer>` lists the failed indexes, and
   `pipeline inspect <layer> <index>` prints that pod's log (chunk coords + traceback).
 - Re-running a layer (`pipeline submit` again) skips already-done chunks.
+- **Resizing mid-layer**: worker *count* is live — `pipeline scale <layer> <n>` patches the Job's
+  `parallelism` (the ramp does this automatically). Per-pod **resources** (`job.cpu`/`job.memory`)
+  are baked into the Job's pod template and immutable once it runs; to change them, edit
+  `pipeline.yml` and re-`submit` the layer (recreates the Job) — done chunks are skipped (ingest
+  markers; migrate/meshing/l2cache idempotent), so it resumes rather than restarts.
 
 ## Debugging failures
 

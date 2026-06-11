@@ -55,10 +55,13 @@ def deploy(cfg, args):
 
 
 def setup(cfg, args):
-    """Create the graph table + meta (in the util pod, or a one-shot pod)."""
-    argv = ["python", "-m", "pychunkedgraph.pipeline.ingest.setup", cfg.graph_id]
-    if args.raw:
-        argv.append("--raw")
+    """Prepare the graph for the workload: ingest creates the table; migrate preps it."""
+    if cfg.workload in ("migrate", "migrate_cleanup"):
+        argv = ["python", "-m", "pychunkedgraph.pipeline.migrate.setup", cfg.graph_id]
+    else:
+        argv = ["python", "-m", "pychunkedgraph.pipeline.ingest.setup", cfg.graph_id]
+        if args.raw:
+            argv.append("--raw")
     print(util.run_pcg(cfg, "setup", argv))
 
 

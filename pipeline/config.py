@@ -66,6 +66,7 @@ class Config:
     persistent_util: bool = True
     secret_files: dict = field(default_factory=dict)
     commands: dict = field(default_factory=dict)
+    env: dict = field(default_factory=dict)
 
     def image(self) -> str:
         return self.images.l2cache if self.workload == "l2cache" else self.images.pcg
@@ -90,6 +91,7 @@ def load(path: str = "pipeline.yml") -> Config:
         persistent_util=raw.get("persistent_util", True),
         secret_files=raw.get("secret_files", {}),
         commands=raw.get("commands", {}),
+        env=raw.get("env", {}),
     )
 
 

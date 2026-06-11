@@ -7,6 +7,7 @@ from . import config as cfgmod
 
 INGEST_COMMAND = ["python", "-m", "pychunkedgraph.pipeline.ingest"]
 MESHING_COMMAND = ["python", "-m", "pychunkedgraph.pipeline.meshing"]
+MIGRATE_COMMAND = ["python", "-m", "pychunkedgraph.pipeline.migrate"]
 SPOT_SELECTOR = {"cloud.google.com/gke-spot": "true"}
 SPOT_TOLERATION = {
     "key": "cloud.google.com/gke-spot",
@@ -26,6 +27,10 @@ def command_for(cfg):
         return INGEST_COMMAND
     if cfg.workload == "meshing":
         return MESHING_COMMAND
+    if cfg.workload == "migrate":
+        return MIGRATE_COMMAND
+    if cfg.workload == "migrate_cleanup":
+        return MIGRATE_COMMAND + ["--clean"]
     return cfg.commands.get(cfg.workload)  # l2cache entrypoint from pipeline.yml
 
 
@@ -52,6 +57,11 @@ def _env_from():
             config_map_ref=client.V1ConfigMapEnvSource(name=cfgmod.ENV_CONFIGMAP)
         )
     ]
+
+
+def _extra_env(cfg):
+    """Operator env from pipeline.yml ``env:`` — injected into worker + util containers."""
+    return [client.V1EnvVar(name=k, value=str(v)) for k, v in cfg.env.items()]
 
 
 def job_spec(
@@ -88,7 +98,8 @@ def job_spec(
                 ("PCG_BATCH_SIZE", str(batch_size)),
                 ("PCG_N_THREADS", str(cfg.job.n_threads)),
             )
-        ],
+        ]
+        + _extra_env(cfg),
         env_from=_env_from(),
         resources=client.V1ResourceRequirements(
             requests={"cpu": cfg.job.cpu, "memory": cfg.job.memory}
@@ -155,6 +166,7 @@ def oneshot_pod_spec(cfg, name: str, argv: list) -> client.V1Pod:
         name="util",
         image=cfg.images.pcg,
         command=argv,
+        env=_extra_env(cfg),
         env_from=_env_from(),
         resources=client.V1ResourceRequirements(requests=UTIL_REQUESTS),
         volume_mounts=[

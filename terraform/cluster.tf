@@ -15,6 +15,20 @@ resource "google_container_cluster" "cluster" {
     channel = "REGULAR" # >= 1.33: backoffLimitPerIndex / podFailurePolicy:FailIndex are GA
   }
 
+  # System logs only — by default GKE also ships every pod's stdout to Cloud Logging
+  # (~$0.50/GiB past the free tier), pointless at thousands of chunk pods.
+  # `kubectl logs` / `pipeline inspect` read from the kubelet and are unaffected.
+  logging_config {
+    enable_components = ["SYSTEM_COMPONENTS"]
+  }
+
+  # Metrics at the Autopilot-mandated minimum (system metrics can't be disabled, no
+  # optional packages). Managed Prometheus is always-on for Autopilot but only bills
+  # samples scraped via PodMonitoring resources — none are defined, so it idles free.
+  monitoring_config {
+    enable_components = ["SYSTEM_COMPONENTS"]
+  }
+
   resource_labels = {
     project = var.common_name
     owner   = var.owner

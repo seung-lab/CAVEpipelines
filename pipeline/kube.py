@@ -42,13 +42,10 @@ def util_pod(namespace: str, selector: str = "app=pipeline-util") -> str:
     return running[0].metadata.name
 
 
-def list_jobs(namespace: str, workload: str):
-    """All layer Jobs for a workload (one graph at a time), unsorted."""
-    return (
-        batch()
-        .list_namespaced_job(namespace, label_selector=f"pipeline={workload}")
-        .items
-    )
+def list_jobs(namespace: str, workload: str = None):
+    """Layer Jobs — one workload's, or every pipeline Job when workload is None."""
+    selector = f"pipeline={workload}" if workload else "pipeline"
+    return batch().list_namespaced_job(namespace, label_selector=selector).items
 
 
 def node_summary():
@@ -74,7 +71,7 @@ def exec_cmd(namespace: str, pod: str, argv: list) -> str:
     ).strip()
 
 
-def _secret_data(secrets_dir: str, mapping) -> dict:
+def secret_data(secrets_dir: str, mapping) -> dict:
     """{container_filename: local_path} -> {container_filename: base64(contents)};
     local files (relative to secrets_dir) can be named/organized however you like."""
     base = pathlib.Path(secrets_dir)
@@ -85,27 +82,6 @@ def _secret_data(secrets_dir: str, mapping) -> dict:
             raise SystemExit(f"secret file not found: {p}")
         data[key] = base64.b64encode(p.read_bytes()).decode()
     return data
-
-
-def apply_secret(namespace: str, name: str, secrets_dir: str, mapping):
-    """Create/replace a k8s Secret from {container_filename: local_path} in secrets_dir."""
-    if not mapping:
-        return None
-    data = _secret_data(secrets_dir, mapping)
-    body = client.V1Secret(
-        metadata=client.V1ObjectMeta(name=name, namespace=namespace),
-        data=data,
-        type="Opaque",
-    )
-    api = core()
-    try:
-        api.replace_namespaced_secret(name, namespace, body)
-    except ApiException as exc:
-        if exc.status == 404:
-            api.create_namespaced_secret(namespace, body)
-        else:
-            raise
-    return list(data)
 
 
 def pods_of(namespace: str, job_name: str):

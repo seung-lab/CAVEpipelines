@@ -28,8 +28,9 @@ feeds both to helm and the Jobs; the Bigtable project/instance, image, and servi
 account each appear once.
 
 **Secrets & the util pod.** `secret_files` is a `{container_filename: local_path}` map —
-`deploy` reads each local file under `secrets/` and bundles it into one k8s Secret mounted
-read-only at `/root/.cloudvolume/secrets/` in every pod. The in-container name can differ
+`deploy` reads each local file under `secrets/` and bundles it into one helm-managed k8s
+Secret (created, updated, and removed with the release) mounted read-only at
+`/root/.cloudvolume/secrets/` in every pod. The in-container name can differ
 from the local one, so `secrets/` can hold many projects' creds side by side and each
 `pipeline.yml` loads only what it needs (an empty map is fine — GCP auth is Workload
 Identity). `setup` and `submit`'s meta-read run in the PCG image: by default a small
@@ -52,6 +53,7 @@ long ingests to use a one-shot pod instead, so the cluster idles at **zero nodes
 | `pipeline events <layer>` | the layer's Job + pod events (scheduling, scale-up, failures) |
 | `pipeline top <layer>` | per-pod CPU/memory usage (needs metrics-server) |
 | `pipeline delete <layer>` | delete the layer's Job and pods |
+| `pipeline undeploy` | delete all pipeline Jobs + the helm release (KSA, ConfigMaps, util pod, secret) |
 
 **One graph, one workload at a time** — both `graph_id` and `workload`
 (`ingest`/`l2cache`/`meshing`) live in `pipeline.yml`, so commands carry only a
@@ -82,6 +84,16 @@ scales back to zero when idle (Autopilot's autoscaler is the aggressive
 node between layers.
 
 Roles you need: Kubernetes Engine Admin, Service Account Admin, Project IAM Admin.
+
+**Authenticate** with a temporary OAuth token (~1 h, nothing persisted to disk). It is minted
+for whatever account gcloud is logged in as — use the human account that holds the roles
+above, not a worker service account. Re-export when it expires; alternatively, persistent
+[ADC](https://docs.cloud.google.com/docs/terraform/authentication)
+(`gcloud auth application-default login`) works too.
+
+```shell
+export GOOGLE_OAUTH_ACCESS_TOKEN=$(gcloud auth print-access-token)
+```
 
 ```shell
 # set common_name, project_id, region in terraform.tfvars
@@ -242,6 +254,9 @@ compute class.
   rounds the smaller resource up and bills it.
 - **Scale to zero between layers** — `persistent_util: false` runs setup/meta in a one-shot pod, so
   the cluster idles at zero nodes when no Job is running (no pods = no compute cost).
+- **System logs only** — the cluster ships only system logs to Cloud Logging (terraform
+  `logging_config`); pod stdout stays on the kubelet, so thousands of chunk pods don't bill
+  ~$0.50/GiB of log ingestion and `pipeline inspect` / `kubectl logs` still work.
 - **Region** — us-central1/us-east1/us-west1 are the cheapest tier; other regions run ~10–30% more.
 - **Cluster fee** — flat $0.10/hr/cluster (~$74/mo). A $74.40/mo free-tier credit covers exactly
   one Autopilot/zonal cluster **per billing account** (not per project) — if another cluster under
@@ -325,6 +340,10 @@ deterministic per seed (a retried index re-runs the same chunks), and invertible
 failed index maps back to its coords).
 
 ## Teardown
+
+`pipeline undeploy` removes what the CLI created in-cluster — all pipeline Jobs and
+the helm release (service account, ConfigMaps, util pod, and the credentials Secret
+with it); the cluster itself stays.
 
 `terraform destroy` removes everything terraform created — the Autopilot cluster
 (which takes the Jobs, pods, and secret with it) and the Workload-Identity service

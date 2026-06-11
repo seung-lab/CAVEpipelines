@@ -206,7 +206,7 @@ def oneshot_pod_spec(cfg, name: str, argv: list) -> client.V1Pod:
     )
 
 
-def helm_values(cfg) -> dict:
+def helm_values(cfg, secret_data=None) -> dict:
     values = {
         "namespace": cfg.namespace,
         "serviceAccounts": [
@@ -236,6 +236,12 @@ def helm_values(cfg) -> dict:
             }
         ],
     }
+    # helm owns the Secret's lifecycle (created/updated/removed with the release)
+    values["secrets"] = (
+        [{"name": cfg.secret_name, "namespace": cfg.namespace, "data": secret_data}]
+        if secret_data
+        else []
+    )
     if cfg.persistent_util:
         values["deployments"] = [_util_deployment(cfg)]
     return values

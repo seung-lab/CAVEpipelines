@@ -73,6 +73,36 @@ def test_env_injected_into_job_and_oneshot(cfg):
     assert pod_env["TASK_SIZE"] == "1"
 
 
+def test_undeploy_deletes_jobs_then_uninstalls_release(monkeypatch, cfg):
+    deleted, ran = [], {}
+    job = SimpleNamespace(metadata=SimpleNamespace(name="ingest-l2"))
+    monkeypatch.setattr(cli.kube, "list_jobs", lambda ns, workload=None: [job])
+    monkeypatch.setattr(cli.kube, "delete_job", lambda ns, name: deleted.append(name))
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda argv, **kw: (
+            ran.setdefault("argv", argv),
+            SimpleNamespace(stdout="released", stderr=""),
+        )[1],
+    )
+    cli.undeploy(cfg, SimpleNamespace())
+    assert deleted == ["ingest-l2"]
+    assert ran["argv"][:2] == ["helm", "uninstall"]
+
+
+def test_helm_values_carry_secret(cfg):
+    vals = manifest.helm_values(cfg, {"google-secret.json": "YjY0"})
+    assert vals["secrets"] == [
+        {
+            "name": cfg.secret_name,
+            "namespace": cfg.namespace,
+            "data": {"google-secret.json": "YjY0"},
+        }
+    ]
+    assert manifest.helm_values(cfg)["secrets"] == []  # no files -> no Secret rendered
+
+
 def test_zone_pins_worker_pods(cfg):
     cfg.zone = "us-east1-b"
     ns = manifest.job_spec(cfg, 2, 100, 1, 1).spec.template.spec.node_selector

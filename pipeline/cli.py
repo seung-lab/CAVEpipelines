@@ -32,9 +32,10 @@ def note(msg):
 
 
 def deploy(cfg, args):
-    """helm upgrade --install the static infra, then load secrets from ./secrets."""
+    """helm upgrade --install the static infra, incl. the Secret built from ./secrets."""
+    data = kube.secret_data(args.secrets, cfg.secret_files)
     with tempfile.NamedTemporaryFile("w", suffix=".yaml") as f:
-        yaml.safe_dump(manifest.helm_values(cfg), f)
+        yaml.safe_dump(manifest.helm_values(cfg, data), f)
         f.flush()
         subprocess.run(
             [
@@ -51,17 +52,25 @@ def deploy(cfg, args):
             ],
             check=True,
         )
-    applied = kube.apply_secret(
-        cfg.namespace, cfg.secret_name, args.secrets, cfg.secret_files
-    )
     note(
         f"deployed static infra in ns '{cfg.namespace}'; "
         + (
-            f"secret '{cfg.secret_name}' <- {applied}"
-            if applied
+            f"secret '{cfg.secret_name}' <- {list(data)}"
+            if data
             else "no secret_files listed (secret skipped)"
         )
     )
+
+
+def undeploy(cfg, args):
+    """Tear down everything deploy/submit created: all pipeline Jobs, then the helm release."""
+    for job in kube.list_jobs(cfg.namespace):
+        kube.delete_job(cfg.namespace, job.metadata.name)
+        note(f"deleted job {job.metadata.name}")
+    res = subprocess.run(
+        ["helm", "uninstall", "pcg", "-n", cfg.namespace], capture_output=True, text=True
+    )
+    note(res.stdout.strip() or res.stderr.strip())
 
 
 def setup(cfg, args):
@@ -299,6 +308,11 @@ def main(argv=None):
         help="dir of secret files (default: secrets)",
     )
     d.set_defaults(fn=deploy)
+
+    ud = sub.add_parser(
+        "undeploy", help="delete all pipeline Jobs and the helm release (incl. secret)"
+    )
+    ud.set_defaults(fn=undeploy)
 
     s = sub.add_parser(
         "setup", help="create the graph table + meta (runs in the util pod)"

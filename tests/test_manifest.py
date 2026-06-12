@@ -45,6 +45,20 @@ def test_worker_env_targets_the_right_chunk(cfg):
     assert env["PCG_BATCH_SIZE"] == "1000"
 
 
+def test_parallel_flag_drives_builder_gate(cfg):
+    env = {
+        e["name"]: e["value"]
+        for e in _job(cfg)["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert int(env["PCG_N_THREADS"]) > 1  # parallel builds on by default
+    cfg.job.parallel = False
+    env = {
+        e["name"]: e["value"]
+        for e in _job(cfg)["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert env["PCG_N_THREADS"] == "1"  # sequential escape hatch
+
+
 def test_spot_scheduling(cfg):
     pod = _job(cfg)["spec"]["template"]["spec"]
     assert pod["nodeSelector"]["cloud.google.com/gke-spot"] == "true"

@@ -36,7 +36,7 @@ class Bigtable:
 class Job:
     perm_seed: int = 0
     batch_size: int = 1000
-    n_threads: int = 1
+    parallel: bool = True  # parent-chunk builds fan out over every core (process pool)
     cpu: str = "1"
     memory: str = "2Gi"
     compute_class: str = ""

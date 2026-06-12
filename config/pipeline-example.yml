@@ -25,7 +25,7 @@ zone: ""
 job:
   perm_seed: 42
   batch_size: 1000
-  n_threads: 1
+  parallel: true  # parent-chunk builds use every core; false = sequential (debug)
   cpu: "1"
   memory: 2Gi
   compute_class: ""

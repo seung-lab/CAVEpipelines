@@ -105,7 +105,9 @@ def job_spec(
                 ("PCG_LAYER", str(layer)),
                 ("PCG_PERM_SEED", str(cfg.job.perm_seed)),
                 ("PCG_BATCH_SIZE", str(batch_size)),
-                ("PCG_N_THREADS", str(cfg.job.n_threads)),
+                # any value >1 opens the builder's process-pool gate; the pool then
+                # sizes itself to every core — the number itself is never a count
+                ("PCG_N_THREADS", "2" if cfg.job.parallel else "1"),
             )
         ]
         + _extra_env(cfg),

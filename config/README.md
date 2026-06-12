@@ -33,7 +33,7 @@ from `pipeline.yml`'s `bigtable:`.
 | `bigtable.project` / `bigtable.instance` | Bigtable target; also injected into `dataset.yml`'s `backend_client` |
 | `region` | GKE region — selects the cost rate row in `rates.csv` (required for cost estimates) |
 | `zone` | optional: pin worker pods to one zone (e.g. Bigtable's) for lower latency — trades Spot capacity |
-| `job.*` | per-layer sizing: `perm_seed`, `batch_size`, `n_threads`, `cpu`, `memory`, `compute_class`, `backoff_limit_per_index`, `max_failed_indexes` |
+| `job.*` | per-layer sizing: `perm_seed`, `batch_size`, `parallel` (parent-chunk builds fan out over every core; `false` = sequential, for debugging), `cpu`, `memory`, `compute_class`, `backoff_limit_per_index`, `max_failed_indexes` |
 | `ramp.*` | parallelism ramp: `start`, `factor`, `period` (s), `max` |
 | `env` | extra env on every worker + setup pod (below) |
 | `commands` | container command for non-built-in workloads (only `l2cache` today) |

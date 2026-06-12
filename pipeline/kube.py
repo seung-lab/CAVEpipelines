@@ -85,9 +85,12 @@ def node_summary():
     return len(labels), spot, dict(by_type)
 
 
-def exec_cmd(namespace: str, pod: str, argv: list, timeout: int = 300) -> str:
-    """Run argv in the pod, return its stdout; abort after `timeout`s so a wedged
-    in-pod command fails loudly with its output instead of hanging forever."""
+def exec_cmd(
+    namespace: str, pod: str, argv: list, timeout: int = 300, on_line=None
+) -> str:
+    """Run argv in the pod, streaming stdout+stderr to `on_line` as it arrives, and
+    return the full stdout. Aborts after `timeout`s so a wedged command fails loudly
+    instead of hanging silently. PCG logs to stderr, so both channels are forwarded."""
     try:
         ws = stream(
             core().connect_get_namespaced_pod_exec,
@@ -105,19 +108,38 @@ def exec_cmd(namespace: str, pod: str, argv: list, timeout: int = 300) -> str:
             f"exec into pod '{pod}' failed ({exc.status} {exc.reason}); "
             f"the pod may have just restarted — retry"
         )
-    ws.run_forever(timeout=timeout)
-    out, err = ws.read_stdout(), ws.read_stderr()
-    if ws.is_open():  # still running at the deadline -> wedged
-        ws.close()
-        raise SystemExit(
-            f"in-pod command timed out after {timeout}s: {' '.join(argv)}\n"
-            f"{(err or out).strip() or '(no output)'}"
-        )
+    out_buf, partial = [], {1: "", 2: ""}
+
+    def drain():
+        # emit only whole lines as they complete; keep the trailing fragment buffered
+        for chan, text in ((1, ws.read_stdout()), (2, ws.read_stderr())):
+            if chan == 1:
+                out_buf.append(text)
+            if not text:
+                continue
+            partial[chan] += text
+            *lines, partial[chan] = partial[chan].split("\n")
+            if on_line:
+                for line in lines:
+                    on_line(line)
+
+    deadline = time.monotonic() + timeout
+    while ws.is_open():
+        if time.monotonic() > deadline:
+            ws.close()
+            drain()
+            raise SystemExit(
+                f"in-pod command timed out after {timeout}s: {' '.join(argv)}"
+            )
+        ws.update(timeout=1)
+        drain()
+    if on_line:  # flush any unterminated trailing line
+        for chan in (1, 2):
+            if partial[chan]:
+                on_line(partial[chan])
     if ws.returncode:
-        raise SystemExit(
-            f"in-pod command exited {ws.returncode}: {' '.join(argv)}\n{err.strip()}"
-        )
-    return out.strip()
+        raise SystemExit(f"in-pod command exited {ws.returncode}: {' '.join(argv)}")
+    return "".join(out_buf).strip()
 
 
 def secret_data(secrets_dir: str, mapping) -> dict:

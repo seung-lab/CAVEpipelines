@@ -20,11 +20,13 @@ def ceil_div(a, b):
 
 
 def run_pcg(cfg, name, argv):
-    """Run a command in the PCG image: the persistent util pod, or a one-shot pod."""
+    """Run a command in the PCG image (util pod or one-shot pod), streaming its logs live."""
     if cfg.persistent_util:
         pod = kube.util_pod(cfg.namespace)
         note(f"{name}: running in util pod '{pod}'...")
-        return kube.exec_cmd(cfg.namespace, pod, argv)
+        return kube.exec_cmd(
+            cfg.namespace, pod, argv, on_line=lambda ln: note(f"  [{name}] {ln}")
+        )
     note(f"{name}: running in a one-shot pod...")
     return kube.run_oneshot(cfg.namespace, manifest.oneshot_pod_spec(cfg, name, argv))
 
@@ -34,7 +36,7 @@ def read_n(cfg, layer):
     out = run_pcg(
         cfg,
         f"nread-l{layer}",
-        ["python", "-c", _N_CODE.format(gid=cfg.graph_id, layer=layer)],
+        ["python", "-u", "-c", _N_CODE.format(gid=cfg.graph_id, layer=layer)],
     )
     # last all-digit line = the count; anything else is import noise or a traceback
     for line in reversed(out.splitlines()):

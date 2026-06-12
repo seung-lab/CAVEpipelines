@@ -1,9 +1,15 @@
 from types import SimpleNamespace
 
 import pytest
+from click.testing import CliRunner
 from kubernetes.client import ApiException
 
 from pipeline import cli, manifest
+
+
+def run_cmd(command, argv, cfg):
+    """Invoke one click command with a prebuilt Config (no group, no config file)."""
+    return CliRunner().invoke(command, argv, obj=cfg, catch_exceptions=False)
 
 
 def test_command_for_routes_per_workload(cfg):
@@ -44,7 +50,7 @@ def _capture_run_pcg(monkeypatch):
 
 def test_setup_runs_pipeline_ingest_setup(monkeypatch, cfg):
     seen = _capture_run_pcg(monkeypatch)
-    cli.setup(cfg, SimpleNamespace(raw=False))
+    run_cmd(cli.setup, [], cfg)
     assert seen["argv"] == [
         "python",
         "-m",
@@ -56,7 +62,7 @@ def test_setup_runs_pipeline_ingest_setup(monkeypatch, cfg):
 def test_setup_runs_migrate_setup_for_migrate_workload(monkeypatch, cfg):
     cfg.workload = "migrate"
     seen = _capture_run_pcg(monkeypatch)
-    cli.setup(cfg, SimpleNamespace(raw=False))
+    run_cmd(cli.setup, [], cfg)
     assert seen["argv"] == [
         "python",
         "-m",
@@ -96,7 +102,7 @@ def test_status_quiet_when_no_jobs(monkeypatch, cfg):
     monkeypatch.setattr(
         cli.util, "status_table", lambda c, t=None: built.setdefault("yes", True)
     )
-    cli.status(cfg, SimpleNamespace(once=True))
+    run_cmd(cli.status, ["--once"], cfg)
     assert not built  # no table rendered, just a note
 
 
@@ -165,7 +171,7 @@ def test_undeploy_deletes_jobs_then_uninstalls_release(monkeypatch, cfg):
             SimpleNamespace(stdout="released", stderr=""),
         )[1],
     )
-    cli.undeploy(cfg, SimpleNamespace())
+    run_cmd(cli.undeploy, [], cfg)
     assert deleted == ["ingest-l2"]
     assert ran["argv"][:2] == ["helm", "uninstall"]
 
@@ -193,7 +199,7 @@ def test_zone_pins_worker_pods(cfg):
 
 def test_mesh_meta_runs_pipeline_meshing_setup(monkeypatch, cfg):
     seen = _capture_run_pcg(monkeypatch)
-    cli.mesh_meta(cfg, SimpleNamespace())
+    run_cmd(cli.mesh_meta, [], cfg)
     assert seen["name"] == "mesh-meta"
     assert seen["argv"] == [
         "python",
@@ -203,15 +209,33 @@ def test_mesh_meta_runs_pipeline_meshing_setup(monkeypatch, cfg):
     ]
 
 
-def test_registered_handlers_resolve(monkeypatch, cfg):
-    # dispatch is by name via the registry; every entry must resolve to a callable
-    for _, handler, _, _ in cli.COMMANDS:
-        assert callable(getattr(cli, handler))
+def test_all_commands_registered():
+    assert {
+        "deploy",
+        "undeploy",
+        "setup",
+        "mesh-meta",
+        "submit",
+        "scale",
+        "sample",
+        "status",
+        "inspect",
+        "pods",
+        "events",
+        "top",
+        "delete",
+        "costs",
+    } <= set(cli.cli.commands)
 
 
-def test_mesh_meta_subcommand_is_registered(monkeypatch, cfg):
+def test_mesh_meta_dispatches_through_main(monkeypatch, cfg):
     monkeypatch.setattr(cli.config, "load", lambda path: cfg)
     ran = {}
-    monkeypatch.setattr(cli, "mesh_meta", lambda c, a: ran.setdefault("ok", True))
-    cli.main(["mesh-meta"])
+    monkeypatch.setattr(
+        cli.mesh_meta, "callback", lambda *a, **k: ran.setdefault("ok", True)
+    )
+    try:
+        cli.main(["mesh-meta"])
+    except SystemExit as exc:  # click standalone mode exits 0 on success
+        assert not exc.code
     assert ran.get("ok")

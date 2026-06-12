@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Operator CLI to run PyChunkedGraph ingest / l2cache / meshing as GKE Autopilot Indexed Jobs"
 requires-python = ">=3.12"
 dependencies = [
+    "click>=8.1",
     "kubernetes>=29",
     "PyYAML>=6.0",
     "rich>=13",

@@ -6,12 +6,13 @@ Indexed Jobs. Layers are operator-gated: submit one, watch it Complete, submit t
 next (a layer's writes are non-idempotent).
 """
 
-import argparse
+import functools
 import logging
 import subprocess
 import tempfile
 import time
 
+import click
 import urllib3
 import yaml
 from kubernetes.client import ApiException
@@ -24,11 +25,68 @@ from . import NOTE, config, costs, kube, log, manifest, note, util
 HELM_CHART = "helm"
 
 
-def deploy(cfg, args):
+@click.group(help=__doc__, context_settings={"help_option_names": ["-h", "--help"]})
+@click.option(
+    "-c",
+    "--config",
+    "config_name",
+    default="config",
+    help="config dir with pipeline.yml + dataset.yml (default: config)",
+)
+@click.option(
+    "-v",
+    "--verbose",
+    is_flag=True,
+    help="debug logging, incl. every kubernetes API request",
+)
+@click.pass_context
+def cli(ctx, config_name, verbose):
+    # Root stays at NOTE so -v doesn't unleash urllib3/kubernetes HTTP body dumps
+    # (unreadable multi-KB single lines); -v only deepens our own logger.
+    logging.basicConfig(level=NOTE, format="%(message)s")
+    if verbose:
+        log.setLevel(logging.DEBUG)
+    ctx.obj = config_name  # loaded lazily by pass_cfg, so --help needs no config
+
+
+def pass_cfg(fn):
+    """Pass the loaded Config as the handler's first argument.
+
+    Loading is lazy (post --help) and cached on ctx.obj; tests inject a prebuilt
+    Config via CliRunner(...).invoke(command, obj=cfg)."""
+
+    @click.pass_context
+    def wrap(ctx, *args, **kwargs):
+        if not isinstance(ctx.obj, config.Config):
+            ctx.obj = config.load(ctx.obj or "config")
+        return ctx.invoke(fn, ctx.obj, *args, **kwargs)
+
+    return functools.update_wrapper(wrap, fn)
+
+
+_LAYER = click.argument("layer", type=int)
+
+
+@cli.command(help="install/upgrade static infra (helm) + secret")
+@click.option(
+    "-s", "--secrets", default="secrets", help="dir of secret files (default: secrets)"
+)
+@click.option(
+    "--setup",
+    "run_setup",
+    is_flag=True,
+    help="run `setup` after deploy (first-run convenience)",
+)
+@click.option("-r", "--raw", is_flag=True, help="raw agglomeration input (with --setup)")
+@click.option(
+    "--submit-l2", is_flag=True, help="submit layer 2 after setup (requires --setup)"
+)
+@pass_cfg
+def deploy(cfg, secrets, run_setup, raw, submit_l2):
     """helm upgrade --install the static infra, incl. the Secret built from ./secrets."""
-    if args.submit_l2 and not args.setup:
+    if submit_l2 and not run_setup:
         raise SystemExit("--submit-l2 requires --setup")
-    data = kube.secret_data(args.secrets, cfg.secret_files)
+    data = kube.secret_data(secrets, cfg.secret_files)
     note(f"deploy: helm release 'pcg' (secrets: {list(data) or 'none'})")
     with tempfile.NamedTemporaryFile("w", suffix=".yaml") as f:
         yaml.safe_dump(manifest.helm_values(cfg, data), f)
@@ -58,16 +116,18 @@ def deploy(cfg, args):
         if data
         else "deployed (no secret)"
     )
-    if args.setup:
-        setup(cfg, args, wait_create=True)  # util pod is still spinning up post-deploy
-        if args.submit_l2:
-            args.layer = 2
-            submit(cfg, args)
+    if run_setup:
+        ctx = click.get_current_context()
+        ctx.invoke(setup, raw=raw, wait_create=True)  # util pod still spinning up
+        if submit_l2:
+            ctx.invoke(submit, layer=2)
         else:
             note("pipeline ready; run `pipeline submit <layer>`")
 
 
-def undeploy(cfg, args):
+@cli.command(help="delete all pipeline Jobs and the helm release (incl. secret)")
+@pass_cfg
+def undeploy(cfg):
     """Tear down everything deploy/submit created: all pipeline Jobs, then the helm release."""
     note("undeploy: deleting jobs + helm release")
     for job in kube.list_jobs(cfg.namespace):
@@ -79,20 +139,27 @@ def undeploy(cfg, args):
     note(res.stdout.strip() or res.stderr.strip())
 
 
-def setup(cfg, args, wait_create=False):
+@cli.command(help="create the graph table + meta (runs in the util pod)")
+@click.option("-r", "--raw", is_flag=True, help="raw agglomeration input")
+@pass_cfg
+def setup(cfg, raw, wait_create=False):
     """Prepare the graph for the workload: ingest creates the table; migrate preps it."""
     if cfg.workload in ("migrate", "migrate_cleanup"):
         argv = ["python", "-m", "pychunkedgraph.pipeline.migrate.setup", cfg.graph_id]
     else:
         argv = ["python", "-m", "pychunkedgraph.pipeline.ingest.setup", cfg.graph_id]
-        if args.raw:
+        if raw:
             argv.append("--raw")
     note(f"setup ({cfg.workload})")
     note(util.run_pcg(cfg, "setup", argv, wait_create=wait_create) or "setup done")
     util.invalidate_layer_counts(cfg)  # graph may have changed; recompute on next read
 
 
-def mesh_meta(cfg, args):
+@cli.command(
+    "mesh-meta", help="write mesh metadata once (after ingest reaches the root layer)"
+)
+@pass_cfg
+def mesh_meta(cfg):
     """Write mesh metadata once (after ingest reaches root); needs `mesh_config:` in the dataset."""
     argv = ["python", "-m", "pychunkedgraph.pipeline.meshing.setup", cfg.graph_id]
     note("mesh-meta: writing mesh metadata")
@@ -120,15 +187,24 @@ def _require_prev_complete(cfg, layer, force=False):
         )
 
 
-def submit(cfg, args):
+@cli.command(help="submit one layer's Indexed Job and ramp parallelism")
+@_LAYER
+@click.option(
+    "-f",
+    "--force",
+    is_flag=True,
+    help="submit even if the layer below isn't complete — only if you're sure",
+)
+@pass_cfg
+def submit(cfg, layer, force=False):
     """Create one layer's Indexed Job (completions from cg.meta) and ramp parallelism."""
-    note(f"submit L{args.layer} ({cfg.workload})")
-    _require_prev_complete(cfg, args.layer, force=getattr(args, "force", False))
-    n = util.read_n(cfg, args.layer)
+    note(f"submit L{layer} ({cfg.workload})")
+    _require_prev_complete(cfg, layer, force=force)
+    n = util.read_n(cfg, layer)
     completions = util.ceil_div(n, cfg.job.batch_size)
     pmax = min(cfg.ramp.max, completions)
     parallelism = min(cfg.ramp.start, pmax)
-    spec = manifest.job_spec(cfg, args.layer, n, completions, parallelism)
+    spec = manifest.job_spec(cfg, layer, n, completions, parallelism)
     name = spec.metadata.name
     note(f"{name}: {n} chunks, {completions} tasks, workers {parallelism}->{pmax}")
     kube.recreate_job(cfg.namespace, spec)
@@ -147,36 +223,45 @@ def submit(cfg, args):
                 + costs.parse_mem(cfg.job.memory) * rate["mem_spot"]
             )
             note(
-                f"~${burn:.4f}/pod-hr spot; `pipeline costs {args.layer}` for the running total"
+                f"~${burn:.4f}/pod-hr spot; `pipeline costs {layer}` for the running total"
             )
         except Exception:  # noqa: BLE001 - cost is auxiliary, never fatal
             pass
 
 
-def scale(cfg, args):
+@cli.command(help="resize the running layer's workers (set Job parallelism)")
+@_LAYER
+@click.argument("parallelism", type=int)
+@pass_cfg
+def scale(cfg, layer, parallelism):
     """Resize the running layer's workers: set its Indexed Job parallelism."""
-    name = manifest.job_name(cfg, args.layer)
-    kube.set_parallelism(cfg.namespace, name, args.parallelism)
-    note(f"{name}: parallelism -> {args.parallelism}")
+    name = manifest.job_name(cfg, layer)
+    kube.set_parallelism(cfg.namespace, name, parallelism)
+    note(f"{name}: parallelism -> {parallelism}")
 
 
-def sample(cfg, args):
+@cli.command(help="run N scattered chunks of a layer to size CPU/memory")
+@_LAYER
+@click.argument("count", type=int)
+@pass_cfg
+def sample(cfg, layer, count):
     """Run `count` scattered chunks of the layer (one per pod) to size CPU/memory."""
-    count = args.count
     spec = manifest.job_spec(
-        cfg, args.layer, count, count, min(count, cfg.ramp.max), batch_size=1
+        cfg, layer, count, count, min(count, cfg.ramp.max), batch_size=1
     )
     name = spec.metadata.name
-    note(
-        f"{name}: launching {count} sample chunks; size with `pipeline top {args.layer}`"
-    )
+    note(f"{name}: launching {count} sample chunks; size with `pipeline top {layer}`")
     kube.recreate_job(cfg.namespace, spec)
 
 
-def inspect(cfg, args):
+@cli.command(help="list a layer's failed indexes; add an index for its pod log")
+@_LAYER
+@click.argument("index", type=int, required=False)
+@pass_cfg
+def inspect(cfg, layer, index):
     """List a layer's failed indexes; with an index, show that index's pod log."""
-    name = manifest.job_name(cfg, args.layer)
-    if args.index is None:
+    name = manifest.job_name(cfg, layer)
+    if index is None:
         s = kube.batch().read_namespaced_job(name, cfg.namespace).status
         note(
             f"{name}: {s.succeeded or 0} ok, {s.active or 0} active, "
@@ -185,11 +270,11 @@ def inspect(cfg, args):
         failed_idx = getattr(s, "failed_indexes", None)
         if failed_idx:
             note(f"permanently-failed indexes: {failed_idx}")
-            note(f"`pipeline inspect {args.layer} <index>` for a failed index's log")
+            note(f"`pipeline inspect {layer} <index>` for a failed index's log")
         else:
             note(
                 "no permanently-failed indexes (failed attempts retried + recovered); "
-                f"`pipeline events {args.layer}` shows preemptions/retries"
+                f"`pipeline events {layer}` shows preemptions/retries"
             )
         return
     pods_ = (
@@ -197,12 +282,12 @@ def inspect(cfg, args):
         .list_namespaced_pod(
             cfg.namespace,
             label_selector=f"batch.kubernetes.io/job-name={name},"
-            f"batch.kubernetes.io/job-completion-index={args.index}",
+            f"batch.kubernetes.io/job-completion-index={index}",
         )
         .items
     )
     if not pods_:
-        note(f"no pod for index {args.index} of {name}")
+        note(f"no pod for index {index} of {name}")
         return
     for pod in pods_:
         note(f"== {pod.metadata.name} ({pod.status.phase}) ==")
@@ -216,9 +301,12 @@ def inspect(cfg, args):
             note(exc)
 
 
-def pods(cfg, args):
+@cli.command(help="list the layer's pods (index, phase, node)")
+@_LAYER
+@pass_cfg
+def pods(cfg, layer):
     """List the layer's pods: index, phase, node, scheduling reason."""
-    name = manifest.job_name(cfg, args.layer)
+    name = manifest.job_name(cfg, layer)
     table = Table(title=name)
     for col in ("index", "phase", "node", "reason"):
         table.add_column(col)
@@ -248,9 +336,12 @@ def pods(cfg, args):
     Console().print(table)
 
 
-def events(cfg, args):
+@cli.command(help="show the layer's Job + pod events")
+@_LAYER
+@pass_cfg
+def events(cfg, layer):
     """Recent events for the layer's Job and pods (scheduling, scale-up, failures)."""
-    name = manifest.job_name(cfg, args.layer)
+    name = manifest.job_name(cfg, layer)
     for e in kube.job_events(cfg.namespace, name):
         when = e.last_timestamp or e.event_time or e.metadata.creation_timestamp
         note(
@@ -259,9 +350,12 @@ def events(cfg, args):
         )
 
 
-def delete(cfg, args):
+@cli.command(help="delete the layer's Job and pods")
+@_LAYER
+@pass_cfg
+def delete(cfg, layer):
     """Delete the layer's Job and its pods."""
-    name = manifest.job_name(cfg, args.layer)
+    name = manifest.job_name(cfg, layer)
     try:
         kube.delete_job(cfg.namespace, name)
     except ApiException as exc:
@@ -272,9 +366,12 @@ def delete(cfg, args):
     note(f"deleting {name}")
 
 
-def top(cfg, args):
+@cli.command(help="per-pod CPU/memory usage (needs metrics-server)")
+@_LAYER
+@pass_cfg
+def top(cfg, layer):
     """Per-pod CPU/memory usage for the layer (needs metrics-server)."""
-    name = manifest.job_name(cfg, args.layer)
+    name = manifest.job_name(cfg, layer)
     items = kube.pod_metrics(cfg.namespace, name)
     if not items:
         note("no metrics (metrics-server unavailable, or no running pods)")
@@ -288,7 +385,13 @@ def top(cfg, args):
     Console().print(table)
 
 
-def status(cfg, args):
+@cli.command(help="live per-layer progress table")
+@click.option("-o", "--once", is_flag=True, help="print one snapshot and exit")
+@click.option(
+    "-i", "--interval", type=float, default=5.0, help="refresh seconds (default 5)"
+)
+@pass_cfg
+def status(cfg, once, interval):
     """Live progress over all layers (a-priori chunk counts); runs until Ctrl-C."""
     try:
         layer_totals = util.read_layer_counts(cfg)
@@ -297,14 +400,14 @@ def status(cfg, args):
     if not layer_totals and not kube.list_jobs(cfg.namespace, cfg.workload):
         note(f"no {cfg.workload} jobs in ns '{cfg.namespace}'")
         return
-    if args.once:
+    if once:
         Console().print(util.status_table(cfg, layer_totals))
         return
     try:
         with Live(refresh_per_second=4) as live:
             while True:  # stays up across layers; Ctrl-C to stop
                 live.update(util.status_table(cfg, layer_totals))
-                time.sleep(args.interval)
+                time.sleep(interval)
     except KeyboardInterrupt:
         pass
     table = costs.load_table()
@@ -321,7 +424,10 @@ def status(cfg, args):
             note(f"cost unavailable: {exc}")
 
 
-def show_costs(cfg, args):
+@cli.command("costs", help="estimate the layer's spot cost (pod requests x runtime)")
+@_LAYER
+@pass_cfg
+def show_costs(cfg, layer):
     """Estimate a layer's Autopilot spot cost from pod requests x runtime."""
     table = costs.load_table()
     if not cfg.region or not table:
@@ -330,7 +436,7 @@ def show_costs(cfg, args):
             f"or run `python -m pipeline.rates`"
         )
         return
-    name = manifest.job_name(cfg, args.layer)
+    name = manifest.job_name(cfg, layer)
     try:
         job = kube.batch().read_namespaced_job(name, cfg.namespace)
         est = costs.estimate_job_cost(
@@ -341,157 +447,9 @@ def show_costs(cfg, args):
         note(f"cost unavailable: {exc}")
 
 
-_LAYER = (("layer",), {"type": int})
-
-# (subcommand, handler name, help, ((flags, add_argument kwargs), ...)). Handlers are
-# referenced by name and resolved at dispatch time, so tests can monkeypatch them.
-COMMANDS = (
-    (
-        "deploy",
-        "deploy",
-        "install/upgrade static infra (helm) + secret",
-        (
-            (
-                ("-s", "--secrets"),
-                {"default": "secrets", "help": "dir of secret files (default: secrets)"},
-            ),
-            (
-                ("--setup",),
-                {
-                    "action": "store_true",
-                    "help": "run `setup` after deploy (first-run convenience)",
-                },
-            ),
-            (
-                ("-r", "--raw"),
-                {
-                    "action": "store_true",
-                    "help": "raw agglomeration input (with --setup)",
-                },
-            ),
-            (
-                ("--submit-l2",),
-                {
-                    "action": "store_true",
-                    "help": "submit layer 2 after setup (requires --setup)",
-                },
-            ),
-        ),
-    ),
-    (
-        "undeploy",
-        "undeploy",
-        "delete all pipeline Jobs and the helm release (incl. secret)",
-        (),
-    ),
-    (
-        "setup",
-        "setup",
-        "create the graph table + meta (runs in the util pod)",
-        (
-            (
-                ("-r", "--raw"),
-                {"action": "store_true", "help": "raw agglomeration input"},
-            ),
-        ),
-    ),
-    (
-        "mesh-meta",
-        "mesh_meta",
-        "write mesh metadata once (after ingest reaches the root layer)",
-        (),
-    ),
-    (
-        "submit",
-        "submit",
-        "submit one layer's Indexed Job and ramp parallelism",
-        (
-            _LAYER,
-            (
-                ("-f", "--force"),
-                {
-                    "action": "store_true",
-                    "help": "submit even if the layer below isn't complete"
-                    " — only if you're sure",
-                },
-            ),
-        ),
-    ),
-    (
-        "scale",
-        "scale",
-        "resize the running layer's workers (set Job parallelism)",
-        (_LAYER, (("parallelism",), {"type": int})),
-    ),
-    (
-        "sample",
-        "sample",
-        "run N scattered chunks of a layer to size CPU/memory",
-        (_LAYER, (("count",), {"type": int})),
-    ),
-    (
-        "status",
-        "status",
-        "live per-layer progress table",
-        (
-            (
-                ("-o", "--once"),
-                {"action": "store_true", "help": "print one snapshot and exit"},
-            ),
-            (
-                ("-i", "--interval"),
-                {"type": float, "default": 5.0, "help": "refresh seconds (default 5)"},
-            ),
-        ),
-    ),
-    (
-        "inspect",
-        "inspect",
-        "list a layer's failed indexes; add an index for its pod log",
-        (_LAYER, (("index",), {"type": int, "nargs": "?"})),
-    ),
-    ("pods", "pods", "list the layer's pods (index, phase, node)", (_LAYER,)),
-    ("events", "events", "show the layer's Job + pod events", (_LAYER,)),
-    ("top", "top", "per-pod CPU/memory usage (needs metrics-server)", (_LAYER,)),
-    ("delete", "delete", "delete the layer's Job and pods", (_LAYER,)),
-    (
-        "costs",
-        "show_costs",
-        "estimate the layer's spot cost (pod requests x runtime)",
-        (_LAYER,),
-    ),
-)
-
-
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="pipeline", description=__doc__)
-    p.add_argument(
-        "-c",
-        "--config",
-        default="config",
-        help="config dir with pipeline.yml + dataset.yml (default: config)",
-    )
-    p.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="debug logging, incl. every kubernetes API request",
-    )
-    sub = p.add_subparsers(dest="cmd", required=True)
-    for cmd, handler, helptext, arg_specs in COMMANDS:
-        sp = sub.add_parser(cmd, help=helptext)
-        for flags, kwargs in arg_specs:
-            sp.add_argument(*flags, **kwargs)
-        sp.set_defaults(handler=handler)
-
-    args = p.parse_args(argv)
-    # Root stays at NOTE so -v doesn't unleash urllib3/kubernetes HTTP body dumps
-    # (unreadable multi-KB single lines); -v only deepens our own logger.
-    logging.basicConfig(level=NOTE, format="%(message)s")
-    if args.verbose:
-        log.setLevel(logging.DEBUG)
     try:
-        globals()[args.handler](config.load(args.config), args)
+        cli.main(args=argv, prog_name="pipeline")
     except ApiException as exc:
         body = (exc.body or "").strip()
         raise SystemExit(

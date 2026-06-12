@@ -93,6 +93,16 @@ def read_n(cfg, layer):
     return counts[layer]
 
 
+def count_indexes(intervals) -> int:
+    """Count indexes in a k8s interval string like '1,3-5,7' (failed_indexes format)."""
+    total = 0
+    for part in (intervals or "").split(","):
+        if part:
+            lo, _, hi = part.partition("-")
+            total += int(hi or lo) - int(lo) + 1
+    return total
+
+
 def job_state(job):
     for c in job.status.conditions or []:
         if c.type == "Complete" and c.status == "True":
@@ -127,9 +137,21 @@ def status_table(cfg, layer_totals=None) -> Table:
         nodes = "nodes ?"
     table = Table(
         title=f"{cfg.workload} · {cfg.graph_id} · {nodes}",
-        caption="active−ready ≈ pods waiting on capacity · cost is a Spot estimate",
+        caption="retries = failed attempts (transient) · failed = dead tasks (`inspect`) · "
+        "active−ready ≈ pods waiting on capacity · cost is a Spot estimate",
     )
-    cols = ("layer", "done", "total", "%", "active", "ready", "failed", "elapsed", "cost")
+    cols = (
+        "layer",
+        "done",
+        "total",
+        "%",
+        "active",
+        "ready",
+        "retries",
+        "failed",
+        "elapsed",
+        "cost",
+    )
     for col in cols:
         table.add_column(col, justify="right")
     rate_table = costs.load_table()
@@ -138,7 +160,7 @@ def status_table(cfg, layer_totals=None) -> Table:
         job = jobs_by_layer.get(layer)
         total = (layer_totals or {}).get(layer)
         if job is None:  # known size, not yet submitted
-            row = [str(layer), "-", str(total) if total else "-"] + ["-"] * 6
+            row = [str(layer), "-", str(total) if total else "-"] + ["-"] * 7
             table.add_row(*row)
             continue
         s = job.status
@@ -149,7 +171,8 @@ def status_table(cfg, layer_totals=None) -> Table:
         done = min((s.succeeded or 0) * batch, total) if total else 0
         pct = 100 * done // total if total else 0
         color = {"complete": "green", "failed": "red"}.get(job_state(job))
-        failed = s.failed or 0
+        retries = s.failed or 0  # attempts that burned a retry; dead tasks are separate
+        dead = count_indexes(getattr(s, "failed_indexes", None))
         cost_cell = "-"
         if cfg.region and rate_table:
             # per-pod (real pod lifetimes), matching the at-finish total; [] would
@@ -164,7 +187,8 @@ def status_table(cfg, layer_totals=None) -> Table:
             f"[{color}]{pct}%[/]" if color else f"{pct}%",
             str(s.active or 0),
             str(getattr(s, "ready", None) or 0),
-            f"[red]{failed}[/]" if failed else "0",
+            str(retries),
+            f"[red]{dead}[/]" if dead else "0",
             elapsed(job),
             cost_cell,
         )

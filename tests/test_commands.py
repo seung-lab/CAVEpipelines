@@ -147,6 +147,45 @@ def test_submit_blocks_when_prev_layer_missing(monkeypatch, cfg):
         cli._require_prev_complete(cfg, 3, force=False)
 
 
+def test_count_indexes_parses_k8s_interval_strings():
+    assert cli.util.count_indexes(None) == 0
+    assert cli.util.count_indexes("") == 0
+    assert cli.util.count_indexes("1,3-5,7") == 5
+
+
+def test_status_table_splits_retries_from_dead_tasks(monkeypatch, cfg):
+    job = SimpleNamespace(
+        metadata=SimpleNamespace(
+            name="ingest-l2",
+            labels={"layer": "2", "graph": "g"},
+            annotations={"chunks": "100", "batch_size": "10"},
+        ),
+        status=SimpleNamespace(
+            succeeded=10,
+            active=0,
+            ready=0,
+            failed=34,  # transient attempts, all recovered
+            failed_indexes=None,
+            conditions=[],
+            start_time=None,
+            completion_time=None,
+        ),
+    )
+    monkeypatch.setattr(cli.kube, "list_jobs", lambda ns, workload=None: [job])
+    monkeypatch.setattr(cli.kube, "node_summary", lambda: (0, 0, {}))
+    monkeypatch.setattr(cli.costs, "load_table", lambda: {})
+    cells = {
+        c.header: list(c._cells) for c in cli.util.status_table(cfg, {2: 100}).columns
+    }
+    assert cells["retries"] == ["34"]
+    assert cells["failed"] == ["0"]  # nothing permanently dead -> not alarming
+    job.status.failed_indexes = "1,3-5,7"
+    cells = {
+        c.header: list(c._cells) for c in cli.util.status_table(cfg, {2: 100}).columns
+    }
+    assert cells["failed"] == ["[red]5[/]"]
+
+
 def test_status_table_shows_pending_layers(monkeypatch, cfg):
     def _raise(*a, **k):
         raise Exception("no nodes")

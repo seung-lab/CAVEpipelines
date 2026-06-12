@@ -51,7 +51,7 @@ one-shot pod instead, so the cluster idles at **zero nodes**.
 | `pipeline submit <layer>` | submit (or re-submit) the layer's Indexed Job; ramp parallelism (refuses if the layer below isn't 100% — `--force` to override) |
 | `pipeline scale <layer> <n>` | resize the running layer's workers (set Job parallelism) anytime |
 | `pipeline sample <layer> <n>` | run N scattered chunks (one per pod) to size CPU/memory before a full run |
-| `pipeline status` | live table of **all** layers (a-priori chunk counts; unsubmitted shown pending): done, total, %, active/ready, failed, elapsed, cost (estimate) + nodes; stays up across layers until Ctrl-C |
+| `pipeline status` | live table of **all** layers (a-priori chunk counts; unsubmitted shown pending): done, total, %, active/ready, retries (transient attempts), failed (dead tasks), elapsed, cost (estimate) + nodes; stays up across layers until Ctrl-C |
 | `pipeline inspect <layer> [index]` | list a layer's failed indexes; with an index, that pod's log |
 | `pipeline pods <layer>` | the layer's pods: index, phase, node, scheduling reason |
 | `pipeline events <layer>` | the layer's Job + pod events (scheduling, scale-up, failures) |
@@ -296,7 +296,8 @@ compute class.
 Any command accepts `-v` — debug logging, including every kubernetes API request.
 
 When a layer shows `failed > 0` (or a red `%` — the Job gave up), trace it from the
-batch index down to the offending chunk and its traceback:
+batch index down to the offending chunk and its traceback; the `retries` column
+counts transient attempts that were retried and recovered — no action needed:
 
 ```shell
 pipeline status            # which layer failed? (red %, failed count)

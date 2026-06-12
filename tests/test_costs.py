@@ -98,6 +98,11 @@ def test_estimate_never_raises_on_bad_input():
     assert "error" in costs.estimate_job_cost(None, [], TABLE, REGION)
 
 
+def test_fmt_dollars_keeps_subcent_accrual_visible():
+    assert costs.fmt_dollars(6.634) == "$6.63"
+    assert costs.fmt_dollars(0.0163) == "$0.016"  # 2dp would sit frozen for minutes
+
+
 def test_committed_rates_load():
     table = rates.load()
     assert "us-east1" in table and "general-purpose" in table["us-east1"]

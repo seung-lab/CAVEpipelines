@@ -179,7 +179,7 @@ def status_table(cfg, layer_totals=None) -> Table:
             # fall back to wall×pods and over-count a ramped job
             pods = kube.pods_of(cfg.namespace, job.metadata.name)
             est = costs.estimate_job_cost(job, pods, rate_table, cfg.region)
-            cost_cell = f"${est['total']:.2f}" if "total" in est else "err"
+            cost_cell = costs.fmt_dollars(est["total"]) if "total" in est else "err"
         table.add_row(
             str(layer),
             str(done) if total else "-",

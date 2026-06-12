@@ -117,10 +117,16 @@ def estimate_job_cost(job, pods, table: dict, region: str, *, spot: bool = True)
         return {"error": f"cost error: {exc}"}
 
 
+def fmt_dollars(value: float) -> str:
+    """Dollar string with sub-cent resolution below $1, so slow accrual stays visible."""
+    return f"${value:.2f}" if value >= 1 else f"${value:.3f}"
+
+
 def format_cost(est: dict) -> str:
     if "error" in est:
         return est["error"]
     return (
-        f"~${est['total']:.2f} (cpu ${est['cpu']:.2f} + mem ${est['mem']:.2f} + "
-        f"cluster ${est['fee']:.2f}; {est['pod_hours']:.1f} pod-hr, {est['basis']}; estimate)"
+        f"~{fmt_dollars(est['total'])} (cpu {fmt_dollars(est['cpu'])} + "
+        f"mem {fmt_dollars(est['mem'])} + cluster {fmt_dollars(est['fee'])}; "
+        f"{est['pod_hours']:.1f} pod-hr, {est['basis']}; estimate)"
     )

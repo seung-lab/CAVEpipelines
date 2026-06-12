@@ -419,7 +419,7 @@ def status(cfg, once, interval):
                 ).get("total", 0.0)
                 for job in kube.list_jobs(cfg.namespace, cfg.workload)
             )
-            note(f"estimated cost so far ~${total:.2f}")
+            note(f"estimated cost so far ~{costs.fmt_dollars(total)}")
         except Exception as exc:  # noqa: BLE001 - cost is auxiliary, never fatal
             note(f"cost unavailable: {exc}")
 

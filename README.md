@@ -45,7 +45,7 @@ one-shot pod instead, so the cluster idles at **zero nodes**.
 
 | command | does |
 |---|---|
-| `pipeline deploy` | `helm upgrade --install` the static infra + create the Secret from `secrets/` |
+| `pipeline deploy` | `helm upgrade --install` the static infra + create the Secret from `secrets/` (`--setup` also runs `setup`) |
 | `pipeline setup` | create the graph table + meta (in the util pod, or a one-shot pod) |
 | `pipeline mesh-meta` | write the graph's mesh metadata once (meshing only, after ingest reaches root) |
 | `pipeline submit <layer>` | submit (or re-submit) the layer's Indexed Job; ramp parallelism |
@@ -136,9 +136,10 @@ cp config/dataset-example.yml config/dataset.yml
 # fill in pipeline.yml (graph_id, bigtable, images, gsa_email) and dataset.yml (data_source, graph_config)
 # put the GCP service-account key in secret_files: (for bucket access); Bigtable uses Workload Identity
 
-pipeline deploy   # static infra (helm) + secret
-pipeline setup    # create the graph table + meta, once
+pipeline deploy --setup   # static infra (helm) + secret, then create the graph table + meta
 ```
+
+(`deploy` and `setup` are also separate commands; `--setup` just runs both for a first deploy.)
 
 `deploy` is idempotent — re-run it after editing `pipeline.yml`.
 

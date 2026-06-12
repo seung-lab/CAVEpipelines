@@ -35,7 +35,9 @@ def test_command_for_routes_per_workload(cfg):
 def _capture_run_pcg(monkeypatch):
     seen = {}
     monkeypatch.setattr(
-        cli.util, "run_pcg", lambda c, name, argv: seen.update(name=name, argv=argv) or ""
+        cli.util,
+        "run_pcg",
+        lambda c, name, argv, **kw: seen.update(name=name, argv=argv) or "",
     )
     return seen
 

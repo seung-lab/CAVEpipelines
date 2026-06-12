@@ -35,9 +35,13 @@ def custom():
 
 
 def util_pod(
-    namespace: str, selector: str = "app=pipeline-util", timeout: int = 600
+    namespace: str,
+    selector: str = "app=pipeline-util",
+    timeout: int = 600,
+    wait_create: bool = False,
 ) -> str:
-    """Name of the running util pod; waits while it's Pending (Autopilot node spin-up)."""
+    """Name of the running util pod; waits while it's Pending (Autopilot node spin-up).
+    With `wait_create`, also waits for the pod to first appear (e.g. right after deploy)."""
     c = core()
     waiting = False
     for _ in range(timeout // 2):
@@ -49,12 +53,13 @@ def util_pod(
         ]
         if running:
             return running[0].metadata.name
-        if not pods:
+        if not pods and not wait_create:
             raise SystemExit(
                 f"no pipeline-util pod in ns '{namespace}'; run `pipeline deploy` first"
             )
-        # terminating pods are phase Running but dying (e.g. mid helm rollout) — wait
-        transitional = any(
+        # terminating pods are phase Running but dying (e.g. mid helm rollout) — wait;
+        # an absent pod under wait_create is also transitional (still being created)
+        transitional = (not pods and wait_create) or any(
             p.status.phase == "Pending" or p.metadata.deletion_timestamp for p in pods
         )
         if not transitional:

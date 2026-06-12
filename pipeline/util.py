@@ -25,10 +25,10 @@ def ceil_div(a, b):
     return -(-a // b)
 
 
-def run_pcg(cfg, name, argv):
+def run_pcg(cfg, name, argv, wait_create=False):
     """Run a command in the PCG image (util pod or one-shot pod), streaming its logs live."""
     if cfg.persistent_util:
-        pod = kube.util_pod(cfg.namespace)
+        pod = kube.util_pod(cfg.namespace, wait_create=wait_create)
         note(f"{name}: in util pod")
         return kube.exec_cmd(
             cfg.namespace, pod, argv, on_line=lambda ln: note(f"  [{name}] {ln}")

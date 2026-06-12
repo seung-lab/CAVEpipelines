@@ -56,6 +56,9 @@ def deploy(cfg, args):
         if data
         else "deployed (no secret)"
     )
+    if args.setup:
+        setup(cfg, args, wait_create=True)  # util pod is still spinning up post-deploy
+        note("pipeline ready; run `pipeline submit <layer>`")
 
 
 def undeploy(cfg, args):
@@ -70,7 +73,7 @@ def undeploy(cfg, args):
     note(res.stdout.strip() or res.stderr.strip())
 
 
-def setup(cfg, args):
+def setup(cfg, args, wait_create=False):
     """Prepare the graph for the workload: ingest creates the table; migrate preps it."""
     if cfg.workload in ("migrate", "migrate_cleanup"):
         argv = ["python", "-m", "pychunkedgraph.pipeline.migrate.setup", cfg.graph_id]
@@ -79,7 +82,7 @@ def setup(cfg, args):
         if args.raw:
             argv.append("--raw")
     note(f"setup ({cfg.workload})")
-    note(util.run_pcg(cfg, "setup", argv) or "setup done")
+    note(util.run_pcg(cfg, "setup", argv, wait_create=wait_create) or "setup done")
 
 
 def mesh_meta(cfg, args):
@@ -321,6 +324,14 @@ def main(argv=None):
         "--secrets",
         default="secrets",
         help="dir of secret files (default: secrets)",
+    )
+    d.add_argument(
+        "--setup",
+        action="store_true",
+        help="run `setup` after deploy (first-run convenience)",
+    )
+    d.add_argument(
+        "-r", "--raw", action="store_true", help="raw agglomeration input (with --setup)"
     )
     d.set_defaults(fn=deploy)
 

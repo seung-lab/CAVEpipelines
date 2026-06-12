@@ -11,6 +11,8 @@ costs/
 venv/
 __pycache__/
 *.egg-info/
+.coverage
+coverage.xml
 
 # terraform
 .terraform/

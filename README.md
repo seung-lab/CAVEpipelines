@@ -2,6 +2,8 @@
 
 # CAVEpipelines
 
+[![codecov](https://codecov.io/gh/seung-lab/CAVEpipelines/branch/main/graph/badge.svg)](https://codecov.io/gh/seung-lab/CAVEpipelines)
+
 Run the connectomics pipelines — **chunkedgraph ingest**, **meshing**, and
 **l2cache** — on **GKE Autopilot** as stock Kubernetes **Indexed Jobs**. No Redis,
 no RQ, no long-running workers, no AWS SQS.

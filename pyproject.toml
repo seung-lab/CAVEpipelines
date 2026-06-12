@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pre-commit", "pytest", "ruff"]
+dev = ["pre-commit", "pytest", "pytest-cov", "ruff"]
 
 [project.scripts]
 pipeline = "pipeline.cli:main"

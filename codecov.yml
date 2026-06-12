@@ -1,0 +1,7 @@
+# coverage is collected for the pipeline package only (pytest --cov=pipeline);
+# keep everything non-python out of codecov's view
+ignore:
+  - "helm"
+  - "terraform"
+  - "config"
+  - "tests"

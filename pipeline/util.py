@@ -29,11 +29,11 @@ def run_pcg(cfg, name, argv):
     """Run a command in the PCG image (util pod or one-shot pod), streaming its logs live."""
     if cfg.persistent_util:
         pod = kube.util_pod(cfg.namespace)
-        note(f"{name}: running in util pod '{pod}'...")
+        note(f"{name}: in util pod")
         return kube.exec_cmd(
             cfg.namespace, pod, argv, on_line=lambda ln: note(f"  [{name}] {ln}")
         )
-    note(f"{name}: running in a one-shot pod...")
+    note(f"{name}: in one-shot pod")
     return kube.run_oneshot(cfg.namespace, manifest.oneshot_pod_spec(cfg, name, argv))
 
 

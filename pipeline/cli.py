@@ -19,7 +19,7 @@ from rich.console import Console
 from rich.live import Live
 from rich.table import Table
 
-from . import NOTE, config, costs, kube, manifest, note, util
+from . import NOTE, config, costs, kube, log, manifest, note, util
 
 HELM_CHART = "helm"
 
@@ -27,11 +27,7 @@ HELM_CHART = "helm"
 def deploy(cfg, args):
     """helm upgrade --install the static infra, incl. the Secret built from ./secrets."""
     data = kube.secret_data(args.secrets, cfg.secret_files)
-    note(
-        f"deploy -> ns '{cfg.namespace}': helm release 'pcg' "
-        f"(secret files: {list(data) or 'none'}, util pod: "
-        f"{'persistent' if cfg.persistent_util else 'one-shot'})"
-    )
+    note(f"deploy: helm release 'pcg' (secrets: {list(data) or 'none'})")
     with tempfile.NamedTemporaryFile("w", suffix=".yaml") as f:
         yaml.safe_dump(manifest.helm_values(cfg, data), f)
         f.flush()
@@ -56,18 +52,15 @@ def deploy(cfg, args):
                 f"helm upgrade failed (exit {exc.returncode}); see helm output above"
             )
     note(
-        f"deployed static infra in ns '{cfg.namespace}'; "
-        + (
-            f"secret '{cfg.secret_name}' <- {list(data)}"
-            if data
-            else "no secret_files listed (secret skipped)"
-        )
+        f"deployed; secret '{cfg.secret_name}' <- {list(data)}"
+        if data
+        else "deployed (no secret)"
     )
 
 
 def undeploy(cfg, args):
     """Tear down everything deploy/submit created: all pipeline Jobs, then the helm release."""
-    note(f"undeploy ns '{cfg.namespace}': deleting pipeline jobs + helm release 'pcg'")
+    note("undeploy: deleting jobs + helm release")
     for job in kube.list_jobs(cfg.namespace):
         kube.delete_job(cfg.namespace, job.metadata.name)
         note(f"deleted job {job.metadata.name}")
@@ -85,37 +78,28 @@ def setup(cfg, args):
         argv = ["python", "-m", "pychunkedgraph.pipeline.ingest.setup", cfg.graph_id]
         if args.raw:
             argv.append("--raw")
-    note(
-        f"setup[{cfg.workload}] graph '{cfg.graph_id}' in ns '{cfg.namespace}': "
-        + " ".join(argv)
-    )
+    note(f"setup ({cfg.workload})")
     note(util.run_pcg(cfg, "setup", argv) or "setup done")
 
 
 def mesh_meta(cfg, args):
     """Write mesh metadata once (after ingest reaches root); needs `mesh_config:` in the dataset."""
     argv = ["python", "-m", "pychunkedgraph.pipeline.meshing.setup", cfg.graph_id]
-    note(f"mesh-meta graph '{cfg.graph_id}' in ns '{cfg.namespace}': " + " ".join(argv))
+    note("mesh-meta: writing mesh metadata")
     note(util.run_pcg(cfg, "mesh-meta", argv) or "mesh metadata written")
 
 
 def submit(cfg, args):
     """Create one layer's Indexed Job (completions from cg.meta) and ramp parallelism."""
-    note(f"submit layer {args.layer} [{cfg.workload}] graph '{cfg.graph_id}'")
+    note(f"submit L{args.layer} ({cfg.workload})")
     n = util.read_n(cfg, args.layer)
     completions = util.ceil_div(n, cfg.job.batch_size)
     pmax = min(cfg.ramp.max, completions)
     parallelism = min(cfg.ramp.start, pmax)
     spec = manifest.job_spec(cfg, args.layer, n, completions, parallelism)
     name = spec.metadata.name
-    note(
-        f"{name}: {n} chunks / batch {cfg.job.batch_size} = {completions} tasks; "
-        f"workers {parallelism}->{pmax} (ramp.max {cfg.ramp.max})"
-    )
+    note(f"{name}: {n} chunks, {completions} tasks, workers {parallelism}->{pmax}")
     kube.recreate_job(cfg.namespace, spec)
-    note(
-        f"{name}: job created; ramping parallelism x{cfg.ramp.factor} every {cfg.ramp.period}s"
-    )
     p = parallelism
     while p < pmax:
         time.sleep(cfg.ramp.period)
@@ -162,7 +146,9 @@ def inspect(cfg, args):
     name = manifest.job_name(cfg, args.layer)
     if args.index is None:
         s = kube.batch().read_namespaced_job(name, cfg.namespace).status
-        note(f"{name}: succeeded={s.succeeded} active={s.active} failed={s.failed}")
+        note(
+            f"{name}: {s.succeeded or 0} ok, {s.active or 0} active, {s.failed or 0} failed"
+        )
         note(f"failed indexes: {getattr(s, 'failed_indexes', None) or 'none'}")
         return
     pods_ = (
@@ -402,9 +388,11 @@ def main(argv=None):
         sp.set_defaults(fn=handler)
 
     args = p.parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else NOTE, format="%(message)s"
-    )
+    # Root stays at NOTE so -v doesn't unleash urllib3/kubernetes HTTP body dumps
+    # (unreadable multi-KB single lines); -v only deepens our own logger.
+    logging.basicConfig(level=NOTE, format="%(message)s")
+    if args.verbose:
+        log.setLevel(logging.DEBUG)
     try:
         args.fn(config.load(args.config), args)
     except ApiException as exc:

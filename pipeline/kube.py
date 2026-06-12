@@ -85,6 +85,10 @@ def node_summary():
     return len(labels), spot, dict(by_type)
 
 
+# In-pod shutdown noise dropped from streamed logs (we os._exit, so it's spurious).
+_NOISE = ("resource_tracker:", "leaked semaphore")
+
+
 def exec_cmd(
     namespace: str, pod: str, argv: list, timeout: int = 300, on_line=None
 ) -> str:
@@ -121,7 +125,8 @@ def exec_cmd(
             *lines, partial[chan] = partial[chan].split("\n")
             if on_line:
                 for line in lines:
-                    on_line(line)
+                    if not any(n in line for n in _NOISE):
+                        on_line(line)
 
     deadline = time.monotonic() + timeout
     while ws.is_open():
@@ -205,7 +210,7 @@ def recreate_job(namespace: str, spec):
     b = batch()
     try:
         b.delete_namespaced_job(name, namespace, propagation_policy="Foreground")
-        note(f"replacing existing job '{name}' (waiting for delete)...")
+        note(f"{name}: replacing existing job")
         for _ in range(60):
             try:
                 b.read_namespaced_job(name, namespace)
@@ -242,7 +247,7 @@ def run_oneshot(namespace: str, pod_spec) -> str:
     name = pod_spec.metadata.name
     _delete_pod_if_exists(c, namespace, name)
     c.create_namespaced_pod(namespace, pod_spec)
-    note(f"one-shot pod '{name}' created; waiting for it to finish...")
+    note(f"{name}: running")
     phase = "Pending"
     try:
         for _ in range(600):  # allow time for an Autopilot node to be provisioned

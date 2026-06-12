@@ -90,11 +90,66 @@ def test_api_errors_exit_cleanly(monkeypatch, cfg):
 
 
 def test_status_quiet_when_no_jobs(monkeypatch, cfg):
+    monkeypatch.setattr(cli.util, "read_layer_counts", lambda c: None)
     monkeypatch.setattr(cli.kube, "list_jobs", lambda ns, workload=None: [])
     built = {}
-    monkeypatch.setattr(cli.util, "status_table", lambda c: built.setdefault("yes", True))
+    monkeypatch.setattr(
+        cli.util, "status_table", lambda c, t=None: built.setdefault("yes", True)
+    )
     cli.status(cfg, SimpleNamespace(once=True))
     assert not built  # no table rendered, just a note
+
+
+def test_layer_counts_cache_round_trip(monkeypatch, cfg, tmp_path):
+    cfg.config_dir = str(tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        cli.util,
+        "run_pcg",
+        lambda c, name, argv, **kw: calls.append(name) or "import noise\n100 50 1\n",
+    )
+    assert cli.util.read_layer_counts(cfg) == {2: 100, 3: 50, 4: 1}
+    assert cli.util.read_layer_counts(cfg) == {2: 100, 3: 50, 4: 1}  # served from cache
+    assert calls == ["layer-counts"]  # ChunkedGraph hit exactly once
+    assert cli.util.read_n(cfg, 3) == 50
+    cli.util.invalidate_layer_counts(cfg)
+    cli.util.read_layer_counts(cfg)
+    assert calls == ["layer-counts", "layer-counts"]  # recomputed after invalidate
+
+
+def test_submit_blocks_until_prev_layer_complete(monkeypatch, cfg):
+    running = SimpleNamespace(status=SimpleNamespace(conditions=[]))
+    monkeypatch.setattr(
+        cli.kube,
+        "batch",
+        lambda: SimpleNamespace(read_namespaced_job=lambda n, ns: running),
+    )
+    with pytest.raises(SystemExit, match="not complete"):
+        cli._require_prev_complete(cfg, 3, force=False)
+    cli._require_prev_complete(cfg, 3, force=True)  # override -> no raise
+    cli._require_prev_complete(cfg, 2, force=False)  # L2 has no predecessor
+
+
+def test_submit_blocks_when_prev_layer_missing(monkeypatch, cfg):
+    def boom(name, ns):
+        raise ApiException(status=404, reason="Not Found")
+
+    monkeypatch.setattr(
+        cli.kube, "batch", lambda: SimpleNamespace(read_namespaced_job=boom)
+    )
+    with pytest.raises(SystemExit, match="submit it first"):
+        cli._require_prev_complete(cfg, 3, force=False)
+
+
+def test_status_table_shows_pending_layers(monkeypatch, cfg):
+    def _raise(*a, **k):
+        raise Exception("no nodes")
+
+    monkeypatch.setattr(cli.kube, "list_jobs", lambda ns, workload=None: [])
+    monkeypatch.setattr(cli.kube, "node_summary", _raise)
+    monkeypatch.setattr(cli.costs, "load_table", lambda: {})
+    table = cli.util.status_table(cfg, {2: 100, 3: 200})
+    assert table.row_count == 2  # both layers shown though none submitted
 
 
 def test_undeploy_deletes_jobs_then_uninstalls_release(monkeypatch, cfg):

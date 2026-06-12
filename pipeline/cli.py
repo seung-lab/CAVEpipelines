@@ -89,6 +89,7 @@ def setup(cfg, args, wait_create=False):
             argv.append("--raw")
     note(f"setup ({cfg.workload})")
     note(util.run_pcg(cfg, "setup", argv, wait_create=wait_create) or "setup done")
+    util.invalidate_layer_counts(cfg)  # graph may have changed; recompute on next read
 
 
 def mesh_meta(cfg, args):
@@ -98,9 +99,31 @@ def mesh_meta(cfg, args):
     note(util.run_pcg(cfg, "mesh-meta", argv) or "mesh metadata written")
 
 
+def _require_prev_complete(cfg, layer, force=False):
+    """Refuse to submit a layer until the one below it is 100% complete (--force overrides)."""
+    if layer <= 2 or force:
+        return
+    prev = manifest.job_name(cfg, layer - 1)
+    try:
+        job = kube.batch().read_namespaced_job(prev, cfg.namespace)
+    except ApiException as exc:
+        if exc.status == 404:
+            raise SystemExit(
+                f"layer {layer - 1} has no job; submit it first "
+                f"(--force only if you're sure it's already done)"
+            )
+        raise
+    if util.job_state(job) != "complete":
+        raise SystemExit(
+            f"layer {layer - 1} is not complete; finish it first "
+            f"(--force only if you're sure)"
+        )
+
+
 def submit(cfg, args):
     """Create one layer's Indexed Job (completions from cg.meta) and ramp parallelism."""
     note(f"submit L{args.layer} ({cfg.workload})")
+    _require_prev_complete(cfg, args.layer, force=getattr(args, "force", False))
     n = util.read_n(cfg, args.layer)
     completions = util.ceil_div(n, cfg.job.batch_size)
     pmax = min(cfg.ramp.max, completions)
@@ -156,9 +179,18 @@ def inspect(cfg, args):
     if args.index is None:
         s = kube.batch().read_namespaced_job(name, cfg.namespace).status
         note(
-            f"{name}: {s.succeeded or 0} ok, {s.active or 0} active, {s.failed or 0} failed"
+            f"{name}: {s.succeeded or 0} ok, {s.active or 0} active, "
+            f"{s.failed or 0} failed pod attempts"
         )
-        note(f"failed indexes: {getattr(s, 'failed_indexes', None) or 'none'}")
+        failed_idx = getattr(s, "failed_indexes", None)
+        if failed_idx:
+            note(f"permanently-failed indexes: {failed_idx}")
+            note(f"`pipeline inspect {args.layer} <index>` for a failed index's log")
+        else:
+            note(
+                "no permanently-failed indexes (failed attempts retried + recovered); "
+                f"`pipeline events {args.layer}` shows preemptions/retries"
+            )
         return
     pods_ = (
         kube.core()
@@ -257,23 +289,24 @@ def top(cfg, args):
 
 
 def status(cfg, args):
-    """Live per-layer progress table (the configured workload); Ctrl-C to stop."""
-    if not kube.list_jobs(cfg.namespace, cfg.workload):
+    """Live progress over all layers (a-priori chunk counts); runs until Ctrl-C."""
+    try:
+        layer_totals = util.read_layer_counts(cfg)
+    except (SystemExit, Exception):  # noqa: BLE001 - totals are enrichment; degrade gracefully
+        layer_totals = None
+    if not layer_totals and not kube.list_jobs(cfg.namespace, cfg.workload):
         note(f"no {cfg.workload} jobs in ns '{cfg.namespace}'")
         return
     if args.once:
-        Console().print(util.status_table(cfg))
+        Console().print(util.status_table(cfg, layer_totals))
         return
     try:
         with Live(refresh_per_second=4) as live:
-            while True:
-                live.update(util.status_table(cfg))
-                jobs = kube.list_jobs(cfg.namespace, cfg.workload)
-                if jobs and all(util.job_state(j) != "running" for j in jobs):
-                    break
+            while True:  # stays up across layers; Ctrl-C to stop
+                live.update(util.status_table(cfg, layer_totals))
                 time.sleep(args.interval)
     except KeyboardInterrupt:
-        return
+        pass
     table = costs.load_table()
     if cfg.region and table:
         try:
@@ -283,9 +316,9 @@ def status(cfg, args):
                 ).get("total", 0.0)
                 for job in kube.list_jobs(cfg.namespace, cfg.workload)
             )
-            note(f"workload complete · estimated cost ~${total:.2f}")
+            note(f"estimated cost so far ~${total:.2f}")
         except Exception as exc:  # noqa: BLE001 - cost is auxiliary, never fatal
-            note(f"final cost unavailable: {exc}")
+            note(f"cost unavailable: {exc}")
 
 
 def show_costs(cfg, args):
@@ -366,6 +399,12 @@ def main(argv=None):
         "submit", help="submit one layer's Indexed Job and ramp parallelism"
     )
     su.add_argument("layer", type=int)
+    su.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="submit even if the layer below isn't complete — only if you're sure",
+    )
     su.set_defaults(fn=submit)
 
     sc = sub.add_parser(

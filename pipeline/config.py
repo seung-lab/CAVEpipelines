@@ -72,6 +72,9 @@ class Config:
         ""  # GKE region; selects the cost rate row (no default — set per cluster)
     )
     zone: str = ""  # optional: pin worker pods to one zone (topology.kubernetes.io/zone)
+    config_dir: str = (
+        "config"  # where pipeline.yml lives; also holds the local counts cache
+    )
 
     def image(self) -> str:
         return self.images.l2cache if self.workload == "l2cache" else self.images.pcg
@@ -99,6 +102,7 @@ def load(config_dir: str = "config") -> Config:
         env=raw.get("env") or {},  # `env:` left empty in yaml parses to None
         region=raw.get("region", ""),
         zone=raw.get("zone", ""),
+        config_dir=config_dir,
     )
 
 

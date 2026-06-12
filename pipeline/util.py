@@ -1,21 +1,21 @@
 """Helper functions for the pipeline CLI."""
 
+import json
+import os
 from datetime import datetime, timezone
 
 from rich.table import Table
 
 from . import costs, kube, manifest, note
 
-# os._exit after printing: the bigtable.data client leaves a non-daemon channel-refresh
-# thread that atexit join()s forever, so a normal exit would hang the exec long after the
-# count is computed. Hard-exit once we have the value.
-_N_CODE = """
+# All layers' chunk counts (L2..root). ChunkedGraph init is costly, so this runs at most
+# once (os._exit dodges the bigtable channel-thread exit hang); the result is cached
+# locally and setup invalidates the cache so a re-setup recomputes.
+_COUNTS_CODE = """
 import os, sys
-import numpy as np
 from pychunkedgraph.graph import ChunkedGraph
 cg = ChunkedGraph(graph_id={gid!r})
-L = {layer}
-print(1 if L == cg.meta.layer_count else int(np.prod(cg.meta.layer_chunk_bounds[L])))
+print(*[int(c) for c in cg.meta.layer_chunk_counts])
 sys.stdout.flush()
 os._exit(0)
 """
@@ -37,21 +37,60 @@ def run_pcg(cfg, name, argv, wait_create=False):
     return kube.run_oneshot(cfg.namespace, manifest.oneshot_pod_spec(cfg, name, argv))
 
 
-def read_n(cfg, layer):
-    """Number of chunks in a layer, from cg.meta (via a PCG-image pod)."""
+def _counts_cache(cfg) -> str:
+    return os.path.join(cfg.config_dir, ".layer_counts.json")
+
+
+def _read_cache(cfg) -> dict:
+    try:
+        with open(_counts_cache(cfg)) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_cache(cfg, cache) -> None:
+    try:
+        with open(_counts_cache(cfg), "w") as f:
+            json.dump(cache, f)
+    except OSError:
+        pass  # cache is best-effort
+
+
+def invalidate_layer_counts(cfg) -> None:
+    """Drop this graph's cached counts (call after setup changes the graph)."""
+    cache = _read_cache(cfg)
+    if cache.pop(cfg.graph_id, None) is not None:
+        _write_cache(cfg, cache)
+
+
+def read_layer_counts(cfg) -> dict:
+    """{layer: chunk_count} for every layer (L2..root). Cached locally after the first
+    read, so ChunkedGraph is initialized at most once per graph."""
+    cache = _read_cache(cfg)
+    if cfg.graph_id in cache:
+        return {int(k): v for k, v in cache[cfg.graph_id].items()}
     out = run_pcg(
-        cfg,
-        f"nread-l{layer}",
-        ["python", "-u", "-c", _N_CODE.format(gid=cfg.graph_id, layer=layer)],
+        cfg, "layer-counts", ["python", "-u", "-c", _COUNTS_CODE.format(gid=cfg.graph_id)]
     )
-    # last all-digit line = the count; anything else is import noise or a traceback
     for line in reversed(out.splitlines()):
-        if line.strip().isdigit():
-            return int(line.strip())
+        parts = line.split()
+        if parts and all(p.isdigit() for p in parts):
+            counts = {2 + i: int(c) for i, c in enumerate(parts)}
+            cache[cfg.graph_id] = {str(k): v for k, v in counts.items()}
+            _write_cache(cfg, cache)
+            return counts
     raise SystemExit(
-        f"could not read the layer {layer} chunk count for '{cfg.graph_id}'; "
-        f"pod output:\n{out or '(empty — pod may be restarting; retry)'}"
+        f"could not read layer counts for '{cfg.graph_id}'; pod output:\n{out}"
     )
+
+
+def read_n(cfg, layer):
+    """Chunk count for a layer, from the cached per-layer counts."""
+    counts = read_layer_counts(cfg)
+    if layer not in counts:
+        raise SystemExit(f"layer {layer} not in {sorted(counts)} for '{cfg.graph_id}'")
+    return counts[layer]
 
 
 def job_state(job):
@@ -73,11 +112,13 @@ def elapsed(job):
     return f"{hours}h{mins:02d}m" if hours else f"{mins}m"
 
 
-def status_table(cfg) -> Table:
-    jobs = sorted(
-        kube.list_jobs(cfg.namespace, cfg.workload),
-        key=lambda j: int((j.metadata.labels or {}).get("layer", "0")),
-    )
+def status_table(cfg, layer_totals=None) -> Table:
+    """Per-layer progress. With `layer_totals` ({layer: chunks}), every layer is shown —
+    submitted ones with live progress, the rest with their a-priori total (pending)."""
+    jobs_by_layer = {
+        int((j.metadata.labels or {}).get("layer", "0")): j
+        for j in kube.list_jobs(cfg.namespace, cfg.workload)
+    }
     try:
         n_nodes, spot, by_type = kube.node_summary()
         types = ", ".join(f"{c}×{t}" for t, c in sorted(by_type.items()))
@@ -86,16 +127,24 @@ def status_table(cfg) -> Table:
         nodes = "nodes ?"
     table = Table(
         title=f"{cfg.workload} · {cfg.graph_id} · {nodes}",
-        caption="active−ready ≈ pods waiting on Autopilot nodes / spot capacity",
+        caption="active−ready ≈ pods waiting on capacity · cost is a Spot estimate",
     )
     cols = ("layer", "done", "total", "%", "active", "ready", "failed", "elapsed", "cost")
     for col in cols:
         table.add_column(col, justify="right")
     rate_table = costs.load_table()
-    for job in jobs:
+    layers = sorted(layer_totals) if layer_totals else sorted(jobs_by_layer)
+    for layer in layers:
+        job = jobs_by_layer.get(layer)
+        total = (layer_totals or {}).get(layer)
+        if job is None:  # known size, not yet submitted
+            row = [str(layer), "-", str(total) if total else "-"] + ["-"] * 6
+            table.add_row(*row)
+            continue
         s = job.status
         ann = job.metadata.annotations or {}
-        total = int(ann.get("chunks", 0))
+        if total is None:
+            total = int(ann.get("chunks", 0))
         batch = int(ann.get("batch_size", 0)) or 1
         done = min((s.succeeded or 0) * batch, total) if total else 0
         pct = 100 * done // total if total else 0
@@ -103,10 +152,13 @@ def status_table(cfg) -> Table:
         failed = s.failed or 0
         cost_cell = "-"
         if cfg.region and rate_table:
-            est = costs.estimate_job_cost(job, [], rate_table, cfg.region)
+            # per-pod (real pod lifetimes), matching the at-finish total; [] would
+            # fall back to wall×pods and over-count a ramped job
+            pods = kube.pods_of(cfg.namespace, job.metadata.name)
+            est = costs.estimate_job_cost(job, pods, rate_table, cfg.region)
             cost_cell = f"${est['total']:.2f}" if "total" in est else "err"
         table.add_row(
-            (job.metadata.labels or {}).get("layer", "?"),
+            str(layer),
             str(done) if total else "-",
             str(total) if total else "-",
             f"[{color}]{pct}%[/]" if color else f"{pct}%",

@@ -48,10 +48,10 @@ one-shot pod instead, so the cluster idles at **zero nodes**.
 | `pipeline deploy` | `helm upgrade --install` the static infra + create the Secret from `secrets/` (`--setup` also runs `setup`; `--submit-l2` also submits layer 2) |
 | `pipeline setup` | create the graph table + meta (in the util pod, or a one-shot pod) |
 | `pipeline mesh-meta` | write the graph's mesh metadata once (meshing only, after ingest reaches root) |
-| `pipeline submit <layer>` | submit (or re-submit) the layer's Indexed Job; ramp parallelism |
+| `pipeline submit <layer>` | submit (or re-submit) the layer's Indexed Job; ramp parallelism (refuses if the layer below isn't 100% — `--force` to override) |
 | `pipeline scale <layer> <n>` | resize the running layer's workers (set Job parallelism) anytime |
 | `pipeline sample <layer> <n>` | run N scattered chunks (one per pod) to size CPU/memory before a full run |
-| `pipeline status` | live per-layer table: done, total, % (green=done, red=failed), active/ready, failed count, elapsed + nodes by type/spot |
+| `pipeline status` | live table of **all** layers (a-priori chunk counts; unsubmitted shown pending): done, total, %, active/ready, failed, elapsed, cost (estimate) + nodes; stays up across layers until Ctrl-C |
 | `pipeline inspect <layer> [index]` | list a layer's failed indexes; with an index, that pod's log |
 | `pipeline pods <layer>` | the layer's pods: index, phase, node, scheduling reason |
 | `pipeline events <layer>` | the layer's Job + pod events (scheduling, scale-up, failures) |

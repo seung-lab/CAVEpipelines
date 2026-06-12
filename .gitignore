@@ -2,10 +2,8 @@
 *.json
 mesh*.yaml
 secrets/
-config/pipeline.yml
-config/dataset.yml
 
-# local run state
+# local run state (config/ has its own whitelist .gitignore)
 costs/
 
 # python

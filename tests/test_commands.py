@@ -123,8 +123,31 @@ def test_layer_counts_cache_round_trip(monkeypatch, cfg, tmp_path):
     assert calls == ["layer-counts", "layer-counts"]  # recomputed after invalidate
 
 
+def test_graph_id_flag_overrides_config(monkeypatch, cfg):
+    monkeypatch.setattr(cli.config, "load", lambda name: cfg)
+    seen = _capture_run_pcg(monkeypatch)
+    CliRunner().invoke(
+        cli.cli, ["-g", "other_graph", "mesh-meta"], catch_exceptions=False
+    )
+    assert seen["argv"][-1] == "other_graph"  # the override reaches the workload
+
+
+def test_submit_refuses_jobs_owned_by_another_graph(cfg):
+    job = SimpleNamespace(
+        metadata=SimpleNamespace(name="ingest-l2", labels={"graph": "other"})
+    )
+    with pytest.raises(SystemExit, match="belongs to graph"):
+        cli._check_graph_owner(job, cfg)
+    cli._check_graph_owner(job, cfg, force=True)  # explicit override
+    job.metadata.labels = {"graph": cfg.graph_id}
+    cli._check_graph_owner(job, cfg)  # own job passes
+
+
 def test_submit_blocks_until_prev_layer_complete(monkeypatch, cfg):
-    running = SimpleNamespace(status=SimpleNamespace(conditions=[]))
+    running = SimpleNamespace(
+        metadata=SimpleNamespace(name="ingest-l2", labels={"graph": cfg.graph_id}),
+        status=SimpleNamespace(conditions=[]),
+    )
     monkeypatch.setattr(
         cli.kube,
         "batch",

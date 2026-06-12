@@ -30,8 +30,14 @@ HELM_CHART = "helm"
     "-c",
     "--config",
     "config_name",
-    default="config",
-    help="config dir with pipeline.yml + dataset.yml (default: config)",
+    default="pipeline.yml",
+    help="pipeline config file name inside config/ (default: pipeline.yml)",
+)
+@click.option(
+    "-g",
+    "--graph-id",
+    default=None,
+    help="override the config file's graph_id (e.g. test-run iterations)",
 )
 @click.option(
     "-v",
@@ -40,13 +46,13 @@ HELM_CHART = "helm"
     help="debug logging, incl. every kubernetes API request",
 )
 @click.pass_context
-def cli(ctx, config_name, verbose):
+def cli(ctx, config_name, graph_id, verbose):
     # Root stays at NOTE so -v doesn't unleash urllib3/kubernetes HTTP body dumps
     # (unreadable multi-KB single lines); -v only deepens our own logger.
     logging.basicConfig(level=NOTE, format="%(message)s")
     if verbose:
         log.setLevel(logging.DEBUG)
-    ctx.obj = config_name  # loaded lazily by pass_cfg, so --help needs no config
+    ctx.obj = (config_name, graph_id)  # loaded lazily by pass_cfg: --help needs no config
 
 
 def pass_cfg(fn):
@@ -58,7 +64,11 @@ def pass_cfg(fn):
     @click.pass_context
     def wrap(ctx, *args, **kwargs):
         if not isinstance(ctx.obj, config.Config):
-            ctx.obj = config.load(ctx.obj or "config")
+            name, graph_id = ctx.obj or ("pipeline.yml", None)
+            cfg = config.load(name)
+            if graph_id:
+                cfg.graph_id = graph_id
+            ctx.obj = cfg
         return ctx.invoke(fn, ctx.obj, *args, **kwargs)
 
     return functools.update_wrapper(wrap, fn)
@@ -166,6 +176,16 @@ def mesh_meta(cfg):
     note(util.run_pcg(cfg, "mesh-meta", argv) or "mesh metadata written")
 
 
+def _check_graph_owner(job, cfg, force=False):
+    """A job left by another graph makes layer-state checks meaningless — never mix."""
+    owner = (job.metadata.labels or {}).get("graph", "")
+    if owner and owner != cfg.graph_id and not force:
+        raise SystemExit(
+            f"job {job.metadata.name} belongs to graph '{owner}', not "
+            f"'{cfg.graph_id}' — delete it first (--force only if you're sure)"
+        )
+
+
 def _require_prev_complete(cfg, layer, force=False):
     """Refuse to submit a layer until the one below it is 100% complete (--force overrides)."""
     if layer <= 2 or force:
@@ -180,6 +200,7 @@ def _require_prev_complete(cfg, layer, force=False):
                 f"(--force only if you're sure it's already done)"
             )
         raise
+    _check_graph_owner(job, cfg, force)
     if util.job_state(job) != "complete":
         raise SystemExit(
             f"layer {layer - 1} is not complete; finish it first "
@@ -200,18 +221,29 @@ def submit(cfg, layer, force=False):
     """Create one layer's Indexed Job (completions from cg.meta) and ramp parallelism."""
     note(f"submit L{layer} ({cfg.workload})")
     _require_prev_complete(cfg, layer, force=force)
+    try:  # re-submitting replaces a job; never silently absorb another graph's
+        _check_graph_owner(
+            kube.batch().read_namespaced_job(
+                manifest.job_name(cfg, layer), cfg.namespace
+            ),
+            cfg,
+            force,
+        )
+    except ApiException as exc:
+        if exc.status != 404:
+            raise
     n = util.read_n(cfg, layer)
     completions = util.ceil_div(n, cfg.job.batch_size)
-    pmax = min(cfg.ramp.max, completions)
-    parallelism = min(cfg.ramp.start, pmax)
+    pmax = min(cfg.job.ramp.max, completions)
+    parallelism = min(cfg.job.ramp.start, pmax)
     spec = manifest.job_spec(cfg, layer, n, completions, parallelism)
     name = spec.metadata.name
     note(f"{name}: {n} chunks, {completions} tasks, workers {parallelism}->{pmax}")
     kube.recreate_job(cfg.namespace, spec)
     p = parallelism
     while p < pmax:
-        time.sleep(cfg.ramp.period)
-        p = min(p * cfg.ramp.factor, pmax)
+        time.sleep(cfg.job.ramp.period)
+        p = min(p * cfg.job.ramp.factor, pmax)
         kube.set_parallelism(cfg.namespace, name, p)
         note(f"  parallelism -> {p}/{pmax}")
         costdb.sample(cfg)
@@ -249,7 +281,7 @@ def scale(cfg, layer, parallelism):
 def sample(cfg, layer, count):
     """Run `count` scattered chunks of the layer (one per pod) to size CPU/memory."""
     spec = manifest.job_spec(
-        cfg, layer, count, count, min(count, cfg.ramp.max), batch_size=1
+        cfg, layer, count, count, min(count, cfg.job.ramp.max), batch_size=1
     )
     name = spec.metadata.name
     note(f"{name}: launching {count} sample chunks; size with `pipeline top {layer}`")

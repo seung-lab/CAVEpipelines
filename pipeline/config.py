@@ -1,8 +1,9 @@
-"""Load all pipeline config from a single pipeline.yml — the one source of truth.
+"""Load all pipeline config from a single yaml — the one source of truth.
 
-Grouped by concern; the dataset block is kept verbatim (same yml the graph was
-always configured with) and passed through to `setup`. One graph and one workload
-run at a time, so both live in the config — no command repeats them.
+Every config file lives in `config/`; `-c` picks a pipeline yaml by name, and its
+optional `dataset:` key names the dataset yaml (path relative to `config/`), so
+many projects coexist in one directory. The dataset block is kept verbatim (same
+yml the graph was always configured with) and passed through to `setup`.
 """
 
 import os
@@ -10,6 +11,7 @@ from dataclasses import dataclass, field
 
 import yaml
 
+CONFIG_DIR = "config"
 ENV_CONFIGMAP = "pychunkedgraph-env"
 DATASET_CONFIGMAP = "pychunkedgraph-datasets"
 
@@ -33,6 +35,14 @@ class Bigtable:
 
 
 @dataclass
+class Ramp:
+    start: int = 4
+    factor: int = 2
+    period: int = 60
+    max: int = 256
+
+
+@dataclass
 class Job:
     perm_seed: int = 0
     batch_size: int = 1000
@@ -42,14 +52,7 @@ class Job:
     compute_class: str = ""
     backoff_limit_per_index: int = 3
     max_failed_indexes: int = 50
-
-
-@dataclass
-class Ramp:
-    start: int = 4
-    factor: int = 2
-    period: int = 60
-    max: int = 256
+    ramp: Ramp = field(default_factory=Ramp)
 
 
 @dataclass
@@ -61,7 +64,6 @@ class Config:
     bigtable: Bigtable
     dataset: dict  # passthrough; written as dataset.yml by `setup`
     job: Job
-    ramp: Ramp
     workload: str = "ingest"
     secret_name: str = "cloud-volume-secrets"
     persistent_util: bool = True
@@ -80,11 +82,14 @@ class Config:
         return self.images.l2cache if self.workload == "l2cache" else self.images.pcg
 
 
-def load(config_dir: str = "config") -> Config:
-    with open(os.path.join(config_dir, "pipeline.yml")) as stream:
+def load(name: str = "pipeline.yml") -> Config:
+    """Load CONFIG_DIR/<name>; its `dataset:` key names the dataset yaml there."""
+    with open(os.path.join(CONFIG_DIR, name)) as stream:
         raw = yaml.safe_load(stream) or {}
     bt = Bigtable(**raw.get("bigtable", {}))
-    dataset = _with_bigtable(_read_dataset(config_dir), bt)
+    dataset = _with_bigtable(_read_dataset(raw.get("dataset", "dataset.yml")), bt)
+    raw_job = dict(raw.get("job", {}))
+    ramp = Ramp(**raw_job.pop("ramp", {}))
     return Config(
         namespace=raw.get("namespace", "default"),
         graph_id=raw["graph_id"],
@@ -92,8 +97,7 @@ def load(config_dir: str = "config") -> Config:
         workload_identity=WorkloadIdentity(**raw.get("workload_identity", {})),
         bigtable=bt,
         dataset=dataset,
-        job=Job(**raw.get("job", {})),
-        ramp=Ramp(**raw.get("ramp", {})),
+        job=Job(ramp=ramp, **raw_job),
         workload=raw.get("workload", "ingest"),
         secret_name=raw.get("secret_name", "cloud-volume-secrets"),
         persistent_util=raw.get("persistent_util", True),
@@ -102,13 +106,13 @@ def load(config_dir: str = "config") -> Config:
         env=raw.get("env") or {},  # `env:` left empty in yaml parses to None
         region=raw.get("region", ""),
         zone=raw.get("zone", ""),
-        config_dir=config_dir,
+        config_dir=CONFIG_DIR,
     )
 
 
-def _read_dataset(config_dir: str) -> dict:
-    """The graph definition lives in dataset.yml (empty for graph-less workloads)."""
-    path = os.path.join(config_dir, "dataset.yml")
+def _read_dataset(rel_path: str) -> dict:
+    """The graph definition yaml, relative to CONFIG_DIR (empty for graph-less workloads)."""
+    path = os.path.join(CONFIG_DIR, rel_path)
     if not os.path.exists(path):
         return {}
     with open(path) as stream:

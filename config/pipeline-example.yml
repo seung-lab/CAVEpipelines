@@ -1,26 +1,8 @@
-namespace: default
-graph_id: my_graph
-workload: ingest
-persistent_util: true
-
-secret_files:
-  google-secret.json: projectA/google-secret.json
-  cave-secret.json: cave-secret-projectA.json
+# frequently-edited blocks first: images, job sizing (incl. ramp); identity/infra below
 
 images:
   pcg: caveconnectome/pychunkedgraph:latest
   l2cache: caveconnectome/pcgl2cache:latest
-
-workload_identity:
-  service_account: pipeline
-  gsa_email: cave-pipeline-worker@PROJECT.iam.gserviceaccount.com
-
-bigtable:
-  project: PROJECT
-  instance: INSTANCE
-
-region: us-east1
-zone: ""
 
 job:
   perm_seed: 42
@@ -31,12 +13,33 @@ job:
   compute_class: ""
   backoff_limit_per_index: 3
   max_failed_indexes: 50
+  ramp:
+    start: 4
+    factor: 2
+    period: 60
+    max: 1024
 
-ramp:
-  start: 4
-  factor: 2
-  period: 60
-  max: 1024
+graph_id: my_graph
+dataset: dataset.yml  # dataset yaml inside config/ (subdirs ok, e.g. pinky/dataset.yml)
+workload: ingest
+
+region: us-east1
+zone: ""
+
+bigtable:
+  project: PROJECT
+  instance: INSTANCE
+
+workload_identity:
+  service_account: pipeline
+  gsa_email: cave-pipeline-worker@PROJECT.iam.gserviceaccount.com
+
+secret_files:
+  google-secret.json: projectA/google-secret.json
+  cave-secret.json: cave-secret-projectA.json
+
+namespace: default
+persistent_util: true
 
 # extra env on every worker + setup pod (BIGTABLE_* is set automatically from bigtable:)
 env:

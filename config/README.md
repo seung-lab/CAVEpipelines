@@ -4,15 +4,20 @@ The `pipeline` CLI reads its config from this directory — two files:
 
 | File | What | Read by |
 |---|---|---|
-| `pipeline.yml` | run-wide settings: cluster, images, identity, Bigtable, job/ramp sizing, env | the CLI (helm + every Job) |
+| `pipeline.yml` | run-wide settings: cluster, images, identity, Bigtable, job sizing (incl. ramp), env | the CLI (helm + every Job) |
 | `dataset.yml` | the graph definition (sources, chunk layout, mesh params) | `setup` / `mesh-meta` only |
 
 Copy the templates (the copies are gitignored):
 
 ```shell
-cp pipeline-example.yml pipeline.yml
-cp dataset-example.yml  dataset.yml
+cp pipeline-example.yml pipeline.yml   # the default; or any name, e.g. pinky.yml
+cp dataset-example.yml  dataset.yml    # non-default names link via `dataset:` in the pipeline yaml
 ```
+
+Everything here except the examples and this README is gitignored, so any number of projects
+live side by side (`pinky.yml` + `pinky/dataset.yml`, …). Pick one with `pipeline -c <name>`;
+`-g` overrides its `graph_id` per run (test iterations like `…_test1` without editing files).
+The layer-counts cache `.layer_counts.json` lives here too, keyed by graph id.
 
 Workers read graph meta from Bigtable at run time, so only `setup` (and `mesh-meta`) read
 `dataset.yml`. `PROJECT`/`INSTANCE` under its `backend_client.CONFIG` are filled automatically
@@ -23,7 +28,8 @@ from `pipeline.yml`'s `bigtable:`.
 | Key | What |
 |---|---|
 | `namespace` | k8s namespace for all pods |
-| `graph_id` | the ChunkedGraph id (table name) |
+| `graph_id` | the ChunkedGraph id (table name); `-g` overrides it per invocation |
+| `dataset` | dataset yaml file in this directory (default `dataset.yml`; subdirs ok) |
 | `workload` | `ingest` \| `l2cache` \| `meshing` \| `migrate` \| `migrate_cleanup` — one at a time |
 | `persistent_util` | keep the spot util pod alive between layers; `false` = one-shot pod (idle 0 nodes) |
 | `secret_files` | `{container_filename: local_path under ./secrets}`; `{}` = Workload Identity only |
@@ -34,7 +40,7 @@ from `pipeline.yml`'s `bigtable:`.
 | `region` | GKE region — selects the cost rate row in `rates.csv` (required for cost estimates) |
 | `zone` | optional: pin worker pods to one zone (e.g. Bigtable's) for lower latency — trades Spot capacity |
 | `job.*` | per-layer sizing: `perm_seed`, `batch_size`, `parallel` (parent-chunk builds fan out over every core; `false` = sequential, for debugging), `cpu`, `memory`, `compute_class`, `backoff_limit_per_index`, `max_failed_indexes` |
-| `ramp.*` | parallelism ramp: `start`, `factor`, `period` (s), `max` |
+| `job.ramp.*` | parallelism ramp: `start`, `factor`, `period` (s), `max` |
 | `env` | extra env on every worker + setup pod (below) |
 | `commands` | container command for non-built-in workloads (only `l2cache` today) |
 
@@ -63,13 +69,13 @@ layer runs for exact accounting.
 
 ### Tuning per dataset
 
-`batch_size`, `ramp.*`, and `job.cpu`/`memory`/`compute_class` are throughput knobs — set them to
+`batch_size`, `job.ramp.*`, and `job.cpu`/`memory`/`compute_class` are throughput knobs — set them to
 your graph size and how fast you want each layer to run, and revise them per layer:
 
 - **`batch_size`** (chunks per pod) sets the task count `ceil(chunks / batch_size)`, which is also
   the worker ceiling. Smaller = more tasks = finer parallelism + retry/inspection granularity, but
   more pods; larger = fewer, fatter pods.
-- **`ramp.*`** grows the worker count up to `max` — capped at the task count, so a small layer uses
+- **`job.ramp.*`** grows the worker count up to `max` — capped at the task count, so a small layer uses
   fewer workers no matter how high `max` is.
 - **`job.memory` / `compute_class`** — raise for heavy upper layers (stitching, meshing).
 

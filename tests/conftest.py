@@ -20,5 +20,4 @@ def cfg():
         bigtable=config.Bigtable(project="proj", instance="inst"),
         dataset={"data_source": {"EDGES": "gs://b/e"}},
         job=config.Job(perm_seed=7, batch_size=1000, compute_class="Balanced"),
-        ramp=config.Ramp(),
     )

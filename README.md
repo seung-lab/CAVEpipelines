@@ -16,7 +16,7 @@ pods absorb preemption; a cold Bigtable is ramped into gradually.
 | Path | What |
 |---|---|
 | `pipeline/` | the **`pipeline` CLI** (Python, kubernetes client) — the only thing you run |
-| `config/` | `pipeline.yml` + `dataset.yml` (copy the `*-example.yml` templates) — see [config/README.md](config/README.md) |
+| `config/` | all run configs — `-c` picks a pipeline yaml by name, its `dataset:` key names the dataset yaml; any number of projects side by side — see [config/README.md](config/README.md) |
 | `secrets/` | local secret files (gitignored); `secret_files:` in `pipeline.yml` picks which to load |
 | `terraform/` | the GKE Autopilot cluster + Workload-Identity service account |
 | `helm/` | static infra only (service account, ConfigMaps, an optional spot util pod) — driven by the CLI |
@@ -139,6 +139,10 @@ cp config/dataset-example.yml config/dataset.yml
 pipeline deploy --setup --submit-l2   # deploy + setup + submit layer 2, in one step
 ```
 
+Several projects can coexist in `config/` under their own names (`pinky.yml` paired to its
+dataset via the `dataset:` key) — pick one per invocation with `pipeline -c pinky.yml …`, and
+`-g` overrides `graph_id` for throwaway test iterations without editing any file.
+
 (`deploy`/`setup`/`submit` are also separate commands; the flags just chain them for a
 first run. `--submit-l2` requires `--setup`.)
 
@@ -157,8 +161,8 @@ What each `submit` does (the same flow every workload uses):
 - **Sizes the Job** — reads N (chunks in the layer) from `cg.meta`, sets
   `completions = ceil(N / batch_size)`, applies the Indexed Job. Each chunk is built under a
   per-chunk lock (one writer per chunk).
-- **Ramps parallelism** — geometric: `ramp.start` → ×`ramp.factor` every `ramp.period`s → up to
-  `ramp.max`, so a cold Bigtable autoscales/splits before full load.
+- **Ramps parallelism** — geometric: `job.ramp.start` → ×`factor` every `period`s → up to
+  `job.ramp.max`, so a cold Bigtable autoscales/splits before full load.
 - **Tune per layer** in `pipeline.yml` — `job.memory`, `compute_class`, `batch_size`, the ramp.
   To size CPU/memory first: `pipeline sample <layer> <n>` runs n chunks one-per-pod, then
   `pipeline top <layer>` shows per-pod usage.

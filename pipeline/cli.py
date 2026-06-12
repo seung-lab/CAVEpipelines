@@ -26,6 +26,8 @@ HELM_CHART = "helm"
 
 def deploy(cfg, args):
     """helm upgrade --install the static infra, incl. the Secret built from ./secrets."""
+    if args.submit_l2 and not args.setup:
+        raise SystemExit("--submit-l2 requires --setup")
     data = kube.secret_data(args.secrets, cfg.secret_files)
     note(f"deploy: helm release 'pcg' (secrets: {list(data) or 'none'})")
     with tempfile.NamedTemporaryFile("w", suffix=".yaml") as f:
@@ -58,7 +60,11 @@ def deploy(cfg, args):
     )
     if args.setup:
         setup(cfg, args, wait_create=True)  # util pod is still spinning up post-deploy
-        note("pipeline ready; run `pipeline submit <layer>`")
+        if args.submit_l2:
+            args.layer = 2
+            submit(cfg, args)
+        else:
+            note("pipeline ready; run `pipeline submit <layer>`")
 
 
 def undeploy(cfg, args):
@@ -332,6 +338,11 @@ def main(argv=None):
     )
     d.add_argument(
         "-r", "--raw", action="store_true", help="raw agglomeration input (with --setup)"
+    )
+    d.add_argument(
+        "--submit-l2",
+        action="store_true",
+        help="submit layer 2 after setup (requires --setup)",
     )
     d.set_defaults(fn=deploy)
 

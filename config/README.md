@@ -39,7 +39,9 @@ from `pipeline.yml`'s `bigtable:`.
 | `bigtable.project` / `bigtable.instance` | Bigtable target; also injected into `dataset.yml`'s `backend_client` |
 | `region` | GKE region — selects the cost rate row in `rates.csv` (required for cost estimates) |
 | `zone` | optional: pin worker pods to one zone (e.g. Bigtable's) for lower latency — trades Spot capacity |
-| `job.*` | per-layer sizing: `perm_seed`, `batch_size`, `parallel` (parent-chunk builds fan out over every core; `false` = sequential, for debugging), `cpu`, `memory`, `compute_class`, `backoff_limit_per_index`, `max_failed_indexes` |
+| `job.*` | sizing: `perm_seed`, `batch_size`, `parallel` (parent-chunk builds fan out over every core; `false` = sequential, for debugging), `cpu`, `memory`, `compute_class`, `task_retries` (per-task retry budget), `max_failed_tasks` (dead tasks tolerated before the layer aborts — bounds retry spend; auto-clamped to the layer's task count) |
+| `job.resources.*` | optional per-layer cpu/memory curves + per-layer overrides — see "How per-layer resources scale" |
+| `job.workloads.<name>` | per-workload deep-overrides of `job` (own `batch_size`, curves, ramp) |
 | `job.ramp.*` | parallelism ramp: `start`, `factor`, `period` (s), `max` |
 | `env` | extra env on every worker + setup pod (below) |
 | `commands` | container command for non-built-in workloads (only `l2cache` today) |
@@ -80,6 +82,28 @@ your graph size and how fast you want each layer to run, and revise them per lay
 - **`job.memory` / `compute_class`** — raise for heavy upper layers (stitching, meshing).
 
 `pipeline submit` prints `chunks / batch = tasks; workers …`; track progress with `pipeline status`.
+
+### How per-layer resources scale
+
+Upper layers do heavier per-chunk work; `job.resources` declares requests as a curve instead of
+one flat size — per dimension, `value(L) = min(base × factor^(L−2) + add, max)` (layer 2 is the
+base; `max: 0` = uncapped; a dimension without a curve falls back to the flat `job.cpu` /
+`job.memory`). `overrides` pins exact values for layers that break the curve. Every value is
+operator-declared — nothing is assumed.
+
+With `cpu: base 1, factor 2, max 28` and `memory: base 1, factor 2, add 1, max 33`:
+
+| layer | 2 | 3 | 4 | 5 | 6 | 7+ |
+|---|---|---|---|---|---|---|
+| vCPU | 1 | 2 | 4 | 8 | 16 | 28 (capped) |
+| GiB | 2 | 3 | 5 | 9 | 17 | 33 (capped) |
+
+Each layer is then snapped to the **cheapest valid Autopilot request**: memory is raised to the
+1 GiB/vCPU billing floor and cpu to the 6.5 GiB/vCPU ceiling's implied minimum (Autopilot would
+round both up silently and bill the result — explicit keeps cost records true), off-step cpu
+(0.25-vCPU grid) warns, and anything past the general-purpose ceiling (30 vCPU / 110 GiB) refuses
+with a pointer to `compute_class` or an override. A curve can therefore never silently land on a
+pricier bill than declared.
 
 ## `dataset.yml`
 

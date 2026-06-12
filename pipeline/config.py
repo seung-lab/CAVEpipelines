@@ -42,6 +42,23 @@ class Ramp:
 
 
 @dataclass
+class Curve:
+    """Per-layer scaling: value(L) = min(base * factor**(L-2) + add, max); max 0 = uncapped."""
+
+    base: float
+    factor: float = 1.0
+    add: float = 0.0
+    max: float = 0.0
+
+
+@dataclass
+class Resources:
+    cpu: Curve = None
+    memory: Curve = None
+    overrides: dict = field(default_factory=dict)  # {layer: {"cpu": x, "memory": y}}
+
+
+@dataclass
 class Job:
     perm_seed: int = 0
     batch_size: int = 1000
@@ -49,9 +66,10 @@ class Job:
     cpu: str = "1"
     memory: str = "2Gi"
     compute_class: str = ""
-    backoff_limit_per_index: int = 3
-    max_failed_indexes: int = 50
+    task_retries: int = 3  # per-task retry budget before the task is dead
+    max_failed_tasks: int = 50  # dead tasks tolerated before the layer aborts
     ramp: Ramp = field(default_factory=Ramp)
+    resources: Resources = None  # per-layer curves; None = flat cpu/memory everywhere
 
 
 @dataclass
@@ -88,7 +106,10 @@ def load(name: str = "pipeline.yml") -> Config:
     bt = Bigtable(**raw.get("bigtable", {}))
     dataset = _with_bigtable(_read_dataset(raw.get("dataset", "dataset.yml")), bt)
     raw_job = dict(raw.get("job", {}))
+    workload = raw.get("workload", "ingest")
+    raw_job = _merge(raw_job, raw_job.pop("workloads", {}).get(workload, {}))
     ramp = Ramp(**raw_job.pop("ramp", {}))
+    resources = _resources(raw_job.pop("resources", None))
     return Config(
         namespace=raw.get("namespace", "default"),
         graph_id=raw["graph_id"],
@@ -96,8 +117,8 @@ def load(name: str = "pipeline.yml") -> Config:
         workload_identity=WorkloadIdentity(**raw.get("workload_identity", {})),
         bigtable=bt,
         dataset=dataset,
-        job=Job(ramp=ramp, **raw_job),
-        workload=raw.get("workload", "ingest"),
+        job=Job(ramp=ramp, resources=resources, **raw_job),
+        workload=workload,
         secret_name=raw.get("secret_name", "cloud-volume-secrets"),
         persistent_util=raw.get("persistent_util", True),
         secret_files=raw.get("secret_files", {}),
@@ -106,6 +127,27 @@ def load(name: str = "pipeline.yml") -> Config:
         region=raw.get("region", ""),
         zone=raw.get("zone", ""),
         config_dir=CONFIG_DIR,
+    )
+
+
+def _merge(base: dict, override: dict) -> dict:
+    """Recursive dict merge — `job.workloads.<workload>` deep-overrides `job`."""
+    out = dict(base)
+    for key, val in override.items():
+        if isinstance(val, dict) and isinstance(out.get(key), dict):
+            out[key] = _merge(out[key], val)
+        else:
+            out[key] = val
+    return out
+
+
+def _resources(raw) -> Resources:
+    if not raw:
+        return None
+    return Resources(
+        cpu=Curve(**raw["cpu"]) if "cpu" in raw else None,
+        memory=Curve(**raw["memory"]) if "memory" in raw else None,
+        overrides={int(k): v for k, v in raw.get("overrides", {}).items()},
     )
 
 

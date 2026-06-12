@@ -284,10 +284,12 @@ compute class.
 - **Default (general-purpose) compute class** — the cheapest pod-based class; `Balanced` (~+45%) and
   `Scale-Out` (~+26%) cost more per vCPU/GiB. Leave `compute_class: ""` unless a layer truly needs
   the extra capacity or higher per-pod limits.
-- **Right-size `job.cpu` / `job.memory`** per layer — you pay for what you request. Measure with
-  `pipeline sample <layer> <n>` then `pipeline top <layer>`, and set requests just above the real
-  peak. Keep each pod **≥ 250m CPU / 512Mi** and within a **1:1–1:6.5 cpu:mem ratio**, or Autopilot
-  rounds the smaller resource up and bills it.
+- **Right-size requests per layer** — you pay for what you request. Measure with
+  `pipeline sample <layer> <n>` then `pipeline top <layer>`, and either set flat
+  `job.cpu`/`job.memory` or declare a per-layer curve (`job.resources`) so upper layers scale
+  automatically. The CLI snaps every layer to the cheapest valid Autopilot request (≥ 250m/512Mi,
+  1:1–1:6.5 cpu:mem) and refuses past the general-purpose ceiling instead of silently billing a
+  pricier class — see [config/README.md](config/README.md).
 - **Scale to zero between layers** — `persistent_util: false` runs setup/meta in a one-shot pod, so
   the cluster idles at zero nodes when no Job is running (no pods = no compute cost).
 - **System logs only** — the cluster ships only system logs to Cloud Logging (terraform

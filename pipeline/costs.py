@@ -10,6 +10,13 @@ which Kubernetes garbage-collects. This is an estimate, not the invoice.
 from . import rates
 
 _GENERAL = "general-purpose"  # GKE default compute class (empty compute_class maps here)
+
+# Autopilot billing grid for the default (general-purpose) class — platform facts,
+# per cloud.google.com/kubernetes-engine/docs/concepts/autopilot-resource-requests
+CPU_STEP = 0.25  # non-bursting clusters round CPU requests UP to this
+MEM_PER_CPU = (1.0, 6.5)  # billable memory:cpu window, GiB per vCPU
+GP_MIN = (0.25, 0.5)  # smallest billable pod (vCPU, GiB)
+GP_MAX = (30.0, 110.0)  # class ceiling; above needs a different compute class
 _MEM_UNITS = {
     "Ki": 2**10,
     "Mi": 2**20,
@@ -38,6 +45,51 @@ def parse_mem(value) -> float:
         if text.endswith(unit):
             return float(text[: -len(unit)]) * mult / 2**30
     return float(text) / 2**30  # bare bytes
+
+
+def normalize_requests(cpu: float, mem: float, compute_class: str = "") -> tuple:
+    """Snap requests to the cheapest valid Autopilot point >= the ask.
+
+    Autopilot silently rounds invalid requests up and bills the result; doing it
+    explicitly keeps cost estimates true. Returns (cpu, mem, warnings, errors);
+    errors mean the pod cannot run on the class at all. Only the default class's
+    grid is modeled — other classes pass through untouched."""
+    warnings, errors = [], []
+    if compute_class:
+        return cpu, mem, warnings, errors
+    if cpu < GP_MIN[0]:
+        warnings.append(
+            f"cpu {cpu:g} below the Autopilot minimum; billed as {GP_MIN[0]:g}"
+        )
+        cpu = GP_MIN[0]
+    if mem < GP_MIN[1]:
+        warnings.append(f"memory {mem:g}Gi below the minimum; billed as {GP_MIN[1]:g}Gi")
+        mem = GP_MIN[1]
+    if mem < cpu * MEM_PER_CPU[0]:
+        warnings.append(
+            f"memory raised {mem:g}Gi -> {cpu * MEM_PER_CPU[0]:g}Gi "
+            f"({MEM_PER_CPU[0]:g} GiB/vCPU billing floor)"
+        )
+        mem = cpu * MEM_PER_CPU[0]
+    if mem > cpu * MEM_PER_CPU[1]:
+        new_cpu = mem / MEM_PER_CPU[1]
+        warnings.append(
+            f"cpu raised {cpu:g} -> {new_cpu:g} "
+            f"(memory exceeds {MEM_PER_CPU[1]:g} GiB/vCPU billing ceiling)"
+        )
+        cpu = new_cpu
+    if (cpu / CPU_STEP) % 1:
+        warnings.append(
+            f"cpu {cpu:g} off the {CPU_STEP:g}-vCPU billing step; "
+            f"non-bursting clusters round it up"
+        )
+    if cpu > GP_MAX[0] or mem > GP_MAX[1]:
+        errors.append(
+            f"{cpu:g} cpu / {mem:g}Gi exceeds the general-purpose ceiling "
+            f"({GP_MAX[0]:g} vCPU / {GP_MAX[1]:g}Gi) — set job.compute_class or a "
+            f"per-layer resources override"
+        )
+    return cpu, mem, warnings, errors
 
 
 def load_table() -> dict:

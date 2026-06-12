@@ -11,13 +11,40 @@ job:
   cpu: "1"
   memory: 2Gi
   compute_class: ""
-  backoff_limit_per_index: 3
-  max_failed_indexes: 50
+  task_retries: 3  # per-task retry budget before the task is dead
+  max_failed_tasks: 50  # dead tasks tolerated before the layer aborts
   ramp:
     start: 4
     factor: 2
     period: 60
     max: 1024
+
+  # optional per-layer scaling: value(L) = min(base * factor^(L-2) + add, max); max 0 = uncapped
+  # resources:
+  #   cpu:
+  #     base: 1      # vCPU at layer 2
+  #     factor: 2
+  #     max: 28
+  #   memory:
+  #     base: 1      # GiB at layer 2
+  #     factor: 2
+  #     add: 1       # headroom added every layer
+  #     max: 33
+  #   overrides:     # exact per-layer values when a layer breaks the curve
+  #     9:
+  #       cpu: 30
+  #       memory: 110
+
+  # optional per-workload deep-overrides of job (e.g. meshing sized independently)
+  # workloads:
+  #   meshing:
+  #     batch_size: 250
+  #     resources:
+  #       memory:
+  #         base: 2
+  #         factor: 2
+  #         add: 1
+  #         max: 110
 
 graph_id: my_graph
 dataset: dataset.yml  # dataset yaml inside config/ (subdirs ok, e.g. pinky/dataset.yml)

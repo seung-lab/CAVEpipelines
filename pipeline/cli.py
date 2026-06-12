@@ -241,7 +241,11 @@ def submit(cfg, layer, force=False):
     parallelism = min(cfg.job.ramp.start, pmax)
     spec = manifest.job_spec(cfg, layer, n, completions, parallelism)
     name = spec.metadata.name
-    note(f"{name}: {n} chunks, {completions} tasks, workers {parallelism}->{pmax}")
+    req = spec.spec.template.spec.containers[0].resources.requests
+    note(
+        f"{name}: {n} chunks, {completions} tasks, workers {parallelism}->{pmax}, "
+        f"{req['cpu']} cpu / {req['memory']} per pod"
+    )
     kube.recreate_job(cfg.namespace, spec)
     p = parallelism
     while p < pmax:
@@ -256,8 +260,8 @@ def submit(cfg, layer, force=False):
     if rate:
         try:
             burn = (
-                costs.parse_cpu(cfg.job.cpu) * rate["cpu_spot"]
-                + costs.parse_mem(cfg.job.memory) * rate["mem_spot"]
+                costs.parse_cpu(req["cpu"]) * rate["cpu_spot"]
+                + costs.parse_mem(req["memory"]) * rate["mem_spot"]
             )
             note(
                 f"~${burn:.4f}/pod-hr spot; `pipeline costs {layer}` for the running total"

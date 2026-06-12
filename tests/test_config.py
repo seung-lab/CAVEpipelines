@@ -59,6 +59,36 @@ def test_dataset_key_defaults_to_sibling_and_allows_subdirs(tmp_path, monkeypatc
     assert config.load("nested.yml").dataset["data_source"]["EDGES"] == "gs://n/e"
 
 
+def test_resource_curves_and_workload_merge(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
+    _write(
+        tmp_path,
+        "pipeline.yml",
+        {
+            **BASE,
+            "workload": "meshing",
+            "job": {
+                "batch_size": 1000,
+                "resources": {
+                    "cpu": {"base": 1, "factor": 2, "max": 28},
+                    "overrides": {"9": {"cpu": 30}},
+                },
+                "workloads": {
+                    "meshing": {
+                        "batch_size": 250,
+                        "resources": {"memory": {"base": 2, "max": 110}},
+                    }
+                },
+            },
+        },
+    )
+    cfg = config.load()
+    assert cfg.job.batch_size == 250  # the workload's override wins
+    assert cfg.job.resources.cpu.factor == 2  # shared curve survives the merge
+    assert cfg.job.resources.memory.base == 2  # workload-added curve
+    assert cfg.job.resources.overrides[9] == {"cpu": 30}  # int-coerced layer keys
+
+
 def test_image_selects_by_workload(cfg):
     cfg.workload = "ingest"
     assert cfg.image() == "repo/pcg:tag"

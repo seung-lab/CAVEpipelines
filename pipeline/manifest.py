@@ -6,7 +6,8 @@ import re
 
 from kubernetes import client
 
-from . import config as cfgmod
+from . import config as cfgmod, note
+from .costs import normalize_requests, parse_cpu, parse_mem
 
 INGEST_COMMAND = ["python", "-m", "pychunkedgraph.pipeline.ingest"]
 MESHING_COMMAND = ["python", "-m", "pychunkedgraph.pipeline.meshing"]
@@ -23,6 +24,41 @@ UTIL_REQUESTS = {"cpu": "250m", "memory": "1Gi"}  # cheapest that still imports 
 
 def job_name(cfg, layer: int) -> str:
     return f"{cfg.workload}-l{layer}"
+
+
+def _curve_value(curve, layer: int) -> float:
+    val = curve.base * curve.factor ** (layer - 2) + curve.add
+    return min(val, curve.max) if curve.max else val
+
+
+def requests_for(job, layer: int) -> tuple:
+    """(vCPU, GiB) for a layer: override > curve > flat cpu/memory, per dimension."""
+    res = job.resources
+    over = res.overrides.get(layer, {}) if res else {}
+    if "cpu" in over:
+        cpu = float(over["cpu"])
+    elif res and res.cpu:
+        cpu = _curve_value(res.cpu, layer)
+    else:
+        cpu = parse_cpu(job.cpu)
+    if "memory" in over:
+        mem = float(over["memory"])
+    elif res and res.memory:
+        mem = _curve_value(res.memory, layer)
+    else:
+        mem = parse_mem(job.memory)
+    return cpu, mem
+
+
+def layer_requests(job, layer: int) -> dict:
+    """The layer's normalized k8s requests — the cheapest valid Autopilot point."""
+    cpu, mem = requests_for(job, layer)
+    cpu, mem, warnings, errors = normalize_requests(cpu, mem, job.compute_class)
+    if errors:
+        raise SystemExit("; ".join(errors))
+    for warning in warnings:
+        note(warning)
+    return {"cpu": f"{round(cpu * 1000)}m", "memory": f"{round(mem * 1024)}Mi"}
 
 
 def dataset_configmap_name(graph_id: str) -> str:
@@ -123,9 +159,7 @@ def job_spec(
         ]
         + _extra_env(cfg),
         env_from=_env_from(),
-        resources=client.V1ResourceRequirements(
-            requests={"cpu": cfg.job.cpu, "memory": cfg.job.memory}
-        ),
+        resources=client.V1ResourceRequirements(requests=layer_requests(cfg.job, layer)),
         volume_mounts=[_secrets_mount()],
     )
     template = client.V1PodTemplateSpec(
@@ -156,9 +190,9 @@ def job_spec(
             completion_mode="Indexed",
             completions=completions,
             parallelism=parallelism,
-            backoff_limit_per_index=cfg.job.backoff_limit_per_index,
+            backoff_limit_per_index=cfg.job.task_retries,
             # k8s rejects maxFailedIndexes > completions; small layers have few tasks
-            max_failed_indexes=min(cfg.job.max_failed_indexes, completions),
+            max_failed_indexes=min(cfg.job.max_failed_tasks, completions),
             pod_failure_policy=client.V1PodFailurePolicy(
                 rules=[
                     client.V1PodFailurePolicyRule(

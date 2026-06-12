@@ -98,6 +98,18 @@ def test_balanced_class_costs_more_than_default():
     )
 
 
+def test_normalize_requests_snaps_to_billing_grid():
+    cpu, mem, warns, errs = costs.normalize_requests(4, 2)  # below 1 GiB/vCPU floor
+    assert (cpu, mem) == (4, 4) and warns and not errs
+    cpu, _, warns, _ = costs.normalize_requests(1, 13)  # above 6.5 GiB/vCPU ceiling
+    assert cpu == 2.0 and any("ceiling" in w for w in warns)
+    _, _, warns, errs = costs.normalize_requests(1.3, 2)  # off the 0.25-vCPU step
+    assert any("step" in w for w in warns) and not errs
+    *_, errs = costs.normalize_requests(40, 40)
+    assert errs and "compute_class" in errs[0]  # past the general-purpose ceiling
+    assert costs.normalize_requests(40, 40, "Balanced") == (40, 40, [], [])
+
+
 def test_fmt_dollars_keeps_subcent_accrual_visible():
     assert costs.fmt_dollars(6.634) == "$6.63"
     assert costs.fmt_dollars(0.0163) == "$0.016"  # 2dp would sit frozen for minutes

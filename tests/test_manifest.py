@@ -1,6 +1,7 @@
+import pytest
 from kubernetes import client
 
-from pipeline import manifest
+from pipeline import config, manifest
 
 
 def _job(cfg, **kw):
@@ -14,7 +15,7 @@ def test_job_spec_completion_counts(cfg):
     assert spec["completionMode"] == "Indexed"
     assert spec["completions"] == 5
     assert spec["parallelism"] == 3
-    assert spec["backoffLimitPerIndex"] == cfg.job.backoff_limit_per_index
+    assert spec["backoffLimitPerIndex"] == cfg.job.task_retries
     # clamped: the API rejects maxFailedIndexes > completions (here 5 tasks, limit 50)
     assert spec["maxFailedIndexes"] == 5
 
@@ -23,7 +24,46 @@ def test_max_failed_indexes_passes_through_on_big_layers(cfg):
     spec = client.ApiClient().sanitize_for_serialization(
         manifest.job_spec(cfg, 2, 1_000_000, 1000, 3)
     )["spec"]
-    assert spec["maxFailedIndexes"] == cfg.job.max_failed_indexes
+    assert spec["maxFailedIndexes"] == cfg.job.max_failed_tasks
+
+
+def test_per_layer_resource_curves(cfg):
+    cfg.job.compute_class = ""
+    cfg.job.resources = config.Resources(
+        cpu=config.Curve(base=1, factor=2, max=28),
+        memory=config.Curve(base=1, factor=2, add=1, max=33),
+        overrides={9: {"cpu": 30, "memory": 110}},
+    )
+    assert manifest.requests_for(cfg.job, 2) == (1, 2)
+    assert manifest.requests_for(cfg.job, 5) == (8, 9)
+    assert manifest.requests_for(cfg.job, 8) == (28, 33)  # capped at the declared max
+    assert manifest.requests_for(cfg.job, 9) == (30, 110)  # override wins
+
+
+def test_flat_fallback_without_resources_block(cfg):
+    assert manifest.requests_for(cfg.job, 2) == manifest.requests_for(cfg.job, 9)
+
+
+def test_job_spec_renders_layer_requests(cfg):
+    cfg.job.compute_class = ""
+    cfg.job.resources = config.Resources(
+        cpu=config.Curve(base=1, factor=2, max=28),
+        memory=config.Curve(base=1, factor=2, add=1, max=33),
+    )
+    req = _job(cfg)["spec"]["template"]["spec"]["containers"][0]["resources"]["requests"]
+    assert req == {"cpu": "1000m", "memory": "2048Mi"}  # layer 2
+    spec = client.ApiClient().sanitize_for_serialization(
+        manifest.job_spec(cfg, 5, 100, 5, 3)
+    )
+    req = spec["spec"]["template"]["spec"]["containers"][0]["resources"]["requests"]
+    assert req == {"cpu": "8000m", "memory": "9216Mi"}  # layer 5 scales up
+
+
+def test_gp_ceiling_refuses_job(cfg):
+    cfg.job.compute_class = ""
+    cfg.job.resources = config.Resources(cpu=config.Curve(base=40))
+    with pytest.raises(SystemExit, match="compute_class"):
+        manifest.job_spec(cfg, 2, 100, 5, 3)
 
 
 def test_pod_failure_policy_spot_vs_fatal(cfg):

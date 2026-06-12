@@ -23,6 +23,7 @@ from rich.table import Table
 from . import NOTE, config, costdb, costs, kube, log, manifest, note, util
 
 HELM_CHART = "helm"
+ONESHOT_POLL_SEC = 30
 
 
 @click.group(help=__doc__, context_settings={"help_option_names": ["-h", "--help"]})
@@ -90,11 +91,21 @@ _LAYER = click.argument("layer", type=int)
 @click.option(
     "--submit-l2", is_flag=True, help="submit layer 2 after setup (requires --setup)"
 )
+@click.option(
+    "--oneshot",
+    is_flag=True,
+    help="run everything: setup -> ingest layers -> mesh-meta -> meshing layers",
+)
+@click.option("--yes", is_flag=True, help="skip the --oneshot confirmation (unattended)")
 @pass_cfg
-def deploy(cfg, secrets, run_setup, submit_l2):
+def deploy(cfg, secrets, run_setup, submit_l2, oneshot, yes):
     """helm upgrade --install the static infra, incl. the Secret built from ./secrets."""
+    if oneshot and (run_setup or submit_l2):
+        raise SystemExit("--oneshot supersedes --setup/--submit-l2")
     if submit_l2 and not run_setup:
         raise SystemExit("--submit-l2 requires --setup")
+    if oneshot:
+        _oneshot_plan(cfg, yes)  # confirm before any cluster mutation
     data = kube.secret_data(secrets, cfg.secret_files)
     note(f"deploy: helm release 'pcg' (secrets: {list(data) or 'none'})")
     with tempfile.NamedTemporaryFile("w", suffix=".yaml") as f:
@@ -125,6 +136,9 @@ def deploy(cfg, secrets, run_setup, submit_l2):
         if data
         else "deployed (no secret)"
     )
+    if oneshot:
+        _oneshot_run(cfg)
+        return
     if run_setup:
         ctx = click.get_current_context()
         ctx.invoke(setup)  # one-shot pod; no util-pod wait needed
@@ -177,6 +191,97 @@ def mesh_meta(cfg):
     argv = ["python", "-m", "pychunkedgraph.pipeline.meshing.setup", cfg.graph_id]
     note("mesh-meta: writing mesh metadata")
     note(util.run_with_dataset(cfg, "mesh-meta", argv) or "mesh metadata written")
+
+
+def _oneshot_plan(cfg, yes):
+    """Preview the full run and confirm before any cluster mutation."""
+    mesh = "mesh_config" in cfg.dataset
+    note(
+        f"oneshot: graph '{cfg.graph_id}' ({cfg.source}): "
+        f"setup -> ingest L2..root{' -> mesh-meta -> meshing' if mesh else ''}"
+    )
+    if not mesh:
+        note("  (no mesh_config in the dataset; meshing will be skipped)")
+    cached = util._read_cache(cfg).get(cfg.graph_id)
+    if cached:
+        for layer in sorted(int(k) for k in cached):
+            req = manifest.layer_requests(cfg.job, layer)  # validates the whole curve
+            note(
+                f"  L{layer}: {cached[str(layer)]} chunks · "
+                f"{req['cpu']} cpu / {req['memory']} per pod"
+            )
+    else:
+        note("  layer counts are computed during setup")
+    if not yes:
+        click.confirm("proceed?", abort=True)
+
+
+def _oneshot_run(cfg):
+    """setup -> ingest L2..root -> mesh-meta -> meshing; resumable at every step."""
+    ctx = click.get_current_context()
+    ingest_cfg = config.load(cfg.source, workload="ingest")
+    ingest_cfg.graph_id = cfg.graph_id  # carry a -g override
+    ctx.obj = ingest_cfg
+    try:
+        counts = util.read_layer_counts(ingest_cfg)
+        note("graph exists; skipping setup")
+    except SystemExit:  # no readable graph -> first run; setup is not re-runnable
+        ctx.invoke(setup)
+        counts = util.read_layer_counts(ingest_cfg)
+    for layer in sorted(counts):
+        _run_layer(ctx, ingest_cfg, layer)
+    if "mesh_config" not in cfg.dataset:
+        note("oneshot complete (no meshing)")
+        return
+    mesh_cfg = config.load(cfg.source, workload="meshing")
+    mesh_cfg.graph_id = cfg.graph_id
+    ctx.obj = mesh_cfg
+    ctx.invoke(mesh_meta)
+    top = min(int(cfg.dataset["mesh_config"]["max_layer"]), max(counts))
+    for layer in range(2, top + 1):
+        _run_layer(ctx, mesh_cfg, layer)
+    note("oneshot complete")
+
+
+def _read_job(cfg, layer):
+    try:
+        return kube.batch().read_namespaced_job(
+            manifest.job_name(cfg, layer), cfg.namespace
+        )
+    except ApiException as exc:
+        if exc.status == 404:
+            return None
+        raise
+
+
+def _run_layer(ctx, cfg, layer):
+    """Submit (or attach to) one layer and poll it to completion; stop on dead tasks."""
+    job = _read_job(cfg, layer)
+    if job:
+        _check_graph_owner(job, cfg)
+        if util.job_state(job) == "complete":
+            note(f"L{layer} ({cfg.workload}) already complete; skipping")
+            return
+    if job and util.job_state(job) == "running":
+        note(f"L{layer} ({cfg.workload}) already running; attaching")
+    else:
+        ctx.invoke(submit, layer=layer)
+    while True:
+        costdb.sample(cfg)  # pod runtimes are durable once recorded
+        p = util.job_progress(_read_job(cfg, layer))
+        note(
+            f"  L{layer} {cfg.workload}: {p['done']}/{p['total']} {p['pct']}% · "
+            f"active {p['active']} · retries {p['retries']} · dead {p['dead']}"
+        )
+        if p["dead"] or p["state"] == "failed":
+            raise SystemExit(
+                f"L{layer} ({cfg.workload}) has dead tasks — `pipeline inspect {layer}`; "
+                f"re-run `pipeline deploy --oneshot` to resume (finished layers skip)"
+            )
+        if p["state"] == "complete":
+            note(f"L{layer} ({cfg.workload}) complete")
+            return
+        time.sleep(ONESHOT_POLL_SEC)
 
 
 def _check_graph_owner(job, cfg, force=False):

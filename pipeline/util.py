@@ -123,6 +123,26 @@ def count_indexes(intervals) -> int:
     return total
 
 
+def job_progress(job, total=None) -> dict:
+    """One Job's progress numbers — shared by the status table and --oneshot."""
+    s = job.status
+    ann = job.metadata.annotations or {}
+    if total is None:
+        total = int(ann.get("chunks", 0))
+    batch = int(ann.get("batch_size", 0)) or 1
+    done = min((s.succeeded or 0) * batch, total) if total else 0
+    return {
+        "total": total,
+        "done": done,
+        "pct": 100 * done // total if total else 0,
+        "active": s.active or 0,
+        "ready": getattr(s, "ready", None) or 0,
+        "retries": s.failed or 0,  # attempts that burned a retry; dead is separate
+        "dead": count_indexes(getattr(s, "failed_indexes", None)),
+        "state": job_state(job),
+    }
+
+
 def job_state(job):
     for c in job.status.conditions or []:
         if c.type == "Complete" and c.status == "True":
@@ -247,28 +267,20 @@ def status_table(cfg, layer_totals=None) -> Table:
             row = [str(layer), "-", str(total) if total else "-"] + ["-"] * 7
             table.add_row(*row)
             continue
-        s = job.status
-        ann = job.metadata.annotations or {}
-        if total is None:
-            total = int(ann.get("chunks", 0))
-        batch = int(ann.get("batch_size", 0)) or 1
-        done = min((s.succeeded or 0) * batch, total) if total else 0
-        pct = 100 * done // total if total else 0
-        color = {"complete": "green", "failed": "red"}.get(job_state(job))
-        retries = s.failed or 0  # attempts that burned a retry; dead tasks are separate
-        dead = count_indexes(getattr(s, "failed_indexes", None))
+        p = job_progress(job, total)
+        color = {"complete": "green", "failed": "red"}.get(p["state"])
         cost_cell = (
             costs.fmt_dollars(recorded[layer]["total"]) if layer in recorded else "-"
         )
         table.add_row(
             str(layer),
-            str(done) if total else "-",
-            str(total) if total else "-",
-            f"[{color}]{pct}%[/]" if color else f"{pct}%",
-            str(s.active or 0),
-            str(getattr(s, "ready", None) or 0),
-            str(retries),
-            f"[red]{dead}[/]" if dead else "0",
+            str(p["done"]) if p["total"] else "-",
+            str(p["total"]) if p["total"] else "-",
+            f"[{color}]{p['pct']}%[/]" if color else f"{p['pct']}%",
+            str(p["active"]),
+            str(p["ready"]),
+            str(p["retries"]),
+            f"[red]{p['dead']}[/]" if p["dead"] else "0",
             elapsed(job),
             cost_cell,
         )

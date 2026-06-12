@@ -30,7 +30,7 @@ from `pipeline.yml`'s `bigtable:`.
 | `namespace` | k8s namespace for all pods |
 | `graph_id` | the ChunkedGraph id (table name); `-g` overrides it per invocation |
 | `dataset` | dataset yaml file in this directory (default `dataset.yml`; subdirs ok) |
-| `workload` | `ingest` \| `l2cache` \| `meshing` \| `migrate` \| `migrate_cleanup` — one at a time |
+| `workload` | `ingest` \| `l2cache` \| `meshing` \| `migrate` \| `migrate_cleanup` — one at a time (ignored by `deploy --oneshot`, which runs ingest then meshing) |
 | `persistent_util` | keep the spot util pod alive between layers; `false` = one-shot pod (idle 0 nodes) |
 | `secret_files` | `{container_filename: local_path under ./secrets}`; `{}` = Workload Identity only |
 | `images.pcg` / `images.l2cache` | container image per workload |

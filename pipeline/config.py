@@ -94,19 +94,22 @@ class Config:
     config_dir: str = (
         "config"  # where pipeline.yml lives; also holds the local counts cache
     )
+    source: str = "pipeline.yml"  # config file name this was loaded from
 
     def image(self) -> str:
         return self.images.l2cache if self.workload == "l2cache" else self.images.pcg
 
 
-def load(name: str = "pipeline.yml") -> Config:
-    """Load CONFIG_DIR/<name>; its `dataset:` key names the dataset yaml there."""
+def load(name: str = "pipeline.yml", workload: str = None) -> Config:
+    """Load CONFIG_DIR/<name>; its `dataset:` key names the dataset yaml there.
+
+    `workload` overrides the file's — the per-workload job merge follows it."""
     with open(os.path.join(CONFIG_DIR, name)) as stream:
         raw = yaml.safe_load(stream) or {}
     bt = Bigtable(**raw.get("bigtable", {}))
     dataset = _with_bigtable(_read_dataset(raw.get("dataset", "dataset.yml")), bt)
     raw_job = dict(raw.get("job", {}))
-    workload = raw.get("workload", "ingest")
+    workload = workload or raw.get("workload", "ingest")
     raw_job = _merge(raw_job, raw_job.pop("workloads", {}).get(workload, {}))
     ramp = Ramp(**raw_job.pop("ramp", {}))
     resources = _resources(raw_job.pop("resources", None))
@@ -127,6 +130,7 @@ def load(name: str = "pipeline.yml") -> Config:
         region=raw.get("region", ""),
         zone=raw.get("zone", ""),
         config_dir=CONFIG_DIR,
+        source=name,
     )
 
 

@@ -50,7 +50,7 @@ cluster idles at **zero nodes**.
 
 | command | does |
 |---|---|
-| `pipeline deploy` | `helm upgrade --install` the static infra + create the Secret from `secrets/` (`--setup` also runs `setup`; `--submit-l2` also submits layer 2) |
+| `pipeline deploy` | `helm upgrade --install` the static infra + create the Secret from `secrets/` (`--setup` also runs `setup`; `--submit-l2` also submits layer 2; `--oneshot` runs the whole pipeline end to end, `--yes` skips its confirmation) |
 | `pipeline setup` | create the graph table + meta — a one-shot pod mounting the graph's own dataset ConfigMap; raw agglomeration input enabled automatically when the dataset has `ingest_config.AGGLOMERATION` |
 | `pipeline mesh-meta` | write the graph's mesh metadata once (meshing only, after ingest reaches root) |
 | `pipeline submit <layer>` | submit (or re-submit) the layer's Indexed Job; ramp parallelism (refuses if the layer below isn't 100% — `--force` to override) |
@@ -147,6 +147,13 @@ pipeline deploy --setup --submit-l2   # deploy + setup + submit layer 2, in one 
 Several projects can coexist in `config/` under their own names (`pinky.yml` paired to its
 dataset via the `dataset:` key) — pick one per invocation with `pipeline -c pinky.yml …`, and
 `-g` overrides `graph_id` for throwaway test iterations without editing any file.
+
+For a full run in one command, `pipeline deploy --oneshot` chains everything: setup, every
+ingest layer L2→root, `mesh-meta`, then every meshing layer up to `mesh_config.max_layer` —
+gating each layer on the previous one and stopping loudly on dead tasks. It prints the plan
+(phases, per-layer requests) and asks for confirmation first (`--yes` for unattended runs), and
+re-running it resumes: an existing graph skips setup and finished layers skip. The file's
+`workload:` is ignored; per-phase sizing comes from `job.workloads`.
 
 (`deploy`/`setup`/`submit` are also separate commands; the flags just chain them for a
 first run. `--submit-l2` requires `--setup`.)

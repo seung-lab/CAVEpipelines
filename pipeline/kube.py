@@ -85,10 +85,11 @@ def node_summary():
     return len(labels), spot, dict(by_type)
 
 
-def exec_cmd(namespace: str, pod: str, argv: list) -> str:
-    """Run argv in the pod and return its stdout."""
+def exec_cmd(namespace: str, pod: str, argv: list, timeout: int = 300) -> str:
+    """Run argv in the pod, return its stdout; abort after `timeout`s so a wedged
+    in-pod command fails loudly with its output instead of hanging forever."""
     try:
-        return stream(
+        ws = stream(
             core().connect_get_namespaced_pod_exec,
             pod,
             namespace,
@@ -97,13 +98,26 @@ def exec_cmd(namespace: str, pod: str, argv: list) -> str:
             stdout=True,
             stdin=False,
             tty=False,
-            _preload_content=True,
-        ).strip()
+            _preload_content=False,
+        )
     except ApiException as exc:
         raise SystemExit(
             f"exec into pod '{pod}' failed ({exc.status} {exc.reason}); "
             f"the pod may have just restarted — retry"
         )
+    ws.run_forever(timeout=timeout)
+    out, err = ws.read_stdout(), ws.read_stderr()
+    if ws.is_open():  # still running at the deadline -> wedged
+        ws.close()
+        raise SystemExit(
+            f"in-pod command timed out after {timeout}s: {' '.join(argv)}\n"
+            f"{(err or out).strip() or '(no output)'}"
+        )
+    if ws.returncode:
+        raise SystemExit(
+            f"in-pod command exited {ws.returncode}: {' '.join(argv)}\n{err.strip()}"
+        )
+    return out.strip()
 
 
 def secret_data(secrets_dir: str, mapping) -> dict:

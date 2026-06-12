@@ -225,6 +225,8 @@ def helm_values(cfg, secret_data=None) -> dict:
                 "vars": {
                     "BIGTABLE_PROJECT": cfg.bigtable.project,
                     "BIGTABLE_INSTANCE": cfg.bigtable.instance,
+                    # ADC for bucket access (CloudVolume/gcsfs); key is the mounted secret
+                    "GOOGLE_APPLICATION_CREDENTIALS": "/root/.cloudvolume/secrets/google-secret.json",
                 },
             }
         ],

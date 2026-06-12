@@ -144,7 +144,8 @@ def job_spec(
             completions=completions,
             parallelism=parallelism,
             backoff_limit_per_index=cfg.job.backoff_limit_per_index,
-            max_failed_indexes=cfg.job.max_failed_indexes,
+            # k8s rejects maxFailedIndexes > completions; small layers have few tasks
+            max_failed_indexes=min(cfg.job.max_failed_indexes, completions),
             pod_failure_policy=client.V1PodFailurePolicy(
                 rules=[
                     client.V1PodFailurePolicyRule(

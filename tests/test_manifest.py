@@ -15,6 +15,14 @@ def test_job_spec_completion_counts(cfg):
     assert spec["completions"] == 5
     assert spec["parallelism"] == 3
     assert spec["backoffLimitPerIndex"] == cfg.job.backoff_limit_per_index
+    # clamped: the API rejects maxFailedIndexes > completions (here 5 tasks, limit 50)
+    assert spec["maxFailedIndexes"] == 5
+
+
+def test_max_failed_indexes_passes_through_on_big_layers(cfg):
+    spec = client.ApiClient().sanitize_for_serialization(
+        manifest.job_spec(cfg, 2, 1_000_000, 1000, 3)
+    )["spec"]
     assert spec["maxFailedIndexes"] == cfg.job.max_failed_indexes
 
 

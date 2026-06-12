@@ -87,12 +87,11 @@ _LAYER = click.argument("layer", type=int)
     is_flag=True,
     help="run `setup` after deploy (first-run convenience)",
 )
-@click.option("-r", "--raw", is_flag=True, help="raw agglomeration input (with --setup)")
 @click.option(
     "--submit-l2", is_flag=True, help="submit layer 2 after setup (requires --setup)"
 )
 @pass_cfg
-def deploy(cfg, secrets, run_setup, raw, submit_l2):
+def deploy(cfg, secrets, run_setup, submit_l2):
     """helm upgrade --install the static infra, incl. the Secret built from ./secrets."""
     if submit_l2 and not run_setup:
         raise SystemExit("--submit-l2 requires --setup")
@@ -128,7 +127,7 @@ def deploy(cfg, secrets, run_setup, raw, submit_l2):
     )
     if run_setup:
         ctx = click.get_current_context()
-        ctx.invoke(setup, raw=raw, wait_create=True)  # util pod still spinning up
+        ctx.invoke(setup)  # one-shot pod; no util-pod wait needed
         if submit_l2:
             ctx.invoke(submit, layer=2)
         else:
@@ -139,29 +138,33 @@ def deploy(cfg, secrets, run_setup, raw, submit_l2):
 @pass_cfg
 def undeploy(cfg):
     """Tear down everything deploy/submit created: all pipeline Jobs, then the helm release."""
-    note("undeploy: deleting jobs + helm release")
+    note("undeploy: deleting jobs, dataset configmaps + helm release")
     for job in kube.list_jobs(cfg.namespace):
         kube.delete_job(cfg.namespace, job.metadata.name)
         note(f"deleted job {job.metadata.name}")
+    for cm in kube.list_configmaps(cfg.namespace, "pipeline=dataset"):
+        kube.delete_configmap(cfg.namespace, cm.metadata.name)
+        note(f"deleted dataset configmap {cm.metadata.name}")
     res = subprocess.run(
         ["helm", "uninstall", "pcg", "-n", cfg.namespace], capture_output=True, text=True
     )
     note(res.stdout.strip() or res.stderr.strip())
 
 
-@cli.command(help="create the graph table + meta (runs in the util pod)")
-@click.option("-r", "--raw", is_flag=True, help="raw agglomeration input")
+@cli.command(help="create the graph table + meta (one-shot pod with the dataset)")
 @pass_cfg
-def setup(cfg, raw, wait_create=False):
+def setup(cfg):
     """Prepare the graph for the workload: ingest creates the table; migrate preps it."""
+    note(f"setup ({cfg.workload})")
     if cfg.workload in ("migrate", "migrate_cleanup"):
+        # migrate reads everything from Bigtable; no dataset file involved
         argv = ["python", "-m", "pychunkedgraph.pipeline.migrate.setup", cfg.graph_id]
+        note(util.run_pcg(cfg, "setup", argv) or "setup done")
     else:
         argv = ["python", "-m", "pychunkedgraph.pipeline.ingest.setup", cfg.graph_id]
-        if raw:
-            argv.append("--raw")
-    note(f"setup ({cfg.workload})")
-    note(util.run_pcg(cfg, "setup", argv, wait_create=wait_create) or "setup done")
+        if cfg.dataset.get("ingest_config", {}).get("AGGLOMERATION"):
+            argv.append("--raw")  # an agglomeration source implies the raw input path
+        note(util.run_with_dataset(cfg, "setup", argv) or "setup done")
     util.invalidate_layer_counts(cfg)  # graph may have changed; recompute on next read
 
 
@@ -173,7 +176,7 @@ def mesh_meta(cfg):
     """Write mesh metadata once (after ingest reaches root); needs `mesh_config:` in the dataset."""
     argv = ["python", "-m", "pychunkedgraph.pipeline.meshing.setup", cfg.graph_id]
     note("mesh-meta: writing mesh metadata")
-    note(util.run_pcg(cfg, "mesh-meta", argv) or "mesh metadata written")
+    note(util.run_with_dataset(cfg, "mesh-meta", argv) or "mesh metadata written")
 
 
 def _check_graph_owner(job, cfg, force=False):

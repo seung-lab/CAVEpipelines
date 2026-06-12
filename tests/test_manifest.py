@@ -85,7 +85,23 @@ def test_oneshot_pod_is_spot_oneshot(cfg):
     assert pod["spec"]["restartPolicy"] == "Never"
     assert pod["spec"]["nodeSelector"]["cloud.google.com/gke-spot"] == "true"
     mounts = {m["mountPath"] for m in pod["spec"]["containers"][0]["volumeMounts"]}
-    assert {"/app/datasets", "/root/.cloudvolume/secrets"} <= mounts
+    assert "/root/.cloudvolume/secrets" in mounts
+    assert "/app/datasets" not in mounts  # dataset mount is opt-in (setup/mesh-meta)
+    pod = client.ApiClient().sanitize_for_serialization(
+        manifest.oneshot_pod_spec(cfg, "setup", ["x"], dataset_configmap="pcg-dataset-g")
+    )
+    vols = {v["name"]: v for v in pod["spec"]["volumes"]}
+    assert vols["datasets"]["configMap"]["name"] == "pcg-dataset-g"
+
+
+def test_dataset_configmap_name_is_dns_safe_and_distinct():
+    name = manifest.dataset_configmap_name("My_Graph_v2")
+    assert name.startswith("pcg-dataset-") and "_" not in name and name == name.lower()
+    # ids that collide after sanitizing must yield distinct names
+    assert manifest.dataset_configmap_name("a_b") != manifest.dataset_configmap_name(
+        "a-b"
+    )
+    assert len(manifest.dataset_configmap_name("x" * 100)) <= 63
 
 
 def test_helm_values_persistent_util_toggle(cfg):

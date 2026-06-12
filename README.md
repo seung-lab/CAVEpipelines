@@ -39,16 +39,19 @@ pipeline points `GOOGLE_APPLICATION_CREDENTIALS` at the mounted file (key name `
 Secret (created, updated, and removed with the release) mounted read-only at
 `/root/.cloudvolume/secrets/` in every pod. The in-container name can differ from the local one,
 so `secrets/` can hold many projects' creds side by side and each `pipeline.yml` loads only what
-it needs. `setup` and `submit`'s meta-read run in the PCG image: by default a small **spot** util
-pod kept alive between layers (`persistent_util: true`); set it `false` for long ingests to use a
-one-shot pod instead, so the cluster idles at **zero nodes**.
+it needs. `setup`/`mesh-meta` always run as one-shot pods, each mounting its graph's own dataset
+ConfigMap (`pcg-dataset-<graph>`, applied by the CLI) — so several graphs' datasets coexist and a
+fresh pod sees the just-applied content with no kubelet sync lag. `submit`'s meta-read runs in the
+PCG image: by default a small **spot** util pod kept alive between layers
+(`persistent_util: true`); set it `false` for long ingests to use a one-shot pod instead, so the
+cluster idles at **zero nodes**.
 
 **The CLI.**
 
 | command | does |
 |---|---|
 | `pipeline deploy` | `helm upgrade --install` the static infra + create the Secret from `secrets/` (`--setup` also runs `setup`; `--submit-l2` also submits layer 2) |
-| `pipeline setup` | create the graph table + meta (in the util pod, or a one-shot pod) |
+| `pipeline setup` | create the graph table + meta — a one-shot pod mounting the graph's own dataset ConfigMap; raw agglomeration input enabled automatically when the dataset has `ingest_config.AGGLOMERATION` |
 | `pipeline mesh-meta` | write the graph's mesh metadata once (meshing only, after ingest reaches root) |
 | `pipeline submit <layer>` | submit (or re-submit) the layer's Indexed Job; ramp parallelism (refuses if the layer below isn't 100% — `--force` to override) |
 | `pipeline scale <layer> <n>` | resize the running layer's workers (set Job parallelism) anytime |
@@ -385,9 +388,9 @@ failed index maps back to its coords).
 
 ## Teardown
 
-`pipeline undeploy` removes what the CLI created in-cluster — all pipeline Jobs and
-the helm release (service account, ConfigMaps, util pod, and the credentials Secret
-with it); the cluster itself stays.
+`pipeline undeploy` removes what the CLI created in-cluster — all pipeline Jobs, the
+per-graph dataset ConfigMaps, and the helm release (service account, env ConfigMap,
+util pod, and the credentials Secret with it); the cluster itself stays.
 
 `terraform destroy` removes everything terraform created — the Autopilot cluster
 (which takes the Jobs, pods, and secret with it) and the Workload-Identity service

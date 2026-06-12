@@ -31,3 +31,7 @@ mesh_config:
     7: 15
     8: 18
     9: 18
+
+# raw agglomeration input; its presence enables the raw ingest path automatically
+# ingest_config:
+#   AGGLOMERATION: gs://bucket/agg

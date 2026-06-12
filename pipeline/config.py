@@ -12,8 +12,7 @@ from dataclasses import dataclass, field
 import yaml
 
 CONFIG_DIR = "config"
-ENV_CONFIGMAP = "pychunkedgraph-env"
-DATASET_CONFIGMAP = "pychunkedgraph-datasets"
+ENV_CONFIGMAP = "pcg-env"
 
 
 @dataclass

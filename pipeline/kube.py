@@ -165,6 +165,28 @@ def secret_data(secrets_dir: str, mapping) -> dict:
     return data
 
 
+def apply_configmap(namespace: str, name: str, data: dict, labels: dict) -> None:
+    """Create or replace a ConfigMap — re-applying keeps its content fresh."""
+    body = client.V1ConfigMap(
+        metadata=client.V1ObjectMeta(name=name, labels=labels), data=data
+    )
+    c = core()
+    try:
+        c.create_namespaced_config_map(namespace, body)
+    except ApiException as exc:
+        if exc.status != 409:
+            raise
+        c.replace_namespaced_config_map(name, namespace, body)
+
+
+def list_configmaps(namespace: str, selector: str):
+    return core().list_namespaced_config_map(namespace, label_selector=selector).items
+
+
+def delete_configmap(namespace: str, name: str) -> None:
+    core().delete_namespaced_config_map(name, namespace)
+
+
 def pods_of(namespace: str, job_name: str):
     return (
         core()

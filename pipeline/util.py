@@ -4,6 +4,7 @@ import json
 import os
 from datetime import datetime, timezone
 
+import yaml
 from rich.table import Table
 
 from . import costdb, costs, kube, manifest, note
@@ -25,16 +26,35 @@ def ceil_div(a, b):
     return -(-a // b)
 
 
-def run_pcg(cfg, name, argv, wait_create=False):
+def run_pcg(cfg, name, argv):
     """Run a command in the PCG image (util pod or one-shot pod), streaming its logs live."""
     if cfg.persistent_util:
-        pod = kube.util_pod(cfg.namespace, wait_create=wait_create)
+        pod = kube.util_pod(cfg.namespace)
         note(f"{name}: in util pod")
         return kube.exec_cmd(
             cfg.namespace, pod, argv, on_line=lambda ln: note(f"  [{name}] {ln}")
         )
     note(f"{name}: in one-shot pod")
     return kube.run_oneshot(cfg.namespace, manifest.oneshot_pod_spec(cfg, name, argv))
+
+
+def run_with_dataset(cfg, name, argv):
+    """Apply the graph's dataset ConfigMap, then run argv in a fresh one-shot pod.
+
+    Always one-shot: a new pod mounts the just-applied ConfigMap immediately, while
+    a running pod's mount would lag the kubelet sync by 60-90s. The key stays
+    `dataset.yml`, matching the in-pod PCG_DATASET default."""
+    cm = manifest.dataset_configmap_name(cfg.graph_id)
+    kube.apply_configmap(
+        cfg.namespace,
+        cm,
+        {"dataset.yml": yaml.safe_dump(cfg.dataset)},
+        {"pipeline": "dataset", "graph": cfg.graph_id},
+    )
+    note(f"{name}: dataset configmap '{cm}' applied")
+    return kube.run_oneshot(
+        cfg.namespace, manifest.oneshot_pod_spec(cfg, name, argv, dataset_configmap=cm)
+    )
 
 
 def _counts_cache(cfg) -> str:

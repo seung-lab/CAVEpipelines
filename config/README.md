@@ -100,6 +100,10 @@ Paths use any protocol supported by [cloud-files](https://github.com/seung-lab/c
 
 See the [graphene](https://github.com/seung-lab/cloud-volume/wiki/Graphene) wiki for details.
 
+### `ingest_config` (optional)
+- `AGGLOMERATION` — path to raw agglomeration data. Its presence automatically enables the
+  raw ingest input path (`setup --raw` is implied; there is no manual flag).
+
 ### `backend_client`
 Leave as is — bigtable is the only supported backend.
 

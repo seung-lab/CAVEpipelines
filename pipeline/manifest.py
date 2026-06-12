@@ -1,6 +1,9 @@
 """Builders: Config -> Indexed Job / one-shot Pod (kubernetes client objects), and
 helm values (dicts, rendered to YAML by helm — not client objects)."""
 
+import hashlib
+import re
+
 from kubernetes import client
 
 from . import config as cfgmod
@@ -20,6 +23,14 @@ UTIL_REQUESTS = {"cpu": "250m", "memory": "1Gi"}  # cheapest that still imports 
 
 def job_name(cfg, layer: int) -> str:
     return f"{cfg.workload}-l{layer}"
+
+
+def dataset_configmap_name(graph_id: str) -> str:
+    """DNS-safe per-graph ConfigMap name; the raw id lives in the `graph` label."""
+    safe = re.sub(r"-+", "-", re.sub(r"[^a-z0-9-]", "-", graph_id.lower())).strip("-")
+    if safe != graph_id:  # disambiguate ids that collide after sanitizing
+        safe = f"{safe}-{hashlib.sha1(graph_id.encode()).hexdigest()[:6]}"
+    return f"pcg-dataset-{safe}"[:63]
 
 
 def command_for(cfg):
@@ -171,9 +182,22 @@ def job_spec(
     )
 
 
-def oneshot_pod_spec(cfg, name: str, argv: list) -> client.V1Pod:
+def oneshot_pod_spec(cfg, name: str, argv: list, dataset_configmap=None) -> client.V1Pod:
     """A transient PCG-image pod (setup / meta read) on a spot node; the CLI deletes it
-    after, so with persistent_util off the cluster sits at zero nodes when idle."""
+    after. The dataset mount is opt-in — only setup/mesh-meta read the file."""
+    mounts = [_secrets_mount()]
+    volumes = [_secrets_volume(cfg)]
+    if dataset_configmap:
+        mounts.insert(
+            0, client.V1VolumeMount(name="datasets", mount_path="/app/datasets")
+        )
+        volumes.insert(
+            0,
+            client.V1Volume(
+                name="datasets",
+                config_map=client.V1ConfigMapVolumeSource(name=dataset_configmap),
+            ),
+        )
     container = client.V1Container(
         name="util",
         image=cfg.images.pcg,
@@ -181,10 +205,7 @@ def oneshot_pod_spec(cfg, name: str, argv: list) -> client.V1Pod:
         env=_extra_env(cfg),
         env_from=_env_from(),
         resources=client.V1ResourceRequirements(requests=UTIL_REQUESTS),
-        volume_mounts=[
-            client.V1VolumeMount(name="datasets", mount_path="/app/datasets"),
-            _secrets_mount(),
-        ],
+        volume_mounts=mounts,
     )
     return client.V1Pod(
         api_version="v1",
@@ -196,15 +217,7 @@ def oneshot_pod_spec(cfg, name: str, argv: list) -> client.V1Pod:
             node_selector=SPOT_SELECTOR,
             tolerations=_spot_tolerations(),
             containers=[container],
-            volumes=[
-                client.V1Volume(
-                    name="datasets",
-                    config_map=client.V1ConfigMapVolumeSource(
-                        name=cfgmod.DATASET_CONFIGMAP
-                    ),
-                ),
-                _secrets_volume(cfg),
-            ],
+            volumes=volumes,
         ),
     )
 
@@ -231,13 +244,6 @@ def helm_values(cfg, secret_data=None) -> dict:
                     # ADC for bucket access (CloudVolume/gcsfs); key is the mounted secret
                     "GOOGLE_APPLICATION_CREDENTIALS": "/root/.cloudvolume/secrets/google-secret.json",
                 },
-            }
-        ],
-        "configyamls": [
-            {
-                "name": cfgmod.DATASET_CONFIGMAP,
-                "namespace": cfg.namespace,
-                "files": [{"name": "dataset.yml", "content": cfg.dataset}],
             }
         ],
     }
@@ -267,10 +273,6 @@ def _util_deployment(cfg) -> dict:
         "imagePullSecrets": [],
         "volumes": [
             {
-                "name": "datasets-volume",
-                "configMap": {"name": cfgmod.DATASET_CONFIGMAP},
-            },
-            {
                 "name": "secrets-volume",
                 "secret": {"secretName": cfg.secret_name, "optional": True},
             },
@@ -280,7 +282,6 @@ def _util_deployment(cfg) -> dict:
                 "name": "util",
                 "image": {"repository": repo, "tag": tag or "latest"},
                 "volumeMounts": [
-                    {"name": "datasets-volume", "mountPath": "/app/datasets"},
                     {
                         "name": "secrets-volume",
                         "mountPath": "/root/.cloudvolume/secrets",

@@ -48,8 +48,18 @@ def _capture_run_pcg(monkeypatch):
     return seen
 
 
+def _capture_run_with_dataset(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        cli.util,
+        "run_with_dataset",
+        lambda c, name, argv: seen.update(name=name, argv=argv) or "",
+    )
+    return seen
+
+
 def test_setup_runs_pipeline_ingest_setup(monkeypatch, cfg):
-    seen = _capture_run_pcg(monkeypatch)
+    seen = _capture_run_with_dataset(monkeypatch)  # ingest setup reads the dataset
     run_cmd(cli.setup, [], cfg)
     assert seen["argv"] == [
         "python",
@@ -57,6 +67,13 @@ def test_setup_runs_pipeline_ingest_setup(monkeypatch, cfg):
         "pychunkedgraph.pipeline.ingest.setup",
         cfg.graph_id,
     ]
+
+
+def test_setup_enables_raw_when_agglomeration_present(monkeypatch, cfg):
+    cfg.dataset["ingest_config"] = {"AGGLOMERATION": "gs://b/agg"}
+    seen = _capture_run_with_dataset(monkeypatch)
+    run_cmd(cli.setup, [], cfg)
+    assert seen["argv"][-1] == "--raw"  # presence of the source enables the raw path
 
 
 def test_setup_runs_migrate_setup_for_migrate_workload(monkeypatch, cfg):
@@ -125,7 +142,7 @@ def test_layer_counts_cache_round_trip(monkeypatch, cfg, tmp_path):
 
 def test_graph_id_flag_overrides_config(monkeypatch, cfg):
     monkeypatch.setattr(cli.config, "load", lambda name: cfg)
-    seen = _capture_run_pcg(monkeypatch)
+    seen = _capture_run_with_dataset(monkeypatch)
     CliRunner().invoke(
         cli.cli, ["-g", "other_graph", "mesh-meta"], catch_exceptions=False
     )
@@ -243,8 +260,13 @@ def test_status_table_shows_pending_layers(monkeypatch, cfg):
 def test_undeploy_deletes_jobs_then_uninstalls_release(monkeypatch, cfg):
     deleted, ran = [], {}
     job = SimpleNamespace(metadata=SimpleNamespace(name="ingest-l2"))
+    cm = SimpleNamespace(metadata=SimpleNamespace(name="pcg-dataset-g"))
     monkeypatch.setattr(cli.kube, "list_jobs", lambda ns, workload=None: [job])
     monkeypatch.setattr(cli.kube, "delete_job", lambda ns, name: deleted.append(name))
+    monkeypatch.setattr(cli.kube, "list_configmaps", lambda ns, sel: [cm])
+    monkeypatch.setattr(
+        cli.kube, "delete_configmap", lambda ns, name: deleted.append(name)
+    )
     monkeypatch.setattr(
         cli.subprocess,
         "run",
@@ -254,7 +276,7 @@ def test_undeploy_deletes_jobs_then_uninstalls_release(monkeypatch, cfg):
         )[1],
     )
     run_cmd(cli.undeploy, [], cfg)
-    assert deleted == ["ingest-l2"]
+    assert deleted == ["ingest-l2", "pcg-dataset-g"]  # jobs, then dataset configmaps
     assert ran["argv"][:2] == ["helm", "uninstall"]
 
 
@@ -280,7 +302,7 @@ def test_zone_pins_worker_pods(cfg):
 
 
 def test_mesh_meta_runs_pipeline_meshing_setup(monkeypatch, cfg):
-    seen = _capture_run_pcg(monkeypatch)
+    seen = _capture_run_with_dataset(monkeypatch)  # mesh meta reads mesh_config
     run_cmd(cli.mesh_meta, [], cfg)
     assert seen["name"] == "mesh-meta"
     assert seen["argv"] == [

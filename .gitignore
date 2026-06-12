@@ -5,6 +5,9 @@ secrets/
 config/pipeline.yml
 config/dataset.yml
 
+# local run state
+costs/
+
 # python
 .venv/
 venv/

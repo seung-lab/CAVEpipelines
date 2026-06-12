@@ -289,7 +289,15 @@ compute class.
   one Autopilot/zonal cluster **per billing account** (not per project) — if another cluster under
   the same billing account already consumes it, this cluster's fee applies in full.
 
-`pipeline costs <layer>` reports the actual Spot spend, so you can see the effect of each change.
+Costs are **recorded, not derived**: whenever the CLI watches the cluster (each `pipeline status`
+tick, `submit`'s ramp, `pipeline costs`), it samples every pod's runtime into a local SQLite db
+(`costs/<graph>.<workload>.db`) and prices the record at read time from `rates.csv`. Kubernetes
+deletes finished pods (their runtimes with them), so the recorded history is the only number that
+survives a run; completions that finished unwatched are backfilled from the mean observed runtime
+(flagged in the printed `basis`), and the $0.10/hr cluster fee is charged once over the union of
+job wall-time — never per layer. Keep `pipeline status` running during a layer for exact per-pod
+accounting. `pipeline costs <layer>` reports the layer's recorded Spot spend, so you can see the
+effect of each change.
 
 ## Debugging failures
 

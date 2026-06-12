@@ -50,12 +50,16 @@ don't list them here. Unset keys are skipped (a per-pod env entry overrides the 
 
 ### Cost
 
-`pipeline costs <layer>` (and the `cost` column + final total in `pipeline status`) estimate the
-Autopilot **Spot** spend = pod requests x runtime x the (`region`, compute class) rate from
-`rates.csv` (refreshed by the `update-rates` workflow; pod-based classes — general-purpose /
-Balanced / Scale-Out — are priced separately). It is an estimate (requests-based), never the
-invoice, and never fatal — any failure shows as a warning or `err`. Needs `region:` set;
-node-based compute classes (`Performance` / GPU) bill per VM and are not priced.
+The CLI records every pod's runtime into a local SQLite file (`costs/<graph_id>.<workload>.db`,
+gitignored) whenever it watches the cluster — each `pipeline status` tick, `submit`'s ramp, and
+`pipeline costs`. Dollars are computed at read time as recorded requests x runtime x the
+(`region`, compute class) rate from `rates.csv` (refreshed by the `update-rates` workflow), so a
+rates refresh re-prices history. Records survive pod garbage collection; completions that finished
+unwatched are backfilled from the mean observed runtime (the printed `basis` says so), and the
+cluster fee is charged once over the union of job wall-time — never per layer. It is an estimate,
+never the invoice, and never fatal. Needs `region:` set; node-based compute classes
+(`Performance` / GPU) bill per VM and are not priced. Leave `pipeline status` running while a
+layer runs for exact accounting.
 
 ### Tuning per dataset
 

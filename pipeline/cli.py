@@ -20,7 +20,7 @@ from rich.console import Console
 from rich.live import Live
 from rich.table import Table
 
-from . import NOTE, config, costs, kube, log, manifest, note, util
+from . import NOTE, config, costdb, costs, kube, log, manifest, note, util
 
 HELM_CHART = "helm"
 
@@ -214,6 +214,8 @@ def submit(cfg, layer, force=False):
         p = min(p * cfg.ramp.factor, pmax)
         kube.set_parallelism(cfg.namespace, name, p)
         note(f"  parallelism -> {p}/{pmax}")
+        costdb.sample(cfg)
+    costdb.sample(cfg)
     note("at full parallelism; watch with `pipeline status`")
     rate = costs.rate_for(costs.load_table(), cfg.region, cfg.job.compute_class)
     if rate:
@@ -404,50 +406,49 @@ def status(cfg, once, interval):
         note(f"no {cfg.workload} jobs in ns '{cfg.namespace}'")
         return
     if once:
+        costdb.sample(cfg)
         Console().print(util.status_table(cfg, layer_totals))
         return
     try:
         with Live(refresh_per_second=4) as live:
             while True:  # stays up across layers; Ctrl-C to stop
+                costdb.sample(cfg)  # pod runtimes are durable once recorded
                 live.update(util.status_table(cfg, layer_totals))
                 time.sleep(interval)
     except KeyboardInterrupt:
         pass
-    table = costs.load_table()
-    if cfg.region and table:
+    rate_table = costs.load_table()
+    if cfg.region and rate_table:
         try:
-            total = sum(
-                costs.estimate_job_cost(
-                    job, kube.pods_of(cfg.namespace, job.metadata.name), table, cfg.region
-                ).get("total", 0.0)
-                for job in kube.list_jobs(cfg.namespace, cfg.workload)
-            )
-            note(f"estimated cost so far ~{costs.fmt_dollars(total)}")
+            per_layer, cluster_fee = util.recorded_costs(cfg, rate_table)
+            total = sum(agg["total"] for agg in per_layer.values()) + cluster_fee
+            note(f"estimated cost so far ~{costs.fmt_dollars(total)} (incl. cluster fee)")
         except Exception as exc:  # noqa: BLE001 - cost is auxiliary, never fatal
             note(f"cost unavailable: {exc}")
 
 
-@cli.command("costs", help="estimate the layer's spot cost (pod requests x runtime)")
+@cli.command("costs", help="the layer's recorded spot cost (sampled runtimes x rates)")
 @_LAYER
 @pass_cfg
 def show_costs(cfg, layer):
-    """Estimate a layer's Autopilot spot cost from pod requests x runtime."""
-    table = costs.load_table()
-    if not cfg.region or not table:
+    """A layer's Autopilot spot cost from recorded pod runtimes x current rates."""
+    rate_table = costs.load_table()
+    if not cfg.region or not rate_table:
         note(
             f"no cost rates (region '{cfg.region}'); set `region:` in config/pipeline.yml "
             f"or run `python -m pipeline.rates`"
         )
         return
-    name = manifest.job_name(cfg, layer)
+    costdb.sample(cfg)
     try:
-        job = kube.batch().read_namespaced_job(name, cfg.namespace)
-        est = costs.estimate_job_cost(
-            job, kube.pods_of(cfg.namespace, name), table, cfg.region
-        )
-        note(f"{name}: {costs.format_cost(est)}")
+        per_layer, _ = util.recorded_costs(cfg, rate_table)
     except Exception as exc:  # noqa: BLE001 - cost is auxiliary, never fatal
         note(f"cost unavailable: {exc}")
+        return
+    if layer not in per_layer:
+        note(f"no recorded runs for layer {layer}")
+        return
+    note(f"{manifest.job_name(cfg, layer)}: {costs.format_cost(per_layer[layer])}")
 
 
 def main(argv=None):

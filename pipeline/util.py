@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from rich.table import Table
 
-from . import costs, kube, manifest, note
+from . import costdb, costs, kube, manifest, note
 
 # All layers' chunk counts (L2..root). ChunkedGraph init is costly, so this runs at most
 # once (os._exit dodges the bigtable channel-thread exit hang); the result is cached
@@ -122,6 +122,35 @@ def elapsed(job):
     return f"{hours}h{mins:02d}m" if hours else f"{mins}m"
 
 
+def recorded_costs(cfg, rate_table) -> tuple:
+    """({layer: priced totals}, cluster fee) from the local cost record."""
+    per_layer = {}
+    now = datetime.now(timezone.utc).timestamp()
+    conn = costdb.connect(cfg)
+    try:
+        jobs = costdb.job_rows(conn)
+        for j in jobs:
+            rate = costs.rate_for(rate_table, cfg.region, j["compute_class"])
+            if not rate:
+                continue
+            usage = costs.usage_from_rows(j, costdb.pod_rows(conn, j["job_uid"]), now)
+            priced = costs.price_usage(usage, rate)
+            agg = per_layer.setdefault(
+                j["layer"],
+                {"total": 0.0, "cpu": 0.0, "mem": 0.0, "pod_hours": 0.0, "basis": set()},
+            )
+            for key in ("total", "cpu", "mem"):
+                agg[key] += priced[key]
+            agg["pod_hours"] += usage["pod_hours"]
+            agg["basis"].add(usage["basis"])
+        cluster_fee = costs.fee(rate_table, cfg.region, jobs, now)
+    finally:
+        conn.close()
+    for agg in per_layer.values():
+        agg["basis"] = "+".join(sorted(agg["basis"]))
+    return per_layer, cluster_fee
+
+
 def usage_table(cfg, job_name) -> Table:
     """Per-pod usage for one layer Job, in cores/GiB, ordered by task index."""
     table = Table(
@@ -167,7 +196,7 @@ def status_table(cfg, layer_totals=None) -> Table:
     table = Table(
         title=f"{cfg.workload} · {cfg.graph_id} · {nodes}",
         caption="retries = failed attempts (transient) · failed = dead tasks (`inspect`) · "
-        "active−ready ≈ pods waiting on capacity · cost is a Spot estimate",
+        "active−ready ≈ pods waiting on capacity · cost = recorded Spot estimate",
     )
     cols = (
         "layer",
@@ -184,6 +213,12 @@ def status_table(cfg, layer_totals=None) -> Table:
     for col in cols:
         table.add_column(col, justify="right")
     rate_table = costs.load_table()
+    recorded = {}
+    if cfg.region and rate_table:
+        try:
+            recorded, _ = recorded_costs(cfg, rate_table)
+        except Exception:  # noqa: BLE001 - cost is auxiliary, never fatal
+            recorded = {}
     layers = sorted(layer_totals) if layer_totals else sorted(jobs_by_layer)
     for layer in layers:
         job = jobs_by_layer.get(layer)
@@ -202,13 +237,9 @@ def status_table(cfg, layer_totals=None) -> Table:
         color = {"complete": "green", "failed": "red"}.get(job_state(job))
         retries = s.failed or 0  # attempts that burned a retry; dead tasks are separate
         dead = count_indexes(getattr(s, "failed_indexes", None))
-        cost_cell = "-"
-        if cfg.region and rate_table:
-            # per-pod (real pod lifetimes), matching the at-finish total; [] would
-            # fall back to wall×pods and over-count a ramped job
-            pods = kube.pods_of(cfg.namespace, job.metadata.name)
-            est = costs.estimate_job_cost(job, pods, rate_table, cfg.region)
-            cost_cell = costs.fmt_dollars(est["total"]) if "total" in est else "err"
+        cost_cell = (
+            costs.fmt_dollars(recorded[layer]["total"]) if layer in recorded else "-"
+        )
         table.add_row(
             str(layer),
             str(done) if total else "-",

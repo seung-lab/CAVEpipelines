@@ -1,6 +1,3 @@
-from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
-
 from pipeline import costs, rates
 
 REGION = "us-east1"
@@ -13,35 +10,29 @@ GP = {
 }
 BALANCED = {**GP, "cpu_spot": 0.0194, "mem_spot": 0.0021406}
 TABLE = {REGION: {"general-purpose": GP, "Balanced": BALANCED}}
+HOUR = 3600.0
 
 
-def _job(cpu="1", mem="2Gi", cls="", *, start=None, end=None, succeeded=0, active=0):
-    spec = SimpleNamespace(
-        template=SimpleNamespace(
-            spec=SimpleNamespace(
-                containers=[
-                    SimpleNamespace(
-                        resources=SimpleNamespace(requests={"cpu": cpu, "memory": mem})
-                    )
-                ],
-                node_selector=({"cloud.google.com/compute-class": cls} if cls else {}),
-            )
-        )
-    )
-    status = SimpleNamespace(
-        start_time=start, completion_time=end, succeeded=succeeded, active=active
-    )
-    return SimpleNamespace(spec=spec, status=status)
+def _job_row(cpu=1.0, mem=2.0, succeeded=0, active=0, start=0.0, end=None):
+    return {
+        "cpu_req": cpu,
+        "mem_req": mem,
+        "succeeded": succeeded,
+        "active": active,
+        "started_at": start,
+        "finished_at": end,
+        "compute_class": "",
+    }
 
 
-def _pod(start, end):
-    term = SimpleNamespace(started_at=start, finished_at=end)
-    return SimpleNamespace(
-        metadata=SimpleNamespace(creation_timestamp=start),
-        status=SimpleNamespace(
-            container_statuses=[SimpleNamespace(state=SimpleNamespace(terminated=term))]
-        ),
-    )
+def _pod_row(start, end, phase="Succeeded", cpu=1.0, mem=2.0):
+    return {
+        "started_at": start,
+        "finished_at": end,
+        "phase": phase,
+        "cpu_req": cpu,
+        "mem_req": mem,
+    }
 
 
 def test_parse_cpu_mem_units():
@@ -60,44 +51,51 @@ def test_rate_for_maps_default_class_and_misses():
     assert costs.rate_for(TABLE, "no-region", "") is None
 
 
-def test_per_pod_estimate_matches_formula():
-    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    t1 = t0 + timedelta(hours=1)
-    job = _job("1", "2Gi", start=t0, end=t1, succeeded=2)
-    pods = [_pod(t0, t1), _pod(t0, t1)]  # 2 pods x 1h = 2 pod-hr
-    est = costs.estimate_job_cost(job, pods, TABLE, REGION)
-    expected = 2 * (1 * GP["cpu_spot"] + 2 * GP["mem_spot"]) + GP["cluster_fee_hr"] * 1
-    assert abs(est["total"] - expected) < 1e-9
-    assert est["basis"] == "per-pod"
+def test_observed_usage_prices_to_formula():
+    usage = costs.usage_from_rows(
+        _job_row(succeeded=2), [_pod_row(0, HOUR), _pod_row(0, HOUR)], now=2 * HOUR
+    )
+    assert usage["basis"] == "observed"
+    priced = costs.price_usage(usage, GP)
+    assert abs(priced["total"] - 2 * (1 * GP["cpu_spot"] + 2 * GP["mem_spot"])) < 1e-9
+
+
+def test_live_pods_accrue_between_reads():
+    job = _job_row(active=1)
+    pods = [_pod_row(0, None, phase="Running")]
+    early = costs.usage_from_rows(job, pods, now=HOUR)["pod_hours"]
+    later = costs.usage_from_rows(job, pods, now=2 * HOUR)["pod_hours"]
+    assert later > early  # a re-read while pods run keeps growing
+
+
+def test_backfill_covers_pods_lost_before_first_sample():
+    usage = costs.usage_from_rows(
+        _job_row(succeeded=5), [_pod_row(0, HOUR), _pod_row(0, HOUR)], now=2 * HOUR
+    )
+    assert usage["basis"] == "observed+backfill"
+    assert abs(usage["pod_hours"] - 5.0) < 1e-9  # 2 seen + 3 x mean(1h)
+
+
+def test_wall_fallback_when_nothing_recorded():
+    usage = costs.usage_from_rows(
+        _job_row(succeeded=3, start=0.0, end=2 * HOUR), [], now=3 * HOUR
+    )
+    assert usage["basis"] == "wall"
+    assert abs(usage["pod_hours"] - 6.0) < 1e-9
+
+
+def test_fee_charged_over_union_not_per_layer():
+    rows = [_job_row(start=0.0, end=2 * HOUR), _job_row(start=HOUR, end=3 * HOUR)]
+    fee = costs.fee(TABLE, REGION, rows, now=4 * HOUR)
+    assert abs(fee - 3 * GP["cluster_fee_hr"]) < 1e-9  # 3h union, overlap not double
 
 
 def test_balanced_class_costs_more_than_default():
-    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    t1 = t0 + timedelta(hours=1)
-    gp = costs.estimate_job_cost(_job(start=t0, end=t1, succeeded=1), [], TABLE, REGION)
-    bal = costs.estimate_job_cost(
-        _job(cls="Balanced", start=t0, end=t1, succeeded=1), [], TABLE, REGION
+    usage = {"cpu_hours": 1.0, "mem_gib_hours": 2.0, "pod_hours": 1.0, "basis": "x"}
+    assert (
+        costs.price_usage(usage, BALANCED)["total"]
+        > costs.price_usage(usage, GP)["total"]
     )
-    assert bal["total"] > gp["total"]
-
-
-def test_wall_clock_fallback_when_no_pods():
-    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    t1 = t0 + timedelta(hours=2)
-    job = _job("1", "2Gi", start=t0, end=t1, succeeded=3)
-    est = costs.estimate_job_cost(job, [], TABLE, REGION)  # wall 2h x 3 pods = 6 pod-hr
-    expected = 6 * (1 * GP["cpu_spot"] + 2 * GP["mem_spot"]) + GP["cluster_fee_hr"] * 2
-    assert abs(est["total"] - expected) < 1e-9
-    assert est["basis"] == "wall x pods"
-
-
-def test_node_based_class_is_refused_not_priced():
-    est = costs.estimate_job_cost(_job(cls="Performance"), [], TABLE, REGION)
-    assert "error" in est and "node-based" in est["error"]
-
-
-def test_estimate_never_raises_on_bad_input():
-    assert "error" in costs.estimate_job_cost(None, [], TABLE, REGION)
 
 
 def test_fmt_dollars_keeps_subcent_accrual_visible():

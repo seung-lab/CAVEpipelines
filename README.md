@@ -27,15 +27,19 @@ configured with, read only by `setup` (workers read graph meta from Bigtable). T
 feeds both to helm and the Jobs; the Bigtable project/instance, image, and service
 account each appear once.
 
+**Auth — two kinds, don't confuse them.** **Bigtable** uses **Workload Identity** (the worker
+GSA), so no key file is needed for the graph store. **Bucket** access (CloudVolume reading the
+segmentation/mesh data) needs a **GCP service-account key**: put it in `secret_files` and the
+pipeline points `GOOGLE_APPLICATION_CREDENTIALS` at the mounted file (key name `google-secret.json`).
+
 **Secrets & the util pod.** `secret_files` is a `{container_filename: local_path}` map —
 `deploy` reads each local file under `secrets/` and bundles it into one helm-managed k8s
 Secret (created, updated, and removed with the release) mounted read-only at
-`/root/.cloudvolume/secrets/` in every pod. The in-container name can differ
-from the local one, so `secrets/` can hold many projects' creds side by side and each
-`pipeline.yml` loads only what it needs (an empty map is fine — GCP auth is Workload
-Identity). `setup` and `submit`'s meta-read run in the PCG image: by default a small
-**spot** util pod kept alive between layers (`persistent_util: true`); set it `false` for
-long ingests to use a one-shot pod instead, so the cluster idles at **zero nodes**.
+`/root/.cloudvolume/secrets/` in every pod. The in-container name can differ from the local one,
+so `secrets/` can hold many projects' creds side by side and each `pipeline.yml` loads only what
+it needs. `setup` and `submit`'s meta-read run in the PCG image: by default a small **spot** util
+pod kept alive between layers (`persistent_util: true`); set it `false` for long ingests to use a
+one-shot pod instead, so the cluster idles at **zero nodes**.
 
 **The CLI.**
 
@@ -130,7 +134,7 @@ cp config/pipeline-example.yml config/pipeline.yml
 cp config/dataset-example.yml config/dataset.yml
 
 # fill in pipeline.yml (graph_id, bigtable, images, gsa_email) and dataset.yml (data_source, graph_config)
-# optional: map credential files in secret_files: (local files under ./secrets); GCP auth is Workload Identity
+# put the GCP service-account key in secret_files: (for bucket access); Bigtable uses Workload Identity
 
 pipeline deploy   # static infra (helm) + secret
 pipeline setup    # create the graph table + meta, once
@@ -146,13 +150,16 @@ pipeline status       # watch; the layer reaches 100% when done
 pipeline submit 3     # next layer, and so on up to the root
 ```
 
-`submit` reads N (chunks in the layer) from `cg.meta`, sets
-`completions = ceil(N / batch_size)`, applies the Indexed Job, and ramps parallelism
-(geometric: `ramp.start` → ×`ramp.factor` every `ramp.period`s → up to `ramp.max`) so a cold
-Bigtable autoscales/splits before full load — the same flow every workload uses. Each chunk is
-built under a per-chunk lock (one writer per chunk). Tune memory, `compute_class`, batch size,
-and the ramp per layer in `pipeline.yml`; to size memory/CPU first, `pipeline sample <layer>
-<n>` runs n chunks one-per-pod, then `pipeline top <layer>` shows per-pod usage.
+What each `submit` does (the same flow every workload uses):
+
+- **Sizes the Job** — reads N (chunks in the layer) from `cg.meta`, sets
+  `completions = ceil(N / batch_size)`, applies the Indexed Job. Each chunk is built under a
+  per-chunk lock (one writer per chunk).
+- **Ramps parallelism** — geometric: `ramp.start` → ×`ramp.factor` every `ramp.period`s → up to
+  `ramp.max`, so a cold Bigtable autoscales/splits before full load.
+- **Tune per layer** in `pipeline.yml` — `job.memory`, `compute_class`, `batch_size`, the ramp.
+  To size CPU/memory first: `pipeline sample <layer> <n>` runs n chunks one-per-pod, then
+  `pipeline top <layer>` shows per-pod usage.
 
 ## 5. Meshing
 
@@ -203,23 +210,41 @@ table. The online L2Cache query frontend stays a normal Deployment, separate fro
 > verify the result, and only then migrate the production table.
 
 Upgrade a pcgv2 graph to pcgv3 in place: recompute each chunk's cross-chunk edges, bottom-up.
-Idempotent (overwrites), no per-chunk lock. Two full passes over all layers — an optional cleanup
-that fixes corrupt nodes, then the upgrade itself — selected by `workload`:
+Idempotent (overwrites), no per-chunk lock. Migration is **two full passes** over every layer,
+in order: first a `migrate_cleanup` pass that fixes corrupt nodes, then the `migrate` pass that
+does the upgrade — run cleanup first, on every layer, before any upgrade. Each pass is a separate
+`workload` you set in `pipeline.yml`, and within a pass you submit each layer yourself, lowest
+first, watching `pipeline status` until each completes before the next (same operator-gated flow
+as ingest — layers do not auto-advance).
+
+Prep the table once:
 
 ```shell
-pipeline setup                          # prep the existing table (version, column family, cache earliest_ts)
-
-# workload: migrate_cleanup  (optional) — fix corrupt nodes, every layer (L2 -> root)
-pipeline submit 2 ; pipeline submit 3 ; ... ; pipeline submit <root>
-
-# workload: migrate — the upgrade, every layer (L2 -> root)
-pipeline submit 2 ; pipeline submit 3 ; ... ; pipeline submit <root>
+pipeline setup   # version, column family, and cache earliest_ts into graph meta
 ```
 
-`migrate_cleanup` is the same worker run with `--clean`. Upgrade tuning comes from the `env:` block
-in `pipeline.yml` (`TASK_SIZE`, `PROCESS_MULTIPLIER`, `PARENT_CACHE_LIMIT`, `MAX_CHEBYSHEV_DISTANCE` —
-any env the upgrade code reads). `setup` caches `earliest_ts` into graph meta so workers read it once
-instead of hammering a single Bigtable row.
+**Pass 1 (required, first) — corrupt-node cleanup.** Set `workload: migrate_cleanup` in `pipeline.yml`, then:
+
+```shell
+pipeline submit 2
+pipeline submit 3
+# ...one per layer, lowest to root...
+pipeline submit <root>
+```
+
+**Pass 2 — the upgrade.** Set `workload: migrate` in `pipeline.yml`, then repeat the same per-layer submits:
+
+```shell
+pipeline submit 2
+pipeline submit 3
+# ...one per layer, lowest to root...
+pipeline submit <root>
+```
+
+`migrate_cleanup` is the same worker as `migrate`, run with `--clean`. Upgrade tuning comes from the
+`env:` block in `pipeline.yml` (`TASK_SIZE`, `PROCESS_MULTIPLIER`, `PARENT_CACHE_LIMIT`,
+`MAX_CHEBYSHEV_DISTANCE` — any env the upgrade code reads). `setup` caches `earliest_ts` into graph
+meta so workers read it once instead of hammering a single Bigtable row.
 
 ## How a layer behaves
 

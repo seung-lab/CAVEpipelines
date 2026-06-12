@@ -25,9 +25,12 @@ _MEM_UNITS = {
 
 
 def parse_cpu(value) -> float:
-    """k8s CPU quantity -> vCPU cores ('500m' -> 0.5, '2' -> 2.0)."""
+    """k8s CPU quantity -> vCPU cores ('500m' -> 0.5, '8913484669n' -> 8.9)."""
     text = str(value or 0)
-    return float(text[:-1]) / 1000 if text.endswith("m") else float(text)
+    for suffix, div in (("n", 1e9), ("u", 1e6), ("m", 1e3)):
+        if text.endswith(suffix):
+            return float(text[: -len(suffix)]) / div
+    return float(text)
 
 
 def parse_mem(value) -> float:

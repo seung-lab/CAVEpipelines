@@ -122,6 +122,35 @@ def elapsed(job):
     return f"{hours}h{mins:02d}m" if hours else f"{mins}m"
 
 
+def usage_table(cfg, job_name) -> Table:
+    """Per-pod usage for one layer Job, in cores/GiB, ordered by task index."""
+    table = Table(
+        title=f"{job_name} usage",
+        caption=f"requests: {cfg.job.cpu} cpu · {cfg.job.memory} per pod",
+    )
+    for col, justify in (("pod", "left"), ("cpu", "right"), ("memory", "right")):
+        table.add_column(col, justify=justify)
+    items = kube.pod_metrics(cfg.namespace, job_name)
+    if not items:
+        table.caption = "no metrics (metrics-server unavailable, or no running pods)"
+        return table
+
+    def index_of(item):  # pods are named {job}-{completion index}-{suffix}
+        try:
+            return int(item["metadata"]["name"][len(job_name) + 1 :].split("-")[0])
+        except ValueError:
+            return -1
+
+    for item in sorted(items, key=index_of):
+        usage = item["containers"][0]["usage"]
+        table.add_row(
+            item["metadata"]["name"],
+            f"{costs.parse_cpu(usage['cpu']):.1f}",
+            f"{costs.parse_mem(usage['memory']):.1f}Gi",
+        )
+    return table
+
+
 def status_table(cfg, layer_totals=None) -> Table:
     """Per-layer progress. With `layer_totals` ({layer: chunks}), every layer is shown —
     submitted ones with live progress, the rest with their a-priori total (pending)."""

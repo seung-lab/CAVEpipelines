@@ -366,23 +366,26 @@ def delete(cfg, layer):
     note(f"deleting {name}")
 
 
-@cli.command(help="per-pod CPU/memory usage (needs metrics-server)")
+@cli.command(help="live per-pod CPU/memory usage in cores/GiB (needs metrics-server)")
 @_LAYER
+@click.option("-o", "--once", is_flag=True, help="print one snapshot and exit")
+@click.option(
+    "-i", "--interval", type=float, default=5.0, help="refresh seconds (default 5)"
+)
 @pass_cfg
-def top(cfg, layer):
-    """Per-pod CPU/memory usage for the layer (needs metrics-server)."""
+def top(cfg, layer, once, interval):
+    """Live per-pod usage for the layer, ordered by task index; Ctrl-C to stop."""
     name = manifest.job_name(cfg, layer)
-    items = kube.pod_metrics(cfg.namespace, name)
-    if not items:
-        note("no metrics (metrics-server unavailable, or no running pods)")
+    if once:
+        Console().print(util.usage_table(cfg, name))
         return
-    table = Table(title=f"{name} usage")
-    for col in ("pod", "cpu", "memory"):
-        table.add_column(col)
-    for item in sorted(items, key=lambda i: i["metadata"]["name"]):
-        usage = item["containers"][0]["usage"]
-        table.add_row(item["metadata"]["name"], usage["cpu"], usage["memory"])
-    Console().print(table)
+    try:
+        with Live(refresh_per_second=4) as live:
+            while True:
+                live.update(util.usage_table(cfg, name))
+                time.sleep(interval)
+    except KeyboardInterrupt:
+        pass
 
 
 @cli.command(help="live per-layer progress table")

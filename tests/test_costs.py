@@ -47,6 +47,8 @@ def _pod(start, end):
 def test_parse_cpu_mem_units():
     assert costs.parse_cpu("500m") == 0.5
     assert costs.parse_cpu("2") == 2.0
+    assert costs.parse_cpu("8913484669n") == 8.913484669  # metrics-API nanocores
+    assert costs.parse_cpu("1500000u") == 1.5
     assert costs.parse_mem("2Gi") == 2.0
     assert costs.parse_mem("512Mi") == 0.5
 

@@ -186,6 +186,26 @@ def test_status_table_splits_retries_from_dead_tasks(monkeypatch, cfg):
     assert cells["failed"] == ["[red]5[/]"]
 
 
+def test_usage_table_renders_cores_and_gib_by_task_index(monkeypatch, cfg):
+    items = [
+        {
+            "metadata": {"name": "ingest-l6-11-abc"},
+            "containers": [{"usage": {"cpu": "8913484669n", "memory": "6341544Ki"}}],
+        },
+        {
+            "metadata": {"name": "ingest-l6-2-xyz"},
+            "containers": [{"usage": {"cpu": "250m", "memory": "445480Ki"}}],
+        },
+    ]
+    monkeypatch.setattr(cli.kube, "pod_metrics", lambda ns, name: items)
+    cells = {
+        c.header: list(c._cells) for c in cli.util.usage_table(cfg, "ingest-l6").columns
+    }
+    assert cells["pod"] == ["ingest-l6-2-xyz", "ingest-l6-11-abc"]  # task order
+    assert cells["cpu"] == ["0.2", "8.9"]
+    assert cells["memory"] == ["0.4Gi", "6.0Gi"]
+
+
 def test_status_table_shows_pending_layers(monkeypatch, cfg):
     def _raise(*a, **k):
         raise Exception("no nodes")

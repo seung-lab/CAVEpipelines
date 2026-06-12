@@ -55,7 +55,7 @@ one-shot pod instead, so the cluster idles at **zero nodes**.
 | `pipeline inspect <layer> [index]` | list a layer's failed indexes; with an index, that pod's log |
 | `pipeline pods <layer>` | the layer's pods: index, phase, node, scheduling reason |
 | `pipeline events <layer>` | the layer's Job + pod events (scheduling, scale-up, failures) |
-| `pipeline top <layer>` | per-pod CPU/memory usage (needs metrics-server) |
+| `pipeline top <layer>` | live per-pod usage in cores/GiB vs the request, by task index (needs metrics-server) |
 | `pipeline delete <layer>` | delete the layer's Job and pods |
 | `pipeline undeploy` | delete all pipeline Jobs + the helm release (KSA, ConfigMaps, util pod, secret) |
 

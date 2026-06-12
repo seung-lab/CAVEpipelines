@@ -203,6 +203,12 @@ def test_mesh_meta_runs_pipeline_meshing_setup(monkeypatch, cfg):
     ]
 
 
+def test_registered_handlers_resolve(monkeypatch, cfg):
+    # dispatch is by name via the registry; every entry must resolve to a callable
+    for _, handler, _, _ in cli.COMMANDS:
+        assert callable(getattr(cli, handler))
+
+
 def test_mesh_meta_subcommand_is_registered(monkeypatch, cfg):
     monkeypatch.setattr(cli.config, "load", lambda path: cfg)
     ran = {}

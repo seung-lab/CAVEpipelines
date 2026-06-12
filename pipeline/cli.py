@@ -341,6 +341,128 @@ def show_costs(cfg, args):
         note(f"cost unavailable: {exc}")
 
 
+_LAYER = (("layer",), {"type": int})
+
+# (subcommand, handler name, help, ((flags, add_argument kwargs), ...)). Handlers are
+# referenced by name and resolved at dispatch time, so tests can monkeypatch them.
+COMMANDS = (
+    (
+        "deploy",
+        "deploy",
+        "install/upgrade static infra (helm) + secret",
+        (
+            (
+                ("-s", "--secrets"),
+                {"default": "secrets", "help": "dir of secret files (default: secrets)"},
+            ),
+            (
+                ("--setup",),
+                {
+                    "action": "store_true",
+                    "help": "run `setup` after deploy (first-run convenience)",
+                },
+            ),
+            (
+                ("-r", "--raw"),
+                {
+                    "action": "store_true",
+                    "help": "raw agglomeration input (with --setup)",
+                },
+            ),
+            (
+                ("--submit-l2",),
+                {
+                    "action": "store_true",
+                    "help": "submit layer 2 after setup (requires --setup)",
+                },
+            ),
+        ),
+    ),
+    (
+        "undeploy",
+        "undeploy",
+        "delete all pipeline Jobs and the helm release (incl. secret)",
+        (),
+    ),
+    (
+        "setup",
+        "setup",
+        "create the graph table + meta (runs in the util pod)",
+        (
+            (
+                ("-r", "--raw"),
+                {"action": "store_true", "help": "raw agglomeration input"},
+            ),
+        ),
+    ),
+    (
+        "mesh-meta",
+        "mesh_meta",
+        "write mesh metadata once (after ingest reaches the root layer)",
+        (),
+    ),
+    (
+        "submit",
+        "submit",
+        "submit one layer's Indexed Job and ramp parallelism",
+        (
+            _LAYER,
+            (
+                ("-f", "--force"),
+                {
+                    "action": "store_true",
+                    "help": "submit even if the layer below isn't complete"
+                    " — only if you're sure",
+                },
+            ),
+        ),
+    ),
+    (
+        "scale",
+        "scale",
+        "resize the running layer's workers (set Job parallelism)",
+        (_LAYER, (("parallelism",), {"type": int})),
+    ),
+    (
+        "sample",
+        "sample",
+        "run N scattered chunks of a layer to size CPU/memory",
+        (_LAYER, (("count",), {"type": int})),
+    ),
+    (
+        "status",
+        "status",
+        "live per-layer progress table",
+        (
+            (
+                ("-o", "--once"),
+                {"action": "store_true", "help": "print one snapshot and exit"},
+            ),
+            (
+                ("-i", "--interval"),
+                {"type": float, "default": 5.0, "help": "refresh seconds (default 5)"},
+            ),
+        ),
+    ),
+    (
+        "inspect",
+        "inspect",
+        "list a layer's failed indexes; add an index for its pod log",
+        (_LAYER, (("index",), {"type": int, "nargs": "?"})),
+    ),
+    ("pods", "pods", "list the layer's pods (index, phase, node)", (_LAYER,)),
+    ("events", "events", "show the layer's Job + pod events", (_LAYER,)),
+    ("top", "top", "per-pod CPU/memory usage (needs metrics-server)", (_LAYER,)),
+    ("delete", "delete", "delete the layer's Job and pods", (_LAYER,)),
+    (
+        "costs",
+        "show_costs",
+        "estimate the layer's spot cost (pod requests x runtime)",
+        (_LAYER,),
+    ),
+)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="pipeline", description=__doc__)
     p.add_argument(
@@ -356,97 +478,11 @@ def main(argv=None):
         help="debug logging, incl. every kubernetes API request",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
-
-    d = sub.add_parser("deploy", help="install/upgrade static infra (helm) + secret")
-    d.add_argument(
-        "-s",
-        "--secrets",
-        default="secrets",
-        help="dir of secret files (default: secrets)",
-    )
-    d.add_argument(
-        "--setup",
-        action="store_true",
-        help="run `setup` after deploy (first-run convenience)",
-    )
-    d.add_argument(
-        "-r", "--raw", action="store_true", help="raw agglomeration input (with --setup)"
-    )
-    d.add_argument(
-        "--submit-l2",
-        action="store_true",
-        help="submit layer 2 after setup (requires --setup)",
-    )
-    d.set_defaults(fn=deploy)
-
-    ud = sub.add_parser(
-        "undeploy", help="delete all pipeline Jobs and the helm release (incl. secret)"
-    )
-    ud.set_defaults(fn=undeploy)
-
-    s = sub.add_parser(
-        "setup", help="create the graph table + meta (runs in the util pod)"
-    )
-    s.add_argument("-r", "--raw", action="store_true", help="raw agglomeration input")
-    s.set_defaults(fn=setup)
-
-    mm = sub.add_parser(
-        "mesh-meta", help="write mesh metadata once (after ingest reaches the root layer)"
-    )
-    mm.set_defaults(fn=mesh_meta)
-
-    su = sub.add_parser(
-        "submit", help="submit one layer's Indexed Job and ramp parallelism"
-    )
-    su.add_argument("layer", type=int)
-    su.add_argument(
-        "-f",
-        "--force",
-        action="store_true",
-        help="submit even if the layer below isn't complete — only if you're sure",
-    )
-    su.set_defaults(fn=submit)
-
-    sc = sub.add_parser(
-        "scale", help="resize the running layer's workers (set Job parallelism)"
-    )
-    sc.add_argument("layer", type=int)
-    sc.add_argument("parallelism", type=int)
-    sc.set_defaults(fn=scale)
-
-    sm = sub.add_parser(
-        "sample", help="run N scattered chunks of a layer to size CPU/memory"
-    )
-    sm.add_argument("layer", type=int)
-    sm.add_argument("count", type=int)
-    sm.set_defaults(fn=sample)
-
-    st = sub.add_parser("status", help="live per-layer progress table")
-    st.add_argument(
-        "-o", "--once", action="store_true", help="print one snapshot and exit"
-    )
-    st.add_argument(
-        "-i", "--interval", type=float, default=5.0, help="refresh seconds (default 5)"
-    )
-    st.set_defaults(fn=status)
-
-    i = sub.add_parser(
-        "inspect", help="list a layer's failed indexes; add an index for its pod log"
-    )
-    i.add_argument("layer", type=int)
-    i.add_argument("index", type=int, nargs="?")
-    i.set_defaults(fn=inspect)
-
-    for cmd, handler, helptext in (
-        ("pods", pods, "list the layer's pods (index, phase, node)"),
-        ("events", events, "show the layer's Job + pod events"),
-        ("top", top, "per-pod CPU/memory usage (needs metrics-server)"),
-        ("delete", delete, "delete the layer's Job and pods"),
-        ("costs", show_costs, "estimate the layer's spot cost (pod requests x runtime)"),
-    ):
+    for cmd, handler, helptext, arg_specs in COMMANDS:
         sp = sub.add_parser(cmd, help=helptext)
-        sp.add_argument("layer", type=int)
-        sp.set_defaults(fn=handler)
+        for flags, kwargs in arg_specs:
+            sp.add_argument(*flags, **kwargs)
+        sp.set_defaults(handler=handler)
 
     args = p.parse_args(argv)
     # Root stays at NOTE so -v doesn't unleash urllib3/kubernetes HTTP body dumps
@@ -455,7 +491,7 @@ def main(argv=None):
     if args.verbose:
         log.setLevel(logging.DEBUG)
     try:
-        args.fn(config.load(args.config), args)
+        globals()[args.handler](config.load(args.config), args)
     except ApiException as exc:
         body = (exc.body or "").strip()
         raise SystemExit(

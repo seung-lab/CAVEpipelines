@@ -6,12 +6,18 @@ from rich.table import Table
 
 from . import costs, kube, manifest, note
 
+# os._exit after printing: the bigtable.data client leaves a non-daemon channel-refresh
+# thread that atexit join()s forever, so a normal exit would hang the exec long after the
+# count is computed. Hard-exit once we have the value.
 _N_CODE = """
+import os, sys
 import numpy as np
 from pychunkedgraph.graph import ChunkedGraph
 cg = ChunkedGraph(graph_id={gid!r})
 L = {layer}
 print(1 if L == cg.meta.layer_count else int(np.prod(cg.meta.layer_chunk_bounds[L])))
+sys.stdout.flush()
+os._exit(0)
 """
 
 

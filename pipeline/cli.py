@@ -31,25 +31,25 @@ def deploy(cfg, args):
     with tempfile.NamedTemporaryFile("w", suffix=".yaml") as f:
         yaml.safe_dump(manifest.helm_values(cfg, data), f)
         f.flush()
-        try:
-            subprocess.run(
-                [
-                    "helm",
-                    "upgrade",
-                    "--install",
-                    "pcg",
-                    HELM_CHART,
-                    "-n",
-                    cfg.namespace,
-                    "--create-namespace",
-                    "-f",
-                    f.name,
-                ],
-                check=True,
-            )
-        except subprocess.CalledProcessError as exc:
+        res = subprocess.run(
+            [
+                "helm",
+                "upgrade",
+                "--install",
+                "pcg",
+                HELM_CHART,
+                "-n",
+                cfg.namespace,
+                "--create-namespace",
+                "-f",
+                f.name,
+            ],
+            capture_output=True,  # swallow helm's NOTES + autopilot warnings
+            text=True,
+        )
+        if res.returncode:
             raise SystemExit(
-                f"helm upgrade failed (exit {exc.returncode}); see helm output above"
+                f"helm upgrade failed (exit {res.returncode}):\n{res.stderr.strip()}"
             )
     note(
         f"deployed; secret '{cfg.secret_name}' <- {list(data)}"

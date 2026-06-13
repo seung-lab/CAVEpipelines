@@ -26,8 +26,8 @@ from . import NOTE, config, costdb, costs, kube, log, manifest, note, ops, util
     "--config",
     "config_name",
     default=None,
-    help="pipeline config: a path, or a file name inside config/; the first -c "
-    "selects the session config (default: the session config, else pipeline.yml)",
+    help="path to a pipeline yaml; the first -c selects the session config "
+    "(default: the session config, else config/pipeline.yml)",
 )
 @click.option(
     "-g",
@@ -126,9 +126,12 @@ def undeploy(cfg):
 
 
 @cli.command(help="create the graph table + meta (one-shot pod with the dataset)")
+@click.option(
+    "--exists", is_flag=True, help="skip (don't error) if the graph already exists"
+)
 @pass_cfg
-def setup(cfg):
-    ops.setup(cfg)
+def setup(cfg, exists):
+    ops.setup(cfg, exist_ok=exists)
 
 
 @cli.command(

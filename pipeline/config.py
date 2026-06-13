@@ -1,11 +1,12 @@
 """Load all pipeline config from a single yaml — the one source of truth.
 
-`-c` selects a pipeline yaml: a relative/absolute path, or a name under
-`config/`. The first -c becomes the session config (stored in config/.current):
-later commands reuse it, and switching requires `pipeline reset`. The optional
-`dataset:` key names the dataset yaml relative to the pipeline yaml's directory,
-so many projects coexist side by side. The dataset block is kept verbatim (same
-yml the graph was always configured with) and passed through to `setup`.
+`-c` is a path (relative or absolute) to a pipeline yaml; with no `-c` the
+default is `config/pipeline.yml`. The first -c becomes the session config
+(stored in config/.current): later commands reuse it, and switching requires
+`pipeline reset`. The optional `dataset:` key names the dataset yaml relative to
+the pipeline yaml's directory, so many projects coexist side by side. The dataset
+block is kept verbatim (same yml the graph was always configured with) and passed
+through to `setup`.
 """
 
 import os
@@ -123,7 +124,7 @@ def resolve(name: str = None, workload: str = None) -> Config:
     """Load the session config. The first explicit -c selects it for the session;
     a different -c is refused until `pipeline reset`."""
     current = stored()
-    cfg = load(name or current or "pipeline.yml", workload)
+    cfg = load(name or current, workload)
     if not name:
         return cfg
     if current and os.path.abspath(cfg.source) != os.path.abspath(current):
@@ -135,12 +136,12 @@ def resolve(name: str = None, workload: str = None) -> Config:
     return cfg
 
 
-def load(name: str = "pipeline.yml", workload: str = None) -> Config:
-    """Load a pipeline yaml — a relative/absolute path, or a name under config/.
+def load(name: str = None, workload: str = None) -> Config:
+    """Load the pipeline yaml at `name` (any path); defaults to config/pipeline.yml.
 
     The `dataset:` key resolves relative to the pipeline yaml's directory.
     `workload` overrides the file's — the per-workload job merge follows it."""
-    path = name if os.path.exists(name) else os.path.join(CONFIG_DIR, name)
+    path = name or os.path.join(CONFIG_DIR, "pipeline.yml")
     config_dir = os.path.dirname(path) or "."
     with open(path) as stream:
         raw = yaml.safe_load(stream) or {}

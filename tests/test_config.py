@@ -59,50 +59,48 @@ def test_bigtable_not_injected_when_absent(tmp_path, monkeypatch):
     assert "backend_client" not in cfg.dataset
 
 
-def test_load_resolves_named_files_under_config_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
+def test_load_takes_any_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", "nonexistent")  # never consulted for -c
     _write(tmp_path, "projA.yml", {**BASE, "dataset": "projA-dataset.yml"})
     _write(tmp_path, "projA-dataset.yml", {"data_source": {"EDGES": "gs://a/e"}})
-    cfg = config.load("projA.yml")
-    assert cfg.dataset["data_source"]["EDGES"] == "gs://a/e"
-    assert cfg.graph_id == "g"
+    cfg = config.load(str(tmp_path / "projA.yml"))
+    assert cfg.dataset["data_source"]["EDGES"] == "gs://a/e"  # sibling dataset
+    assert cfg.config_dir == str(tmp_path)  # counts cache colocates with the yaml
+
+
+def test_default_config_is_under_config_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
+    _write(tmp_path, "pipeline.yml", BASE)
+    assert config.load().source == str(tmp_path / "pipeline.yml")  # no -c -> default
 
 
 def test_first_config_selects_the_session(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
     _write(tmp_path, "pipeline.yml", BASE)
+    other = str(tmp_path / "other.yml")
     _write(tmp_path, "other.yml", {**BASE, "namespace": "ns2"})
-    assert config.resolve("other.yml").namespace == "ns2"  # first -c selects
+    assert config.resolve(other).namespace == "ns2"  # first -c selects
     assert config.resolve().namespace == "ns2"  # no -c: session config reused
-    assert config.resolve("other.yml").namespace == "ns2"  # same -c: fine
+    assert config.resolve(other).namespace == "ns2"  # same -c: fine
 
 
 def test_switching_configs_requires_reset(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
     _write(tmp_path, "a.yml", BASE)
     _write(tmp_path, "b.yml", {**BASE, "namespace": "ns2"})
-    config.resolve("a.yml")
+    config.resolve(str(tmp_path / "a.yml"))
     with pytest.raises(SystemExit, match="reset"):  # silent switch = wrong target
-        config.resolve("b.yml")
+        config.resolve(str(tmp_path / "b.yml"))
     config.forget()
-    assert config.resolve("b.yml").namespace == "ns2"
+    assert config.resolve(str(tmp_path / "b.yml")).namespace == "ns2"
 
 
 def test_unreadable_config_never_becomes_the_session(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
     _write(tmp_path, "pipeline.yml", BASE)
     with pytest.raises(OSError):
-        config.resolve("missing.yml")
+        config.resolve(str(tmp_path / "missing.yml"))
     assert config.resolve().source.endswith("pipeline.yml")  # typo did not stick
-
-
-def test_load_accepts_a_path_outside_config_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "CONFIG_DIR", "nonexistent")  # path must not need it
-    _write(tmp_path, "run.yml", BASE)
-    _write(tmp_path, "dataset.yml", {"data_source": {"EDGES": "gs://p/e"}})
-    cfg = config.load(str(tmp_path / "run.yml"))  # relative paths resolve the same
-    assert cfg.dataset["data_source"]["EDGES"] == "gs://p/e"  # sibling dataset
-    assert cfg.config_dir == str(tmp_path)  # counts cache colocates with the yaml
 
 
 def test_dataset_key_defaults_to_sibling_and_allows_subdirs(tmp_path, monkeypatch):
@@ -113,7 +111,8 @@ def test_dataset_key_defaults_to_sibling_and_allows_subdirs(tmp_path, monkeypatc
     (tmp_path / "my_project").mkdir()
     _write(tmp_path, "nested.yml", {**BASE, "dataset": "my_project/dataset.yml"})
     _write(tmp_path / "my_project", "dataset.yml", {"data_source": {"EDGES": "gs://n/e"}})
-    assert config.load("nested.yml").dataset["data_source"]["EDGES"] == "gs://n/e"
+    nested = config.load(str(tmp_path / "nested.yml"))
+    assert nested.dataset["data_source"]["EDGES"] == "gs://n/e"
 
 
 def test_resource_curves_and_workload_merge(tmp_path, monkeypatch):

@@ -51,9 +51,12 @@ def test_oneshot_sequences_phases(monkeypatch, cfg):
     calls = []
     _mock_helm(monkeypatch, calls)
     monkeypatch.setattr(cli.config, "load", _fake_load(cfg))
-    monkeypatch.setattr(ops.util, "graph_exists", lambda c: False)  # fresh -> setup once
     monkeypatch.setattr(ops.util, "read_layer_counts", lambda c: {2: 100, 3: 10, 4: 1})
-    monkeypatch.setattr(ops, "setup", lambda c: calls.append("setup"))
+    monkeypatch.setattr(
+        ops,
+        "setup",
+        lambda c, exist_ok=False: calls.append(f"setup(exist_ok={exist_ok})"),
+    )
     monkeypatch.setattr(ops, "mesh_meta", lambda c: calls.append("mesh-meta"))
     monkeypatch.setattr(
         ops, "run_layer", lambda c, layer: calls.append(f"{c.workload}-l{layer}")
@@ -61,7 +64,7 @@ def test_oneshot_sequences_phases(monkeypatch, cfg):
     _invoke(["--oneshot", "--yes"], cfg)
     assert calls == [
         "helm",
-        "setup",
+        "setup(exist_ok=True)",  # always run, resume-safe (skips a created table)
         "ingest-l2",
         "ingest-l3",
         "ingest-l4",
@@ -71,17 +74,20 @@ def test_oneshot_sequences_phases(monkeypatch, cfg):
     ]
 
 
-def test_oneshot_resumes_without_setup_or_meshing(monkeypatch, cfg):
+def test_oneshot_setup_is_resume_safe_and_skips_meshing(monkeypatch, cfg):
     cfg.config_dir = "nonexistent"
     calls = []
     _mock_helm(monkeypatch, calls)
     monkeypatch.setattr(cli.config, "load", _fake_load(cfg))
-    monkeypatch.setattr(ops.util, "graph_exists", lambda c: True)  # exists -> skip setup
     monkeypatch.setattr(ops.util, "read_layer_counts", lambda c: {2: 5})
-    monkeypatch.setattr(ops, "setup", lambda c: calls.append("setup"))
+    monkeypatch.setattr(
+        ops,
+        "setup",
+        lambda c, exist_ok=False: calls.append(f"setup(exist_ok={exist_ok})"),
+    )
     monkeypatch.setattr(ops, "run_layer", lambda c, layer: calls.append(f"l{layer}"))
     _invoke(["--oneshot", "--yes"], cfg)
-    assert calls == ["helm", "l2"]  # graph exists -> no setup; no mesh_config -> done
+    assert calls == ["helm", "setup(exist_ok=True)", "l2"]  # no mesh_config -> no meshing
 
 
 _CONDS = {

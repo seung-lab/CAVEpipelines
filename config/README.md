@@ -5,11 +5,11 @@
 [data_source](#data_source) · [graph_config](#graph_config) · [ingest_config](#ingest_config-optional) ·
 [backend_client](#backend_client) · [mesh_config](#mesh_config-meshing-only)
 
-The `pipeline` CLI reads its config from this directory — two files:
+`config/` is the conventional home for run configs — two files per project:
 
 | File | What | Read by |
 |---|---|---|
-| `pipeline.yml` | run-wide settings: cluster, images, identity, Bigtable, job sizing (incl. ramp), env | the CLI (helm + every Job) |
+| `pipeline.yml` | run-wide settings: cluster, images, identity, Bigtable, job sizing (incl. ramp), env | the `pipeline` CLI (feeds helm + every Job) |
 | `dataset.yml` | the graph definition (sources, chunk layout, mesh params) | `setup` / `mesh-meta` only |
 
 Copy the templates (the copies are gitignored):
@@ -20,10 +20,10 @@ cp dataset-example.yml  dataset.yml    # non-default names link via `dataset:` i
 ```
 
 Everything here except the examples and this README is gitignored, so any number of projects
-live side by side (`my_project.yml` + `my_project/dataset.yml`, …). The first
-`pipeline -c <name>` (a name in this directory, or a relative/absolute path) selects the
-session config, stored in `.current` here: later commands use it without `-c` and log it on
-every invocation, and a different `-c` is refused until `pipeline reset`. `-g` overrides its
+live side by side (`my_project.yml` + `my_project/dataset.yml`, …). `pipeline -c <path>` points at
+one (relative or absolute; `config/pipeline.yml` is the default when omitted). The first `-c`
+selects the session config, stored in `.current` here: later commands use it without `-c` and log
+it on every invocation, and a different `-c` is refused until `pipeline reset`. `-g` overrides its
 `graph_id` per run (test iterations like `…_test1` without editing files). The layer-counts
 cache `.layer_counts.json` lives beside the pipeline yaml, keyed by graph id.
 

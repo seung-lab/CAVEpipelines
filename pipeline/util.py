@@ -9,10 +9,10 @@ from rich.table import Table
 
 from . import costdb, costs, kube, manifest, note
 
-# In-pod snippets that touch the graph. Each prints its result and exits 0, or
-# prints the real PCG traceback and exits non-zero (the CLI surfaces it verbatim —
-# the pipeline never interprets PCG errors). os._exit dodges the bigtable
-# channel-thread exit hang; the 30s cap fits a healthy init/create with headroom.
+# In-pod snippet that reads the graph: prints the counts and exits 0, or prints
+# the real PCG traceback and exits non-zero (the CLI surfaces it verbatim — the
+# pipeline never interprets PCG errors). os._exit dodges the bigtable channel-thread
+# exit hang; the 30s cap fits a healthy init with headroom.
 CG_TIMEOUT = 30
 
 # All layers' chunk counts (L2..root); cached locally, recomputed after setup.
@@ -22,22 +22,6 @@ try:
     from pychunkedgraph.graph import ChunkedGraph
     cg = ChunkedGraph(graph_id={gid!r})
     print(*[int(c) for c in cg.meta.layer_chunk_counts])
-    sys.stdout.flush()
-    os._exit(0)
-except Exception:
-    traceback.print_exc()
-    sys.stderr.flush()
-    os._exit(1)
-"""
-
-# Does the graph's table exist? A clean yes/no via PCG's own existence primitive.
-_EXISTS_CODE = """
-import os, sys, traceback
-try:
-    from pychunkedgraph.graph import get_client_class, get_default_client_info
-    info = get_default_client_info()
-    client = get_client_class(info.TYPE)({gid!r}, config=info.CONFIG)
-    print("yes" if client._admin_table.exists() else "no")
     sys.stdout.flush()
     os._exit(0)
 except Exception:
@@ -123,18 +107,6 @@ def cached_layer_counts(cfg) -> dict:
     """This graph's cached {layer: chunks}, or None — never touches the cluster."""
     cached = _read_cache(cfg).get(cfg.graph_id)
     return {int(k): v for k, v in cached.items()} if cached else None
-
-
-def graph_exists(cfg) -> bool:
-    """Whether the graph's table exists — a clean yes/no the resume path can trust.
-    A real failure (bad creds, unreachable Bigtable) raises with the PCG traceback."""
-    out = run_pcg(
-        cfg,
-        "graph-check",
-        ["python", "-u", "-c", _EXISTS_CODE.format(gid=cfg.graph_id)],
-        timeout=CG_TIMEOUT,
-    )
-    return out.strip().split("\n")[-1].strip() == "yes"
 
 
 def read_layer_counts(cfg) -> dict:

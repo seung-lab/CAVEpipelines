@@ -76,6 +76,15 @@ def test_setup_enables_raw_when_agglomeration_present(monkeypatch, cfg):
     assert seen["argv"][-1] == "--raw"  # presence of the source enables the raw path
 
 
+def test_setup_exists_flag_passes_exist_ok(monkeypatch, cfg):
+    seen = _capture_run_with_dataset(monkeypatch)
+    run_cmd(cli.setup, ["--exists"], cfg)
+    assert "--exist-ok" in seen["argv"]  # resume-safe create reaches the worker
+    seen.clear()
+    run_cmd(cli.setup, [], cfg)
+    assert "--exist-ok" not in seen["argv"]  # default errors on an existing table
+
+
 def test_setup_runs_migrate_setup_for_migrate_workload(monkeypatch, cfg):
     cfg.workload = "migrate"
     seen = _capture_run_pcg(monkeypatch)
@@ -377,11 +386,3 @@ def test_layer_counts_failure_is_loud(monkeypatch, cfg):
     )
     with pytest.raises(SystemExit, match="could not read layer counts"):
         cli.util.read_layer_counts(cfg)
-
-
-def test_graph_exists_reads_a_clean_yes_no(monkeypatch, cfg):
-    # the resume path trusts a yes/no, never a swallowed error
-    monkeypatch.setattr(cli.util, "run_pcg", lambda c, name, argv, **kw: "yes")
-    assert cli.util.graph_exists(cfg) is True
-    monkeypatch.setattr(cli.util, "run_pcg", lambda c, name, argv, **kw: "no")
-    assert cli.util.graph_exists(cfg) is False

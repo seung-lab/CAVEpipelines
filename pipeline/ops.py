@@ -71,8 +71,9 @@ def undeploy(cfg) -> None:
     note(res.stdout.strip() or res.stderr.strip() or "release removed")
 
 
-def setup(cfg) -> None:
-    """Prepare the graph for the workload: ingest creates the table; migrate preps it."""
+def setup(cfg, exist_ok=False) -> None:
+    """Prepare the graph for the workload: ingest creates the table; migrate preps it.
+    exist_ok lets ingest setup skip an already-created table (resume) instead of erroring."""
     note(f"setup ({cfg.workload})")
     if cfg.workload in ("migrate", "migrate_cleanup"):
         # migrate reads everything from Bigtable; no dataset file involved
@@ -82,6 +83,8 @@ def setup(cfg) -> None:
         argv = ["python", "-m", "pychunkedgraph.pipeline.ingest.setup", cfg.graph_id]
         if cfg.dataset.get("ingest_config", {}).get("AGGLOMERATION"):
             argv.append("--raw")  # an agglomeration source implies the raw input path
+        if exist_ok:
+            argv.append("--exist-ok")
         note(util.run_with_dataset(cfg, "setup", argv) or "setup done")
     util.invalidate_layer_counts(cfg)  # graph may have changed; recompute on next read
 
@@ -259,10 +262,9 @@ def oneshot_run(cfg) -> None:
     ingest_cfg.graph_id = cfg.graph_id  # carry a -g override
     if ingest_cfg.persistent_util:
         kube.util_pod(ingest_cfg.namespace, wait_create=True)  # helm just created it
-    if util.graph_exists(ingest_cfg):  # a clean yes/no — never guess from an error
-        note(f"graph '{ingest_cfg.graph_id}' exists; skipping setup")
-    else:
-        setup(ingest_cfg)
+    setup(
+        ingest_cfg, exist_ok=True
+    )  # ask forgiveness: a fresh graph creates, a resume skips
     counts = util.read_layer_counts(ingest_cfg)
     for layer in sorted(counts):
         run_layer(ingest_cfg, layer)

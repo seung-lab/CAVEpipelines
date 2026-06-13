@@ -41,16 +41,16 @@ pods absorb preemption; a cold Bigtable is ramped into gradually.
 | Path | What |
 |---|---|
 | [pipeline/](pipeline/) | the **`pipeline` CLI** (Python, kubernetes client) — the operator entry point |
-| [config/](config/) | all run configs — `-c` selects a pipeline yaml (a path, or a name in `config/`), its `dataset:` key names the dataset yaml; any number of projects side by side — see [config/README.md](config/README.md) |
+| [config/](config/) | all run configs — `-c` is the path to a pipeline yaml, its `dataset:` key names the dataset yaml relative to it; any number of projects side by side — see [config/README.md](config/README.md) |
 | [secrets/](secrets/) | local secret files (gitignored); `secret_files:` in `pipeline.yml` picks which to load |
 | [terraform/](terraform/) | the GKE Autopilot cluster + Workload-Identity service account |
-| [helm/](helm/) | static infra only (service account, ConfigMaps, an optional spot util pod) — driven by the CLI |
+| [helm/](helm/) | the helm chart for static infra (service account, ConfigMaps, an optional spot util pod); the `pipeline` CLI renders its values and runs helm |
 
 **Single-source config.** `pipeline.yml` holds everything except the graph
 definition (`dataset.yml` — the same yaml the graph was always configured with,
-read only by `setup`; workers read graph meta from Bigtable). The CLI feeds both
-to helm and the Jobs; the Bigtable project/instance, image, and service account
-each appear once.
+read only by `setup`; workers read graph meta from Bigtable). The `pipeline` CLI
+feeds both to helm and the Jobs; the Bigtable project/instance, image, and service
+account each appear once.
 
 ## The CLI
 
@@ -167,11 +167,12 @@ mount avoids kubelet ConfigMap sync lag. `submit` reads graph meta through a sma
 spot util pod kept alive between layers (`persistent_util: true`) or a one-shot pod
 (`false`), letting the cluster idle at zero nodes.
 
-Multiple projects coexist in `config/` (`my_project.yml` paired to its dataset via
-the `dataset:` key); `-c` accepts a name in `config/` or a relative/absolute path
-(tab-completion friendly). The first `-c` selects the **session config**: every
-later command uses it without `-c` and logs it, a different `-c` is refused, and
-`pipeline reset` clears the selection. `-g` overrides `graph_id` per invocation
+Keep any number of projects side by side (e.g. `config/my_project.yml` paired to
+its dataset via the `dataset:` key); `-c` is the path to one (relative or absolute,
+tab-completion friendly), defaulting to `config/pipeline.yml`. The first `-c`
+selects the **session config**: every later command uses it without `-c` and logs
+it, a different `-c` is refused, and `pipeline reset` clears the selection. `-g`
+overrides `graph_id` per invocation
 (test iterations without editing files).
 
 `pipeline deploy --oneshot` runs the full pipeline: setup, ingest L2→root,

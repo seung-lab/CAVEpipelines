@@ -119,6 +119,22 @@ def test_sample_uses_batch_size_one(cfg):
     assert _job(cfg, batch_size=1)["metadata"]["annotations"]["batch_size"] == "1"
 
 
+def test_batch_size_halves_per_layer(cfg):
+    spec = client.ApiClient().sanitize_for_serialization(
+        manifest.job_spec(cfg, 5, 100, 5, 3)
+    )
+    assert spec["metadata"]["annotations"]["batch_size"] == "125"  # 1000 // 2^3
+    env = {
+        e["name"]: e["value"]
+        for e in spec["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert env["PCG_BATCH_SIZE"] == "125"  # the worker slices by the same value
+    spec = client.ApiClient().sanitize_for_serialization(
+        manifest.job_spec(cfg, 13, 8, 8, 1)
+    )
+    assert spec["metadata"]["annotations"]["batch_size"] == "1"  # floored, never 0
+
+
 def test_oneshot_pod_is_spot_oneshot(cfg):
     pod = client.ApiClient().sanitize_for_serialization(
         manifest.oneshot_pod_spec(cfg, "setup", ["python", "-c", "x"])

@@ -146,7 +146,7 @@ def submit(cfg, layer, force=False) -> None:
     if existing:  # re-submitting replaces a job; never silently absorb another graph's
         check_graph_owner(cfg, existing, force)
     n = util.read_n(cfg, layer)
-    completions = util.ceil_div(n, cfg.job.batch_size)
+    completions = util.ceil_div(n, manifest.batch_for(cfg.job, layer))
     pmax = min(cfg.job.ramp.max, completions)
     parallelism = min(cfg.job.ramp.start, pmax)
     spec = manifest.job_spec(cfg, layer, n, completions, parallelism)

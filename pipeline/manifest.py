@@ -51,6 +51,12 @@ def requests_for(job, layer: int) -> tuple:
     return cpu, mem
 
 
+def batch_for(job, layer: int) -> int:
+    """Chunks per task: halves every layer above 2 — a parent chunk covers ~8x
+    the volume of its children, so a flat batch would balloon upper-layer tasks."""
+    return max(1, job.batch_size // 2 ** (layer - 2))
+
+
 def layer_requests(job, layer: int) -> dict:
     """The layer's normalized k8s requests — the cheapest valid Autopilot point."""
     cpu, mem = requests_for(job, layer)
@@ -136,7 +142,7 @@ def job_spec(
         raise SystemExit(
             f"no container command for '{cfg.workload}'; set commands.{cfg.workload} in pipeline.yml"
         )
-    batch_size = cfg.job.batch_size if batch_size is None else batch_size
+    batch_size = batch_for(cfg.job, layer) if batch_size is None else batch_size
     name = name or job_name(cfg, layer)
     node_selector = dict(SPOT_SELECTOR)
     if cfg.job.compute_class:

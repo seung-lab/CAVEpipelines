@@ -214,6 +214,21 @@ def test_submit_sizes_job_and_ramps_to_pmax(monkeypatch, cfg, make_job):
     assert scaled == [8, 11]  # doubles, then caps at the task count
 
 
+def test_submit_uses_the_layer_adjusted_batch(monkeypatch, cfg, make_job):
+    done = make_job(conditions=[SimpleNamespace(type="Complete", status="True")])
+    monkeypatch.setattr(ops, "_read_job", lambda c, layer: done if layer == 2 else None)
+    monkeypatch.setattr(ops.util, "read_n", lambda c, layer: 1000)
+    created = []
+    monkeypatch.setattr(cli.kube, "recreate_job", lambda ns, s: created.append(s))
+    monkeypatch.setattr(cli.kube, "set_parallelism", lambda ns, n, p: None)
+    monkeypatch.setattr(ops.costdb, "sample", lambda c: None)
+    monkeypatch.setattr(ops.time, "sleep", lambda s: None)
+    ops.submit(cfg, 3)
+    # completions and the worker's batch annotation must agree, or tasks mis-slice
+    assert created[0].spec.completions == 2  # ceil(1000 / (1000 // 2))
+    assert created[0].metadata.annotations["batch_size"] == "500"
+
+
 def test_submit_blocks_when_prev_layer_missing(monkeypatch, cfg):
     def boom(name, ns):
         raise ApiException(status=404, reason="Not Found")

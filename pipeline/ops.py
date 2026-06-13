@@ -300,11 +300,9 @@ def run_layer(cfg, layer) -> None:
                 f"L{layer} ({cfg.workload}) job disappeared mid-run; "
                 f"re-run `pipeline deploy --oneshot` to resume"
             )
-        p = util.job_progress(job)
-        note(
-            f"  L{layer} {cfg.workload}: {p['done']}/{p['total']} {p['pct']}% · "
-            f"active {p['active']} · retries {p['retries']} · dead {p['dead']}"
-        )
+        p = util.job_progress(
+            job
+        )  # `pipeline status` covers live progress; stay quiet here
         if p["dead"] or p["state"] == "failed":
             raise SystemExit(
                 f"L{layer} ({cfg.workload}) has dead tasks — `pipeline inspect {layer}`; "

@@ -72,3 +72,33 @@ def test_secret_data_renames_to_container_filename(tmp_path):
 def test_secret_data_missing_file_raises(tmp_path):
     with pytest.raises(SystemExit):
         kube.secret_data(str(tmp_path), {"x": "nope.json"})
+
+
+@pytest.mark.parametrize(
+    "log_return",
+    [
+        SimpleNamespace(
+            data=b"847 144 18 4 1\n"
+        ),  # raw response (_preload_content=False)
+        b"847 144 18 4 1\n",  # a client variant that returns raw bytes
+        "847 144 18 4 1\n",  # a client variant that already decodes
+    ],
+)
+def test_run_oneshot_returns_decoded_text(monkeypatch, log_return):
+    # the log must come back as text regardless of client return shape — never a
+    # str(bytes) "b'...'" repr, which silently breaks every consumer
+    def absent_delete(name, ns, **kw):
+        raise kube.ApiException(status=404, reason="Not Found")
+
+    fake = SimpleNamespace(
+        delete_namespaced_pod=absent_delete,
+        create_namespaced_pod=lambda ns, spec: None,
+        read_namespaced_pod_status=lambda name, ns: SimpleNamespace(
+            status=SimpleNamespace(phase="Succeeded")
+        ),
+        read_namespaced_pod_log=lambda name, ns, **kw: log_return,
+    )
+    monkeypatch.setattr(kube, "core", lambda: fake)
+    monkeypatch.setattr(kube.time, "sleep", lambda s: None)
+    spec = SimpleNamespace(metadata=SimpleNamespace(name="layer-counts-xyz"))
+    assert kube.run_oneshot("ns", spec) == "847 144 18 4 1\n"

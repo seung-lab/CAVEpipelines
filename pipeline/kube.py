@@ -276,6 +276,15 @@ def _delete_pod_if_exists(c, namespace, name):
             raise
 
 
+def _pod_log_text(c, name, namespace) -> str:
+    """Pod log as decoded text. _preload_content=False yields the raw response so the
+    client can't deserialize the body with str(bytes) (a "b'...'" repr); normalize
+    whatever shape it returns — a response with .data, raw bytes, or already-str."""
+    resp = c.read_namespaced_pod_log(name, namespace, _preload_content=False)
+    data = getattr(resp, "data", resp)
+    return data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else str(data)
+
+
 def run_oneshot(namespace: str, pod_spec) -> str:
     """Create a one-shot pod, wait for it to finish, return its stdout, then delete it."""
     c = core()
@@ -295,7 +304,7 @@ def run_oneshot(namespace: str, pod_spec) -> str:
                 f"one-shot pod '{name}' still {phase} after 20m (deleting it); "
                 f"check capacity/quota: kubectl get events -n {namespace}"
             )
-        log = c.read_namespaced_pod_log(name, namespace)
+        log = _pod_log_text(c, name, namespace)
         if phase != "Succeeded":
             raise SystemExit(f"{name} {phase}:\n{log}")
         return log

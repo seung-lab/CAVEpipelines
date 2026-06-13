@@ -102,7 +102,7 @@ def test_env_injected_into_job_and_oneshot(cfg):
 
 
 def test_api_errors_exit_cleanly(monkeypatch, cfg):
-    monkeypatch.setattr(cli.config, "load", lambda path: cfg)
+    monkeypatch.setattr(cli.config, "load", lambda name, workload=None: cfg)
     monkeypatch.setattr(cli.util, "read_layer_counts", lambda c: None)  # no cluster I/O
 
     def boom(ns, workload=None):
@@ -142,7 +142,7 @@ def test_layer_counts_cache_round_trip(monkeypatch, cfg, tmp_path):
 
 
 def test_graph_id_flag_overrides_config(monkeypatch, cfg):
-    monkeypatch.setattr(cli.config, "load", lambda name: cfg)
+    monkeypatch.setattr(cli.config, "load", lambda name, workload=None: cfg)
     seen = _capture_run_with_dataset(monkeypatch)
     CliRunner().invoke(
         cli.cli, ["-g", "other_graph", "mesh-meta"], catch_exceptions=False
@@ -351,6 +351,7 @@ def test_all_commands_registered():
         "top",
         "delete",
         "costs",
+        "reset",
     } <= set(cli.cli.commands)
 
 

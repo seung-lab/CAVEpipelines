@@ -69,6 +69,7 @@ each appear once.
 | `pipeline top <layer>` | live per-pod usage in cores/GiB vs the request, by task index (needs metrics-server) |
 | `pipeline costs <layer>` | the layer's recorded Spot spend so far (from the local cost db; estimate) |
 | `pipeline delete <layer>` | delete the layer's Job and pods |
+| `pipeline reset` | forget the session config (the next `-c` selects a new one) |
 | `pipeline undeploy` | delete all pipeline Jobs + the helm release (KSA, ConfigMaps, util pod, secret) |
 
 **One graph, one workload at a time** — both `graph_id` and `workload`
@@ -167,9 +168,11 @@ spot util pod kept alive between layers (`persistent_util: true`) or a one-shot 
 (`false`), letting the cluster idle at zero nodes.
 
 Multiple projects coexist in `config/` (`my_project.yml` paired to its dataset via
-the `dataset:` key); select one with `pipeline -c my_project.yml` — `-c` also
-accepts a relative or absolute path (tab-completion friendly) — and `-g` overrides
-`graph_id` per invocation (test iterations without editing files).
+the `dataset:` key); `-c` accepts a name in `config/` or a relative/absolute path
+(tab-completion friendly). The first `-c` selects the **session config**: every
+later command uses it without `-c` and logs it, a different `-c` is refused, and
+`pipeline reset` clears the selection. `-g` overrides `graph_id` per invocation
+(test iterations without editing files).
 
 `pipeline deploy --oneshot` runs the full pipeline: setup, ingest L2→root,
 `mesh-meta`, meshing L2→`mesh_config.max_layer`, gating each layer on the previous

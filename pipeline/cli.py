@@ -25,8 +25,9 @@ from . import NOTE, config, costdb, costs, kube, log, manifest, note, ops, util
     "-c",
     "--config",
     "config_name",
-    default="pipeline.yml",
-    help="pipeline config: a path, or a file name inside config/ (default: pipeline.yml)",
+    default=None,
+    help="pipeline config: a path, or a file name inside config/; the first -c "
+    "selects the session config (default: the session config, else pipeline.yml)",
 )
 @click.option(
     "-g",
@@ -59,10 +60,18 @@ def pass_cfg(fn):
     @click.pass_context
     def wrap(ctx, *args, **kwargs):
         if not isinstance(ctx.obj, config.Config):
-            name, graph_id = ctx.obj or ("pipeline.yml", None)
-            cfg = config.load(name)
+            name, graph_id = ctx.obj or (None, None)
+            newly_selected = name and not config.stored()
+            cfg = config.resolve(name)
             if graph_id:
                 cfg.graph_id = graph_id
+            if newly_selected:  # announce the session lock loudly
+                note(
+                    f"config: {cfg.source} (graph: {cfg.graph_id}) — session config; "
+                    f"every command uses it until `pipeline reset`"
+                )
+            else:
+                note(f"config: {cfg.source} (graph: {cfg.graph_id})")
             ctx.obj = cfg
         return ctx.invoke(fn, ctx.obj, *args, **kwargs)
 
@@ -164,6 +173,12 @@ def sample(cfg, layer, count):
 @pass_cfg
 def delete(cfg, layer):
     ops.delete(cfg, layer)
+
+
+@cli.command(help="forget the session config; the next -c selects a new one")
+def reset():
+    config.forget()
+    note("session config cleared")
 
 
 @cli.command(help="list a layer's failed indexes; add an index for its pod log")

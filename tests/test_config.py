@@ -68,6 +68,34 @@ def test_load_resolves_named_files_under_config_dir(tmp_path, monkeypatch):
     assert cfg.graph_id == "g"
 
 
+def test_first_config_selects_the_session(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
+    _write(tmp_path, "pipeline.yml", BASE)
+    _write(tmp_path, "other.yml", {**BASE, "namespace": "ns2"})
+    assert config.resolve("other.yml").namespace == "ns2"  # first -c selects
+    assert config.resolve().namespace == "ns2"  # no -c: session config reused
+    assert config.resolve("other.yml").namespace == "ns2"  # same -c: fine
+
+
+def test_switching_configs_requires_reset(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
+    _write(tmp_path, "a.yml", BASE)
+    _write(tmp_path, "b.yml", {**BASE, "namespace": "ns2"})
+    config.resolve("a.yml")
+    with pytest.raises(SystemExit, match="reset"):  # silent switch = wrong target
+        config.resolve("b.yml")
+    config.forget()
+    assert config.resolve("b.yml").namespace == "ns2"
+
+
+def test_unreadable_config_never_becomes_the_session(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
+    _write(tmp_path, "pipeline.yml", BASE)
+    with pytest.raises(OSError):
+        config.resolve("missing.yml")
+    assert config.resolve().source.endswith("pipeline.yml")  # typo did not stick
+
+
 def test_load_accepts_a_path_outside_config_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_DIR", "nonexistent")  # path must not need it
     _write(tmp_path, "run.yml", BASE)

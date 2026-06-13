@@ -20,10 +20,12 @@ cp dataset-example.yml  dataset.yml    # non-default names link via `dataset:` i
 ```
 
 Everything here except the examples and this README is gitignored, so any number of projects
-live side by side (`my_project.yml` + `my_project/dataset.yml`, …). Select one with
-`pipeline -c <name>` — a name in this directory, or a relative/absolute path; `-g` overrides its
-`graph_id` per run (test iterations like `…_test1` without editing files). The layer-counts cache
-`.layer_counts.json` lives beside the pipeline yaml, keyed by graph id.
+live side by side (`my_project.yml` + `my_project/dataset.yml`, …). The first
+`pipeline -c <name>` (a name in this directory, or a relative/absolute path) selects the
+session config, stored in `.current` here: later commands use it without `-c` and log it on
+every invocation, and a different `-c` is refused until `pipeline reset`. `-g` overrides its
+`graph_id` per run (test iterations like `…_test1` without editing files). The layer-counts
+cache `.layer_counts.json` lives beside the pipeline yaml, keyed by graph id.
 
 Workers read graph meta from Bigtable at run time, so only `setup` (and `mesh-meta`) read
 `dataset.yml`. `PROJECT`/`INSTANCE` under its `backend_client.CONFIG` are filled automatically

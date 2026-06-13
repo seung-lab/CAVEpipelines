@@ -1,10 +1,11 @@
 """Load all pipeline config from a single yaml — the one source of truth.
 
 `-c` selects a pipeline yaml: a relative/absolute path, or a name under
-`config/`. The optional `dataset:` key names the dataset yaml relative to the
-pipeline yaml's directory, so many projects coexist side by side. The dataset
-block is kept verbatim (same yml the graph was always configured with) and
-passed through to `setup`.
+`config/`. The first -c becomes the session config (stored in config/.current):
+later commands reuse it, and switching requires `pipeline reset`. The optional
+`dataset:` key names the dataset yaml relative to the pipeline yaml's directory,
+so many projects coexist side by side. The dataset block is kept verbatim (same
+yml the graph was always configured with) and passed through to `setup`.
 """
 
 import os
@@ -99,6 +100,39 @@ class Config:
 
     def image(self) -> str:
         return self.images.l2cache if self.workload == "l2cache" else self.images.pcg
+
+
+def stored() -> str:
+    """The session config path (selected by the first -c), or None."""
+    try:
+        with open(os.path.join(CONFIG_DIR, ".current")) as stream:
+            return stream.read().strip() or None
+    except OSError:
+        return None
+
+
+def forget() -> None:
+    """Clear the session config (`pipeline reset`)."""
+    try:
+        os.remove(os.path.join(CONFIG_DIR, ".current"))
+    except OSError:
+        pass
+
+
+def resolve(name: str = None, workload: str = None) -> Config:
+    """Load the session config. The first explicit -c selects it for the session;
+    a different -c is refused until `pipeline reset`."""
+    current = stored()
+    cfg = load(name or current or "pipeline.yml", workload)
+    if not name:
+        return cfg
+    if current and os.path.abspath(cfg.source) != os.path.abspath(current):
+        raise SystemExit(f"session config is '{current}'; `pipeline reset` to switch")
+    if not current:  # selected only after a successful load: a typo never sticks
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        with open(os.path.join(CONFIG_DIR, ".current"), "w") as stream:
+            stream.write(cfg.source + "\n")
+    return cfg
 
 
 def load(name: str = "pipeline.yml", workload: str = None) -> Config:

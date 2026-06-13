@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 from click.testing import CliRunner
 
-from pipeline import cli
+from pipeline import cli, ops
 
 
 def _invoke(args, cfg, **kw):
@@ -12,9 +12,10 @@ def _invoke(args, cfg, **kw):
 
 
 def _mock_helm(monkeypatch, calls):
-    monkeypatch.setattr(cli.kube, "secret_data", lambda d, m: {})
+    monkeypatch.setattr(ops.kube, "secret_data", lambda d, m: {})
+    monkeypatch.setattr(ops.kube, "util_pod", lambda ns, wait_create=False: "util-pod")
     monkeypatch.setattr(
-        cli.subprocess,
+        ops.subprocess,
         "run",
         lambda argv, **kw: (
             calls.append("helm"),
@@ -37,7 +38,7 @@ def test_oneshot_aborts_before_any_mutation(monkeypatch, cfg):
     cfg.config_dir = "nonexistent"  # no counts cache -> plan prints the setup note
     touched = []
     monkeypatch.setattr(
-        cli.kube, "secret_data", lambda d, m: touched.append("secret") or {}
+        ops.kube, "secret_data", lambda d, m: touched.append("secret") or {}
     )
     res = CliRunner().invoke(cli.deploy, ["--oneshot"], obj=cfg, input="n\n")
     assert res.exit_code != 0
@@ -54,16 +55,14 @@ def test_oneshot_sequences_phases(monkeypatch, cfg):
 
     def counts(c):  # graph unreadable once -> setup runs exactly once
         if first_probe.pop("fails", None):
-            raise SystemExit("no graph")
+            raise SystemExit("graph 'g' is not readable (not created yet?)")
         return {2: 100, 3: 10, 4: 1}
 
-    monkeypatch.setattr(cli.util, "read_layer_counts", counts)
-    monkeypatch.setattr(cli.setup, "callback", lambda *a, **k: calls.append("setup"))
+    monkeypatch.setattr(ops.util, "read_layer_counts", counts)
+    monkeypatch.setattr(ops, "setup", lambda c: calls.append("setup"))
+    monkeypatch.setattr(ops, "mesh_meta", lambda c: calls.append("mesh-meta"))
     monkeypatch.setattr(
-        cli.mesh_meta, "callback", lambda *a, **k: calls.append("mesh-meta")
-    )
-    monkeypatch.setattr(
-        cli, "_run_layer", lambda ctx, c, layer: calls.append(f"{c.workload}-l{layer}")
+        ops, "run_layer", lambda c, layer: calls.append(f"{c.workload}-l{layer}")
     )
     _invoke(["--oneshot", "--yes"], cfg)
     assert calls == [
@@ -83,55 +82,44 @@ def test_oneshot_resumes_without_setup_or_meshing(monkeypatch, cfg):
     calls = []
     _mock_helm(monkeypatch, calls)
     monkeypatch.setattr(cli.config, "load", _fake_load(cfg))
-    monkeypatch.setattr(cli.util, "read_layer_counts", lambda c: {2: 5})
-    monkeypatch.setattr(cli.setup, "callback", lambda *a, **k: calls.append("setup"))
-    monkeypatch.setattr(
-        cli, "_run_layer", lambda ctx, c, layer: calls.append(f"l{layer}")
-    )
+    monkeypatch.setattr(ops.util, "read_layer_counts", lambda c: {2: 5})
+    monkeypatch.setattr(ops, "setup", lambda c: calls.append("setup"))
+    monkeypatch.setattr(ops, "run_layer", lambda c, layer: calls.append(f"l{layer}"))
     _invoke(["--oneshot", "--yes"], cfg)
     assert calls == ["helm", "l2"]  # graph readable -> no setup; no mesh_config -> done
 
 
-def _job(state, failed_indexes=None):
-    conditions = {
-        "complete": [SimpleNamespace(type="Complete", status="True")],
-        "failed": [SimpleNamespace(type="Failed", status="True")],
-        "running": [],
-    }[state]
-    return SimpleNamespace(
-        metadata=SimpleNamespace(
-            name="ingest-l2",
-            labels={"graph": "g", "layer": "2"},
-            annotations={"chunks": "10", "batch_size": "1"},
-        ),
-        status=SimpleNamespace(
-            conditions=conditions,
-            succeeded=5,
-            active=1,
-            ready=1,
-            failed=0,
-            failed_indexes=failed_indexes,
-            start_time=None,
-            completion_time=None,
-        ),
-    )
+_CONDS = {
+    "complete": [SimpleNamespace(type="Complete", status="True")],
+    "failed": [SimpleNamespace(type="Failed", status="True")],
+    "running": [],
+}
 
 
-def test_run_layer_skips_complete_layers(monkeypatch, cfg):
-    monkeypatch.setattr(cli, "_read_job", lambda c, layer: _job("complete"))
+def test_run_layer_skips_complete_layers(monkeypatch, cfg, make_job):
+    job = make_job(conditions=_CONDS["complete"], succeeded=5)
+    monkeypatch.setattr(ops, "_read_job", lambda c, layer: job)
     submitted = []
-    monkeypatch.setattr(cli.submit, "callback", lambda *a, **k: submitted.append(True))
-    cli._run_layer(None, cfg, 2)
+    monkeypatch.setattr(ops, "submit", lambda c, layer: submitted.append(True))
+    ops.run_layer(cfg, 2)
     assert not submitted
 
 
-def test_run_layer_attaches_and_stops_on_dead_tasks(monkeypatch, cfg):
-    monkeypatch.setattr(cli.costdb, "sample", lambda c: None)
-    monkeypatch.setattr(
-        cli, "_read_job", lambda c, layer: _job("running", failed_indexes="0-3")
-    )
+def test_run_layer_attaches_and_stops_on_dead_tasks(monkeypatch, cfg, make_job):
+    job = make_job(conditions=_CONDS["running"], succeeded=5, failed_indexes="0-3")
+    monkeypatch.setattr(ops.costdb, "sample", lambda c: None)
+    monkeypatch.setattr(ops, "_read_job", lambda c, layer: job)
     submitted = []
-    monkeypatch.setattr(cli.submit, "callback", lambda *a, **k: submitted.append(True))
+    monkeypatch.setattr(ops, "submit", lambda c, layer: submitted.append(True))
     with pytest.raises(SystemExit, match="inspect 2"):
-        cli._run_layer(None, cfg, 2)
+        ops.run_layer(cfg, 2)
     assert not submitted  # a running layer is attached, never recreated
+
+
+def test_run_layer_stops_cleanly_when_job_vanishes(monkeypatch, cfg, make_job):
+    job = make_job(conditions=_CONDS["running"])
+    reads = iter([job, None])  # present at attach, deleted before the first poll
+    monkeypatch.setattr(ops.costdb, "sample", lambda c: None)
+    monkeypatch.setattr(ops, "_read_job", lambda c, layer: next(reads))
+    with pytest.raises(SystemExit, match="disappeared"):
+        ops.run_layer(cfg, 2)

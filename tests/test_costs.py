@@ -13,7 +13,7 @@ TABLE = {REGION: {"general-purpose": GP, "Balanced": BALANCED}}
 HOUR = 3600.0
 
 
-def _job_row(cpu=1.0, mem=2.0, succeeded=0, active=0, start=0.0, end=None):
+def _job_row(cpu=1.0, mem=2.0, succeeded=0, active=0, start=0.0, end=None, workers=0):
     return {
         "cpu_req": cpu,
         "mem_req": mem,
@@ -22,6 +22,7 @@ def _job_row(cpu=1.0, mem=2.0, succeeded=0, active=0, start=0.0, end=None):
         "started_at": start,
         "finished_at": end,
         "compute_class": "",
+        "parallelism": workers,
     }
 
 
@@ -82,6 +83,23 @@ def test_wall_fallback_when_nothing_recorded():
     )
     assert usage["basis"] == "wall"
     assert abs(usage["pod_hours"] - 6.0) < 1e-9
+
+
+def test_wall_fallback_caps_workers_at_parallelism():
+    # 10 tasks through 2 workers run back to back, not 10-wide: wall x 2, not x 10
+    usage = costs.usage_from_rows(
+        _job_row(succeeded=10, start=0.0, end=2 * HOUR, workers=2), [], now=3 * HOUR
+    )
+    assert abs(usage["pod_hours"] - 4.0) < 1e-9
+
+
+def test_gone_pods_consume_completions_like_succeeded():
+    # one pod GC'd after finishing ('Gone'): it already accrued observed hours,
+    # so the backfill must not bill its completion a second time
+    pods = [_pod_row(0, HOUR), _pod_row(0, HOUR, phase="Gone")]
+    usage = costs.usage_from_rows(_job_row(succeeded=2), pods, now=2 * HOUR)
+    assert usage["basis"] == "observed"
+    assert abs(usage["pod_hours"] - 2.0) < 1e-9
 
 
 def test_fee_charged_over_union_not_per_layer():

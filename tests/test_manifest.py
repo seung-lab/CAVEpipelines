@@ -41,7 +41,9 @@ def test_per_layer_resource_curves(cfg):
 
 
 def test_flat_fallback_without_resources_block(cfg):
-    assert manifest.requests_for(cfg.job, 2) == manifest.requests_for(cfg.job, 9)
+    # no resources block -> job.cpu/job.memory verbatim, every layer
+    assert manifest.requests_for(cfg.job, 2) == (1.0, 2.0)
+    assert manifest.requests_for(cfg.job, 9) == (1.0, 2.0)
 
 
 def test_job_spec_renders_layer_requests(cfg):
@@ -153,8 +155,8 @@ def test_helm_values_persistent_util_toggle(cfg):
     assert "deployments" not in manifest.helm_values(cfg)  # idle -> 0 nodes
 
 
-def test_command_for_missing_workload_is_none(cfg):
-    cfg.workload = (
-        "l2cache"  # no commands configured -> submit must refuse, not run ingest
-    )
-    assert manifest.command_for(cfg) is None
+def test_job_name_is_dns_safe_for_underscore_workloads(cfg):
+    cfg.workload = "migrate_cleanup"  # raw "_" violates DNS-1123, API would 422
+    assert manifest.job_name(cfg, 2) == "migrate-cleanup-l2"
+    job = _job(cfg)
+    assert job["spec"]["template"]["spec"]["containers"][0]["name"] == "migrate-cleanup"

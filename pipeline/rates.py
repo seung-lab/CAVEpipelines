@@ -52,12 +52,12 @@ def _unit_price(sku) -> float:
 
 def _compute_class(desc: str):
     """Map an Autopilot Pod SKU description to its compute class (None = not modeled)."""
+    if "Arm" in desc:  # 'Scale-Out Arm' SKUs must not pollute the x86 Scale-Out rows
+        return None
     if "Balanced" in desc:
         return "Balanced"
     if "Scale-Out" in desc:
         return "Scale-Out"
-    if "Arm" in desc:
-        return None  # Arm Scale-Out not modeled (pipeline runs x86)
     return "general-purpose"
 
 

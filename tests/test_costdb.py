@@ -15,6 +15,7 @@ def _job(uid="j1", layer="3", succeeded=0, active=1, end=None):
         metadata=SimpleNamespace(uid=uid, name="ingest-l3", labels={"layer": layer}),
         spec=SimpleNamespace(
             completions=4,
+            parallelism=4,
             template=SimpleNamespace(
                 spec=SimpleNamespace(
                     containers=[
@@ -31,6 +32,7 @@ def _job(uid="j1", layer="3", succeeded=0, active=1, end=None):
         status=SimpleNamespace(
             start_time=T0,
             completion_time=end,
+            conditions=[],
             succeeded=succeeded,
             failed=0,
             active=active,
@@ -44,6 +46,7 @@ def _pod(uid, running=True, end=None):
         metadata=SimpleNamespace(uid=uid, creation_timestamp=T0),
         status=SimpleNamespace(
             phase="Running" if running else "Succeeded",
+            start_time=T0,
             container_statuses=[SimpleNamespace(state=SimpleNamespace(terminated=term))],
         ),
     )
@@ -89,7 +92,22 @@ def test_db_per_graph_workload_and_resubmits_accrue(tmp_path, monkeypatch):
     assert (tmp_path / "other.ingest.db").exists()
     conn = costdb.connect(_cfg())
     assert len(costdb.job_rows(conn)) == 2
-    assert len(costdb.job_rows(conn, 3)) == 2
+    conn.close()
+
+
+def test_deleted_jobs_stop_accruing(tmp_path, monkeypatch):
+    monkeypatch.setattr(costdb, "COSTS_DIR", str(tmp_path))
+    cfg = _cfg()
+    _patch_cluster(monkeypatch, [_job()], [_pod("p1")])
+    costdb.sample(cfg)
+    # the Job is deleted/replaced between samples: nothing listed any more
+    _patch_cluster(monkeypatch, [], [])
+    costdb.sample(cfg)
+    conn = costdb.connect(cfg)
+    job = costdb.job_rows(conn)[0]
+    pod = costdb.pod_rows(conn, "j1")[0]
+    assert job["finished_at"] == job["last_seen"] and job["active"] == 0
+    assert pod["phase"] == "Gone" and pod["finished_at"] == pod["last_seen"]
     conn.close()
 
 

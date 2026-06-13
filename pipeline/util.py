@@ -14,9 +14,12 @@ from . import costdb, costs, kube, manifest, note
 # locally and setup invalidates the cache so a re-setup recomputes.
 _COUNTS_CODE = """
 import os, sys
-from pychunkedgraph.graph import ChunkedGraph
-cg = ChunkedGraph(graph_id={gid!r})
-print(*[int(c) for c in cg.meta.layer_chunk_counts])
+try:
+    from pychunkedgraph.graph import ChunkedGraph
+    cg = ChunkedGraph(graph_id={gid!r})
+    print(*[int(c) for c in cg.meta.layer_chunk_counts])
+except Exception:
+    print("PIPELINE_NO_GRAPH")
 sys.stdout.flush()
 os._exit(0)
 """
@@ -27,7 +30,8 @@ def ceil_div(a, b):
 
 
 def run_pcg(cfg, name, argv):
-    """Run a command in the PCG image (util pod or one-shot pod), streaming its logs live."""
+    """Run a command in the PCG image: util pod (logs streamed live) or one-shot
+    pod (log returned on completion)."""
     if cfg.persistent_util:
         pod = kube.util_pod(cfg.namespace)
         note(f"{name}: in util pod")
@@ -78,10 +82,21 @@ def _write_cache(cfg, cache) -> None:
 
 
 def invalidate_layer_counts(cfg) -> None:
-    """Drop this graph's cached counts (call after setup changes the graph)."""
+    """Drop this graph's cached counts; stale counts would mis-size every submit."""
     cache = _read_cache(cfg)
-    if cache.pop(cfg.graph_id, None) is not None:
-        _write_cache(cfg, cache)
+    if cache.pop(cfg.graph_id, None) is None:
+        return
+    try:  # unlike cache writes, failed invalidation must be loud
+        with open(_counts_cache(cfg), "w") as f:
+            json.dump(cache, f)
+    except OSError as exc:
+        raise SystemExit(f"could not invalidate the layer-counts cache: {exc}")
+
+
+def cached_layer_counts(cfg) -> dict:
+    """This graph's cached {layer: chunks}, or None — never touches the cluster."""
+    cached = _read_cache(cfg).get(cfg.graph_id)
+    return {int(k): v for k, v in cached.items()} if cached else None
 
 
 def read_layer_counts(cfg) -> dict:
@@ -93,6 +108,8 @@ def read_layer_counts(cfg) -> dict:
     out = run_pcg(
         cfg, "layer-counts", ["python", "-u", "-c", _COUNTS_CODE.format(gid=cfg.graph_id)]
     )
+    if "PIPELINE_NO_GRAPH" in out:
+        raise SystemExit(f"graph '{cfg.graph_id}' is not readable (not created yet?)")
     for line in reversed(out.splitlines()):
         parts = line.split()
         if parts and all(p.isdigit() for p in parts):
@@ -152,11 +169,19 @@ def job_state(job):
     return "running"
 
 
+def _terminal_time(job):
+    """k8s sets completionTime only on success; Failed Jobs end at the condition."""
+    for c in job.status.conditions or []:
+        if c.type in ("Complete", "Failed") and c.status == "True":
+            return c.last_transition_time
+    return None
+
+
 def elapsed(job):
     start = job.status.start_time
     if not start:
         return "-"
-    end = job.status.completion_time or datetime.now(timezone.utc)
+    end = job.status.completion_time or _terminal_time(job) or datetime.now(timezone.utc)
     minutes = int((end - start).total_seconds()) // 60
     hours, mins = divmod(minutes, 60)
     return f"{hours}h{mins:02d}m" if hours else f"{mins}m"
@@ -191,12 +216,14 @@ def recorded_costs(cfg, rate_table) -> tuple:
     return per_layer, cluster_fee
 
 
-def usage_table(cfg, job_name) -> Table:
+def usage_table(cfg, job_name, layer=None) -> Table:
     """Per-pod usage for one layer Job, in cores/GiB, ordered by task index."""
-    table = Table(
-        title=f"{job_name} usage",
-        caption=f"requests: {cfg.job.cpu} cpu · {cfg.job.memory} per pod",
-    )
+    if layer is None:
+        caption = f"requests: {cfg.job.cpu} cpu · {cfg.job.memory} per pod"
+    else:  # the layer's actual request (curves/overrides), not the flat default
+        cpu, mem = manifest.requests_for(cfg.job, layer)
+        caption = f"requests: {cpu:g} cpu · {mem:g}Gi per pod"
+    table = Table(title=f"{job_name} usage", caption=caption)
     for col, justify in (("pod", "left"), ("cpu", "right"), ("memory", "right")):
         table.add_column(col, justify=justify)
     items = kube.pod_metrics(cfg.namespace, job_name)

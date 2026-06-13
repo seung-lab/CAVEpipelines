@@ -1,6 +1,7 @@
 """kubernetes client access for the pipeline CLI (exec, jobs, logs, secret)."""
 
 import base64
+import functools
 import pathlib
 import time
 from collections import Counter
@@ -19,16 +20,21 @@ def _load():
         kube_config.load_incluster_config()
 
 
+# cached: a fresh ApiClient per call would re-read kubeconfig and re-handshake
+# TLS on every tick of the live status/top loops
+@functools.lru_cache(maxsize=None)
 def batch():
     _load()
     return client.BatchV1Api()
 
 
+@functools.lru_cache(maxsize=None)
 def core():
     _load()
     return client.CoreV1Api()
 
 
+@functools.lru_cache(maxsize=None)
 def custom():
     _load()
     return client.CustomObjectsApi()
@@ -230,6 +236,19 @@ def delete_job(namespace: str, name: str):
     batch().delete_namespaced_job(name, namespace, propagation_policy="Foreground")
 
 
+def _wait_deleted(read, name: str, timeout: int) -> None:
+    """Poll until read() 404s; falling through to a create would 409 confusingly."""
+    for _ in range(timeout):
+        try:
+            read()
+            time.sleep(1)
+        except ApiException as exc:
+            if exc.status == 404:
+                return
+            raise
+    raise SystemExit(f"'{name}' is still terminating after {timeout}s; retry shortly")
+
+
 def recreate_job(namespace: str, spec):
     """Replace any existing Job of the same name, then create it — so a layer can be
     re-submitted (done chunks are then skipped by the per-chunk lock)."""
@@ -238,14 +257,7 @@ def recreate_job(namespace: str, spec):
     try:
         b.delete_namespaced_job(name, namespace, propagation_policy="Foreground")
         note(f"{name}: replacing existing job")
-        for _ in range(60):
-            try:
-                b.read_namespaced_job(name, namespace)
-                time.sleep(1)
-            except ApiException as exc:
-                if exc.status == 404:
-                    break
-                raise
+        _wait_deleted(lambda: b.read_namespaced_job(name, namespace), name, 60)
     except ApiException as exc:
         if exc.status != 404:
             raise
@@ -255,14 +267,7 @@ def recreate_job(namespace: str, spec):
 def _delete_pod_if_exists(c, namespace, name):
     try:
         c.delete_namespaced_pod(name, namespace, grace_period_seconds=0)
-        for _ in range(30):
-            try:
-                c.read_namespaced_pod(name, namespace)
-                time.sleep(1)
-            except ApiException as exc:
-                if exc.status == 404:
-                    return
-                raise
+        _wait_deleted(lambda: c.read_namespaced_pod(name, namespace), name, 30)
     except ApiException as exc:
         if exc.status != 404:
             raise

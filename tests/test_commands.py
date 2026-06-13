@@ -4,7 +4,7 @@ import pytest
 from click.testing import CliRunner
 from kubernetes.client import ApiException
 
-from pipeline import cli, manifest
+from pipeline import cli, manifest, ops
 
 
 def run_cmd(command, argv, cfg):
@@ -103,6 +103,7 @@ def test_env_injected_into_job_and_oneshot(cfg):
 
 def test_api_errors_exit_cleanly(monkeypatch, cfg):
     monkeypatch.setattr(cli.config, "load", lambda path: cfg)
+    monkeypatch.setattr(cli.util, "read_layer_counts", lambda c: None)  # no cluster I/O
 
     def boom(ns, workload=None):
         raise ApiException(status=403, reason="Forbidden")
@@ -149,31 +150,68 @@ def test_graph_id_flag_overrides_config(monkeypatch, cfg):
     assert seen["argv"][-1] == "other_graph"  # the override reaches the workload
 
 
-def test_submit_refuses_jobs_owned_by_another_graph(cfg):
-    job = SimpleNamespace(
-        metadata=SimpleNamespace(name="ingest-l2", labels={"graph": "other"})
-    )
+def test_submit_refuses_jobs_owned_by_another_graph(cfg, make_job):
+    job = make_job(graph="other")
     with pytest.raises(SystemExit, match="belongs to graph"):
-        cli._check_graph_owner(job, cfg)
-    cli._check_graph_owner(job, cfg, force=True)  # explicit override
+        ops.check_graph_owner(cfg, job)
+    ops.check_graph_owner(cfg, job, force=True)  # explicit override
     job.metadata.labels = {"graph": cfg.graph_id}
-    cli._check_graph_owner(job, cfg)  # own job passes
+    ops.check_graph_owner(cfg, job)  # own job passes
 
 
-def test_submit_blocks_until_prev_layer_complete(monkeypatch, cfg):
-    running = SimpleNamespace(
-        metadata=SimpleNamespace(name="ingest-l2", labels={"graph": cfg.graph_id}),
-        status=SimpleNamespace(conditions=[]),
-    )
+def test_submit_blocks_until_prev_layer_complete(monkeypatch, cfg, make_job):
+    running = make_job(conditions=[])
     monkeypatch.setattr(
         cli.kube,
         "batch",
         lambda: SimpleNamespace(read_namespaced_job=lambda n, ns: running),
     )
     with pytest.raises(SystemExit, match="not complete"):
-        cli._require_prev_complete(cfg, 3, force=False)
-    cli._require_prev_complete(cfg, 3, force=True)  # override -> no raise
-    cli._require_prev_complete(cfg, 2, force=False)  # L2 has no predecessor
+        ops.require_prev_complete(cfg, 3, force=False)
+    ops.require_prev_complete(cfg, 3, force=True)  # override -> no raise
+    ops.require_prev_complete(cfg, 2, force=False)  # L2 has no predecessor
+
+
+def test_sample_runs_never_satisfy_the_layer_gate(monkeypatch, cfg, make_job):
+    done_sample = make_job(
+        conditions=[SimpleNamespace(type="Complete", status="True")],
+        annotations={"sample": "true"},
+    )
+    monkeypatch.setattr(
+        cli.kube,
+        "batch",
+        lambda: SimpleNamespace(read_namespaced_job=lambda n, ns: done_sample),
+    )
+    with pytest.raises(SystemExit, match="sample run"):
+        ops.require_prev_complete(cfg, 3, force=False)
+
+
+def test_sample_refuses_to_replace_a_real_job(monkeypatch, cfg, make_job):
+    real = make_job(conditions=[])
+    monkeypatch.setattr(ops, "_read_job", lambda c, layer: real)
+    with pytest.raises(SystemExit, match="already has a real job"):
+        ops.sample(cfg, 2, 5)
+    recreated = []
+    monkeypatch.setattr(ops, "_read_job", lambda c, layer: None)
+    monkeypatch.setattr(cli.kube, "recreate_job", lambda ns, s: recreated.append(s))
+    ops.sample(cfg, 2, 5)
+    assert recreated[0].metadata.annotations["sample"] == "true"  # gate marker
+
+
+def test_submit_sizes_job_and_ramps_to_pmax(monkeypatch, cfg, make_job):
+    cfg.job.ramp = cli.config.Ramp(start=4, factor=2, period=60, max=256)
+    monkeypatch.setattr(ops, "_read_job", lambda c, layer: None)
+    monkeypatch.setattr(ops.util, "read_n", lambda c, layer: 10001)
+    created, scaled = [], []
+    monkeypatch.setattr(cli.kube, "recreate_job", lambda ns, s: created.append(s))
+    monkeypatch.setattr(cli.kube, "set_parallelism", lambda ns, n, p: scaled.append(p))
+    monkeypatch.setattr(ops.costdb, "sample", lambda c: None)
+    monkeypatch.setattr(ops.time, "sleep", lambda s: None)
+    ops.submit(cfg, 2)
+    spec = created[0].spec
+    assert spec.completions == 11  # ceil(10001 / 1000)
+    assert spec.parallelism == 4  # ramp.start
+    assert scaled == [8, 11]  # doubles, then caps at the task count
 
 
 def test_submit_blocks_when_prev_layer_missing(monkeypatch, cfg):
@@ -184,7 +222,7 @@ def test_submit_blocks_when_prev_layer_missing(monkeypatch, cfg):
         cli.kube, "batch", lambda: SimpleNamespace(read_namespaced_job=boom)
     )
     with pytest.raises(SystemExit, match="submit it first"):
-        cli._require_prev_complete(cfg, 3, force=False)
+        ops.require_prev_complete(cfg, 3, force=False)
 
 
 def test_count_indexes_parses_k8s_interval_strings():
@@ -193,35 +231,19 @@ def test_count_indexes_parses_k8s_interval_strings():
     assert cli.util.count_indexes("1,3-5,7") == 5
 
 
-def test_status_table_splits_retries_from_dead_tasks(monkeypatch, cfg):
-    job = SimpleNamespace(
-        metadata=SimpleNamespace(
-            name="ingest-l2",
-            labels={"layer": "2", "graph": "g"},
-            annotations={"chunks": "100", "batch_size": "10"},
-        ),
-        status=SimpleNamespace(
-            succeeded=10,
-            active=0,
-            ready=0,
-            failed=34,  # transient attempts, all recovered
-            failed_indexes=None,
-            conditions=[],
-            start_time=None,
-            completion_time=None,
-        ),
-    )
+def test_status_table_splits_retries_from_dead_tasks(monkeypatch, cfg, make_job):
+    job = make_job(chunks=100, batch_size=10, succeeded=10, failed=34)
     monkeypatch.setattr(cli.kube, "list_jobs", lambda ns, workload=None: [job])
     monkeypatch.setattr(cli.kube, "node_summary", lambda: (0, 0, {}))
     monkeypatch.setattr(cli.costs, "load_table", lambda: {})
     cells = {
-        c.header: list(c._cells) for c in cli.util.status_table(cfg, {2: 100}).columns
+        c.header: list(c.cells) for c in cli.util.status_table(cfg, {2: 100}).columns
     }
-    assert cells["retries"] == ["34"]
+    assert cells["retries"] == ["34"]  # transient attempts, all recovered
     assert cells["failed"] == ["0"]  # nothing permanently dead -> not alarming
     job.status.failed_indexes = "1,3-5,7"
     cells = {
-        c.header: list(c._cells) for c in cli.util.status_table(cfg, {2: 100}).columns
+        c.header: list(c.cells) for c in cli.util.status_table(cfg, {2: 100}).columns
     }
     assert cells["failed"] == ["[red]5[/]"]
 
@@ -239,7 +261,7 @@ def test_usage_table_renders_cores_and_gib_by_task_index(monkeypatch, cfg):
     ]
     monkeypatch.setattr(cli.kube, "pod_metrics", lambda ns, name: items)
     cells = {
-        c.header: list(c._cells) for c in cli.util.usage_table(cfg, "ingest-l6").columns
+        c.header: list(c.cells) for c in cli.util.usage_table(cfg, "ingest-l6").columns
     }
     assert cells["pod"] == ["ingest-l6-2-xyz", "ingest-l6-11-abc"]  # task order
     assert cells["cpu"] == ["0.2", "8.9"]
@@ -268,11 +290,11 @@ def test_undeploy_deletes_jobs_then_uninstalls_release(monkeypatch, cfg):
         cli.kube, "delete_configmap", lambda ns, name: deleted.append(name)
     )
     monkeypatch.setattr(
-        cli.subprocess,
+        ops.subprocess,
         "run",
         lambda argv, **kw: (
             ran.setdefault("argv", argv),
-            SimpleNamespace(stdout="released", stderr=""),
+            SimpleNamespace(returncode=0, stdout="released", stderr=""),
         )[1],
     )
     run_cmd(cli.undeploy, [], cfg)
@@ -332,14 +354,14 @@ def test_all_commands_registered():
     } <= set(cli.cli.commands)
 
 
-def test_mesh_meta_dispatches_through_main(monkeypatch, cfg):
-    monkeypatch.setattr(cli.config, "load", lambda path: cfg)
-    ran = {}
+def test_layer_counts_failures_are_loud(monkeypatch, cfg):
     monkeypatch.setattr(
-        cli.mesh_meta, "callback", lambda *a, **k: ran.setdefault("ok", True)
+        cli.util, "run_pcg", lambda c, name, argv, **kw: "WARNING: only noise\n"
     )
-    try:
-        cli.main(["mesh-meta"])
-    except SystemExit as exc:  # click standalone mode exits 0 on success
-        assert not exc.code
-    assert ran.get("ok")
+    with pytest.raises(SystemExit, match="could not read layer counts"):
+        cli.util.read_layer_counts(cfg)
+    monkeypatch.setattr(
+        cli.util, "run_pcg", lambda c, name, argv, **kw: "PIPELINE_NO_GRAPH\n"
+    )
+    with pytest.raises(SystemExit, match="not readable"):
+        cli.util.read_layer_counts(cfg)  # missing graph is distinguishable from infra

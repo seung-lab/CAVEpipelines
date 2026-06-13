@@ -1,9 +1,10 @@
 """Load all pipeline config from a single yaml — the one source of truth.
 
-Every config file lives in `config/`; `-c` picks a pipeline yaml by name, and its
-optional `dataset:` key names the dataset yaml (path relative to `config/`), so
-many projects coexist in one directory. The dataset block is kept verbatim (same
-yml the graph was always configured with) and passed through to `setup`.
+`-c` selects a pipeline yaml: a relative/absolute path, or a name under
+`config/`. The optional `dataset:` key names the dataset yaml relative to the
+pipeline yaml's directory, so many projects coexist side by side. The dataset
+block is kept verbatim (same yml the graph was always configured with) and
+passed through to `setup`.
 """
 
 import os
@@ -101,36 +102,44 @@ class Config:
 
 
 def load(name: str = "pipeline.yml", workload: str = None) -> Config:
-    """Load CONFIG_DIR/<name>; its `dataset:` key names the dataset yaml there.
+    """Load a pipeline yaml — a relative/absolute path, or a name under config/.
 
+    The `dataset:` key resolves relative to the pipeline yaml's directory.
     `workload` overrides the file's — the per-workload job merge follows it."""
-    with open(os.path.join(CONFIG_DIR, name)) as stream:
+    path = name if os.path.exists(name) else os.path.join(CONFIG_DIR, name)
+    config_dir = os.path.dirname(path) or "."
+    with open(path) as stream:
         raw = yaml.safe_load(stream) or {}
-    bt = Bigtable(**raw.get("bigtable", {}))
-    dataset = _with_bigtable(_read_dataset(raw.get("dataset", "dataset.yml")), bt)
-    raw_job = dict(raw.get("job", {}))
+    # a present-but-empty yaml key parses to None; treat every block like {}
+    bt = Bigtable(**(raw.get("bigtable") or {}))
+    dataset = _with_bigtable(
+        _read_dataset(config_dir, raw.get("dataset") or "dataset.yml"), bt
+    )
+    raw_job = dict(raw.get("job") or {})
     workload = workload or raw.get("workload", "ingest")
-    raw_job = _merge(raw_job, raw_job.pop("workloads", {}).get(workload, {}))
-    ramp = Ramp(**raw_job.pop("ramp", {}))
+    raw_job = _merge(raw_job, (raw_job.pop("workloads", None) or {}).get(workload) or {})
+    ramp = Ramp(**(raw_job.pop("ramp", None) or {}))
+    if ramp.start < 1 or ramp.factor <= 1:  # else submit's ramp loop never terminates
+        raise SystemExit("job.ramp: start must be >= 1 and factor > 1")
     resources = _resources(raw_job.pop("resources", None))
     return Config(
         namespace=raw.get("namespace", "default"),
         graph_id=raw["graph_id"],
-        images=Images(**raw["images"]),
-        workload_identity=WorkloadIdentity(**raw.get("workload_identity", {})),
+        images=Images(**(raw["images"] or {})),
+        workload_identity=WorkloadIdentity(**(raw.get("workload_identity") or {})),
         bigtable=bt,
         dataset=dataset,
         job=Job(ramp=ramp, resources=resources, **raw_job),
         workload=workload,
         secret_name=raw.get("secret_name", "cloud-volume-secrets"),
         persistent_util=raw.get("persistent_util", True),
-        secret_files=raw.get("secret_files", {}),
-        commands=raw.get("commands", {}),
-        env=raw.get("env") or {},  # `env:` left empty in yaml parses to None
+        secret_files=raw.get("secret_files") or {},
+        commands=raw.get("commands") or {},
+        env=raw.get("env") or {},
         region=raw.get("region", ""),
         zone=raw.get("zone", ""),
-        config_dir=CONFIG_DIR,
-        source=name,
+        config_dir=config_dir,
+        source=path,
     )
 
 
@@ -155,9 +164,10 @@ def _resources(raw) -> Resources:
     )
 
 
-def _read_dataset(rel_path: str) -> dict:
-    """The graph definition yaml, relative to CONFIG_DIR (empty for graph-less workloads)."""
-    path = os.path.join(CONFIG_DIR, rel_path)
+def _read_dataset(config_dir: str, rel_path: str) -> dict:
+    """The graph definition yaml, relative to the pipeline yaml's directory
+    (empty for graph-less workloads)."""
+    path = os.path.join(config_dir, rel_path)
     if not os.path.exists(path):
         return {}
     with open(path) as stream:

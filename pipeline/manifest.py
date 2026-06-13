@@ -23,7 +23,8 @@ UTIL_REQUESTS = {"cpu": "250m", "memory": "1Gi"}  # cheapest that still imports 
 
 
 def job_name(cfg, layer: int) -> str:
-    return f"{cfg.workload}-l{layer}"
+    # DNS-1123: migrate_cleanup's underscore is invalid in Job/container names
+    return f"{cfg.workload.replace('_', '-')}-l{layer}"
 
 
 def _curve_value(curve, layer: int) -> float:
@@ -64,9 +65,12 @@ def layer_requests(job, layer: int) -> dict:
 def dataset_configmap_name(graph_id: str) -> str:
     """DNS-safe per-graph ConfigMap name; the raw id lives in the `graph` label."""
     safe = re.sub(r"-+", "-", re.sub(r"[^a-z0-9-]", "-", graph_id.lower())).strip("-")
-    if safe != graph_id:  # disambiguate ids that collide after sanitizing
+    budget = 63 - len("pcg-dataset-") - 7  # keep room for the "-xxxxxx" disambiguator
+    changed = safe != graph_id or len(safe) > budget
+    safe = safe[:budget].rstrip("-")
+    if changed:  # sanitized or truncated ids could collide without the hash
         safe = f"{safe}-{hashlib.sha1(graph_id.encode()).hexdigest()[:6]}"
-    return f"pcg-dataset-{safe}"[:63]
+    return f"pcg-dataset-{safe}"
 
 
 def command_for(cfg):
@@ -142,7 +146,7 @@ def job_spec(
         node_selector["topology.kubernetes.io/zone"] = cfg.zone
 
     container = client.V1Container(
-        name=cfg.workload,
+        name=cfg.workload.replace("_", "-"),
         image=cfg.image(),
         command=command,
         env=[
@@ -258,7 +262,6 @@ def oneshot_pod_spec(cfg, name: str, argv: list, dataset_configmap=None) -> clie
 
 def helm_values(cfg, secret_data=None) -> dict:
     values = {
-        "namespace": cfg.namespace,
         "serviceAccounts": [
             {
                 "name": cfg.workload_identity.service_account,
@@ -275,7 +278,7 @@ def helm_values(cfg, secret_data=None) -> dict:
                 "vars": {
                     "BIGTABLE_PROJECT": cfg.bigtable.project,
                     "BIGTABLE_INSTANCE": cfg.bigtable.instance,
-                    # ADC for bucket access (CloudVolume/gcsfs); key is the mounted secret
+                    # ADC: all Google clients (Bigtable + buckets) use the mounted key
                     "GOOGLE_APPLICATION_CREDENTIALS": "/root/.cloudvolume/secrets/google-secret.json",
                 },
             }
@@ -293,7 +296,9 @@ def helm_values(cfg, secret_data=None) -> dict:
 
 
 def _util_deployment(cfg) -> dict:
-    repo, _, tag = cfg.images.pcg.rpartition(":")
+    repo, sep, tag = cfg.images.pcg.rpartition(":")
+    if not sep or "/" in tag:  # untagged image, or the colon was a registry port
+        repo, tag = cfg.images.pcg, ""
     return {
         "enabled": True,
         "name": "pipeline-util",

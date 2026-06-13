@@ -47,7 +47,7 @@ job:
   #         max: 110
 
 graph_id: my_graph
-dataset: dataset.yml  # dataset yaml inside config/ (subdirs ok, e.g. pinky/dataset.yml)
+dataset: dataset.yml  # dataset yaml, relative to this file (subdirs ok, e.g. my_project/dataset.yml)
 workload: ingest
 
 region: us-east1
@@ -73,5 +73,7 @@ env:
   # TASK_SIZE: "1"
   # PROCESS_MULTIPLIER: "5"
 
-commands:
-  l2cache: ["python", "-m", "pcgl2cache.batch"]
+# container command for workloads without a built-in entrypoint
+# (l2cache pending — its pipeline entrypoint is not in PCGL2Cache yet)
+# commands:
+#   l2cache: ["python", "-m", "pcgl2cache.batch"]

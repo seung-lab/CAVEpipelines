@@ -1,5 +1,6 @@
 import pathlib
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,7 +10,8 @@ from pipeline import config  # noqa: E402
 
 
 @pytest.fixture
-def cfg():
+def cfg(tmp_path):
+    # config_dir isolated per test: never read/write the repo's real config/
     return config.Config(
         namespace="ns",
         graph_id="g",
@@ -20,4 +22,45 @@ def cfg():
         bigtable=config.Bigtable(project="proj", instance="inst"),
         dataset={"data_source": {"EDGES": "gs://b/e"}},
         job=config.Job(perm_seed=7, batch_size=1000, compute_class="Balanced"),
+        config_dir=str(tmp_path),
     )
+
+
+@pytest.fixture
+def make_job():
+    """Factory for the fake Job shape consumed by util.job_progress/status_table."""
+
+    def _make(
+        *,
+        name="ingest-l2",
+        graph="g",
+        layer=2,
+        chunks=10,
+        batch_size=1,
+        annotations=None,
+        conditions=None,
+        succeeded=0,
+        active=0,
+        ready=0,
+        failed=0,
+        failed_indexes=None,
+    ):
+        ann = {"chunks": str(chunks), "batch_size": str(batch_size)}
+        ann.update(annotations or {})
+        return SimpleNamespace(
+            metadata=SimpleNamespace(
+                name=name, labels={"graph": graph, "layer": str(layer)}, annotations=ann
+            ),
+            status=SimpleNamespace(
+                conditions=conditions or [],
+                succeeded=succeeded,
+                active=active,
+                ready=ready,
+                failed=failed,
+                failed_indexes=failed_indexes,
+                start_time=None,
+                completion_time=None,
+            ),
+        )
+
+    return _make

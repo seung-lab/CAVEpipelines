@@ -1,3 +1,4 @@
+import pytest
 import yaml
 
 from pipeline import config
@@ -32,6 +33,25 @@ env:
     assert conf["ADMIN"] is True  # operator value preserved
 
 
+def test_bare_yaml_blocks_load_as_defaults(tmp_path, monkeypatch):
+    # an operator can leave any block key present-but-empty (it parses to None)
+    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
+    (tmp_path / "pipeline.yml").write_text(
+        "graph_id: g\nimages: {pcg: x:1}\n"
+        "job:\nbigtable:\nworkload_identity:\nsecret_files:\ncommands:\n"
+    )
+    cfg = config.load()
+    assert cfg.job.batch_size == 1000
+    assert cfg.secret_files == {} and cfg.commands == {}
+
+
+def test_non_growing_ramp_is_rejected(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
+    _write(tmp_path, "pipeline.yml", {**BASE, "job": {"ramp": {"factor": 1}}})
+    with pytest.raises(SystemExit, match="ramp"):  # factor 1 would loop forever
+        config.load()
+
+
 def test_bigtable_not_injected_when_absent(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
     (tmp_path / "pipeline.yml").write_text("graph_id: g\nimages: {pcg: x:1}\n")
@@ -48,14 +68,23 @@ def test_load_resolves_named_files_under_config_dir(tmp_path, monkeypatch):
     assert cfg.graph_id == "g"
 
 
+def test_load_accepts_a_path_outside_config_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", "nonexistent")  # path must not need it
+    _write(tmp_path, "run.yml", BASE)
+    _write(tmp_path, "dataset.yml", {"data_source": {"EDGES": "gs://p/e"}})
+    cfg = config.load(str(tmp_path / "run.yml"))  # relative paths resolve the same
+    assert cfg.dataset["data_source"]["EDGES"] == "gs://p/e"  # sibling dataset
+    assert cfg.config_dir == str(tmp_path)  # counts cache colocates with the yaml
+
+
 def test_dataset_key_defaults_to_sibling_and_allows_subdirs(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
     _write(tmp_path, "pipeline.yml", BASE)
     _write(tmp_path, "dataset.yml", {"data_source": {"EDGES": "gs://default/e"}})
     assert config.load().dataset["data_source"]["EDGES"] == "gs://default/e"
-    (tmp_path / "pinky").mkdir()
-    _write(tmp_path, "nested.yml", {**BASE, "dataset": "pinky/dataset.yml"})
-    _write(tmp_path / "pinky", "dataset.yml", {"data_source": {"EDGES": "gs://n/e"}})
+    (tmp_path / "my_project").mkdir()
+    _write(tmp_path, "nested.yml", {**BASE, "dataset": "my_project/dataset.yml"})
+    _write(tmp_path / "my_project", "dataset.yml", {"data_source": {"EDGES": "gs://n/e"}})
     assert config.load("nested.yml").dataset["data_source"]["EDGES"] == "gs://n/e"
 
 

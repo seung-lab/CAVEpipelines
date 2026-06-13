@@ -108,9 +108,10 @@ def rate_for(table: dict, region: str, compute_class: str):
 def usage_from_rows(job_row, pod_rows, now: float) -> dict:
     """Quantity-hours for one recorded Job; backfills pods that were never observed.
 
-    Observed pods accrue started->finished (or ->now while live). Completions never
-    sampled get the mean observed runtime; with no pod record at all, fall back to
-    job wall x pod count. The basis flag says which."""
+    Observed pods accrue started->finished (or ->now while live). A closed-out
+    'Gone' pod consumes a completion like a Succeeded one, so it is never billed
+    again by the backfill. Completions never sampled get the mean observed
+    runtime; with no pod record at all, fall back to job wall x workers."""
     cpu_h = mem_h = pod_h = 0.0
     durations = []
     succeeded_seen = 0
@@ -123,7 +124,7 @@ def usage_from_rows(job_row, pod_rows, now: float) -> dict:
         mem_h += p["mem_req"] * hours
         if p["finished_at"]:
             durations.append(hours)
-        if p["phase"] == "Succeeded":
+        if p["phase"] in ("Succeeded", "Gone"):
             succeeded_seen += 1
     basis = "observed"
     missing = max(0, (job_row["succeeded"] or 0) - succeeded_seen)
@@ -135,7 +136,10 @@ def usage_from_rows(job_row, pod_rows, now: float) -> dict:
         basis = "observed+backfill"
     elif pod_h == 0.0 and job_row["started_at"] is not None:
         wall = max(0.0, (job_row["finished_at"] or now) - job_row["started_at"]) / 3600
-        pod_h = wall * ((job_row["succeeded"] or 0) + (job_row["active"] or 0))
+        count = (job_row["succeeded"] or 0) + (job_row["active"] or 0)
+        # tasks never run all at once; true pod-hours <= wall x peak workers
+        workers = min(job_row["parallelism"] or count, count)
+        pod_h = wall * workers
         cpu_h = job_row["cpu_req"] * pod_h
         mem_h = job_row["mem_req"] * pod_h
         basis = "wall"
@@ -147,10 +151,10 @@ def usage_from_rows(job_row, pod_rows, now: float) -> dict:
     }
 
 
-def price_usage(usage: dict, rate: dict, *, spot: bool = True) -> dict:
-    """Dollars for quantity-hours at one (region, class) rate — no cluster fee."""
-    cpu = usage["cpu_hours"] * rate["cpu_spot" if spot else "cpu_on_demand"]
-    mem = usage["mem_gib_hours"] * rate["mem_spot" if spot else "mem_on_demand"]
+def price_usage(usage: dict, rate: dict) -> dict:
+    """Spot dollars for quantity-hours at one (region, class) rate — no cluster fee."""
+    cpu = usage["cpu_hours"] * rate["cpu_spot"]
+    mem = usage["mem_gib_hours"] * rate["mem_spot"]
     return {"cpu": cpu, "mem": mem, "total": cpu + mem}
 
 

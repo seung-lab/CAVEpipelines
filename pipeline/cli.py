@@ -8,22 +8,16 @@ next (a layer's writes are non-idempotent).
 
 import functools
 import logging
-import subprocess
-import tempfile
 import time
 
 import click
 import urllib3
-import yaml
 from kubernetes.client import ApiException
 from rich.console import Console
 from rich.live import Live
 from rich.table import Table
 
-from . import NOTE, config, costdb, costs, kube, log, manifest, note, util
-
-HELM_CHART = "helm"
-ONESHOT_POLL_SEC = 30
+from . import NOTE, config, costdb, costs, kube, log, manifest, note, ops, util
 
 
 @click.group(help=__doc__, context_settings={"help_option_names": ["-h", "--help"]})
@@ -32,7 +26,7 @@ ONESHOT_POLL_SEC = 30
     "--config",
     "config_name",
     default="pipeline.yml",
-    help="pipeline config file name inside config/ (default: pipeline.yml)",
+    help="pipeline config: a path, or a file name inside config/ (default: pipeline.yml)",
 )
 @click.option(
     "-g",
@@ -99,51 +93,19 @@ _LAYER = click.argument("layer", type=int)
 @click.option("--yes", is_flag=True, help="skip the --oneshot confirmation (unattended)")
 @pass_cfg
 def deploy(cfg, secrets, run_setup, submit_l2, oneshot, yes):
-    """helm upgrade --install the static infra, incl. the Secret built from ./secrets."""
     if oneshot and (run_setup or submit_l2):
         raise SystemExit("--oneshot supersedes --setup/--submit-l2")
     if submit_l2 and not run_setup:
         raise SystemExit("--submit-l2 requires --setup")
     if oneshot:
-        _oneshot_plan(cfg, yes)  # confirm before any cluster mutation
-    data = kube.secret_data(secrets, cfg.secret_files)
-    note(f"deploy: helm release 'pcg' (secrets: {list(data) or 'none'})")
-    with tempfile.NamedTemporaryFile("w", suffix=".yaml") as f:
-        yaml.safe_dump(manifest.helm_values(cfg, data), f)
-        f.flush()
-        res = subprocess.run(
-            [
-                "helm",
-                "upgrade",
-                "--install",
-                "pcg",
-                HELM_CHART,
-                "-n",
-                cfg.namespace,
-                "--create-namespace",
-                "-f",
-                f.name,
-            ],
-            capture_output=True,  # swallow helm's NOTES + autopilot warnings
-            text=True,
-        )
-        if res.returncode:
-            raise SystemExit(
-                f"helm upgrade failed (exit {res.returncode}):\n{res.stderr.strip()}"
-            )
-    note(
-        f"deployed; secret '{cfg.secret_name}' <- {list(data)}"
-        if data
-        else "deployed (no secret)"
-    )
+        ops.oneshot_plan(cfg, yes)  # confirm before any cluster mutation
+    ops.deploy_infra(cfg, secrets)
     if oneshot:
-        _oneshot_run(cfg)
-        return
-    if run_setup:
-        ctx = click.get_current_context()
-        ctx.invoke(setup)  # one-shot pod; no util-pod wait needed
+        ops.oneshot_run(cfg)
+    elif run_setup:
+        ops.setup(cfg)
         if submit_l2:
-            ctx.invoke(submit, layer=2)
+            ops.submit(cfg, 2)
         else:
             note("pipeline ready; run `pipeline submit <layer>`")
 
@@ -151,35 +113,13 @@ def deploy(cfg, secrets, run_setup, submit_l2, oneshot, yes):
 @cli.command(help="delete all pipeline Jobs and the helm release (incl. secret)")
 @pass_cfg
 def undeploy(cfg):
-    """Tear down everything deploy/submit created: all pipeline Jobs, then the helm release."""
-    note("undeploy: deleting jobs, dataset configmaps + helm release")
-    for job in kube.list_jobs(cfg.namespace):
-        kube.delete_job(cfg.namespace, job.metadata.name)
-        note(f"deleted job {job.metadata.name}")
-    for cm in kube.list_configmaps(cfg.namespace, "pipeline=dataset"):
-        kube.delete_configmap(cfg.namespace, cm.metadata.name)
-        note(f"deleted dataset configmap {cm.metadata.name}")
-    res = subprocess.run(
-        ["helm", "uninstall", "pcg", "-n", cfg.namespace], capture_output=True, text=True
-    )
-    note(res.stdout.strip() or res.stderr.strip())
+    ops.undeploy(cfg)
 
 
 @cli.command(help="create the graph table + meta (one-shot pod with the dataset)")
 @pass_cfg
 def setup(cfg):
-    """Prepare the graph for the workload: ingest creates the table; migrate preps it."""
-    note(f"setup ({cfg.workload})")
-    if cfg.workload in ("migrate", "migrate_cleanup"):
-        # migrate reads everything from Bigtable; no dataset file involved
-        argv = ["python", "-m", "pychunkedgraph.pipeline.migrate.setup", cfg.graph_id]
-        note(util.run_pcg(cfg, "setup", argv) or "setup done")
-    else:
-        argv = ["python", "-m", "pychunkedgraph.pipeline.ingest.setup", cfg.graph_id]
-        if cfg.dataset.get("ingest_config", {}).get("AGGLOMERATION"):
-            argv.append("--raw")  # an agglomeration source implies the raw input path
-        note(util.run_with_dataset(cfg, "setup", argv) or "setup done")
-    util.invalidate_layer_counts(cfg)  # graph may have changed; recompute on next read
+    ops.setup(cfg)
 
 
 @cli.command(
@@ -187,133 +127,7 @@ def setup(cfg):
 )
 @pass_cfg
 def mesh_meta(cfg):
-    """Write mesh metadata once (after ingest reaches root); needs `mesh_config:` in the dataset."""
-    argv = ["python", "-m", "pychunkedgraph.pipeline.meshing.setup", cfg.graph_id]
-    note("mesh-meta: writing mesh metadata")
-    note(util.run_with_dataset(cfg, "mesh-meta", argv) or "mesh metadata written")
-
-
-def _oneshot_plan(cfg, yes):
-    """Preview the full run and confirm before any cluster mutation."""
-    mesh = "mesh_config" in cfg.dataset
-    note(
-        f"oneshot: graph '{cfg.graph_id}' ({cfg.source}): "
-        f"setup -> ingest L2..root{' -> mesh-meta -> meshing' if mesh else ''}"
-    )
-    if not mesh:
-        note("  (no mesh_config in the dataset; meshing will be skipped)")
-    cached = util._read_cache(cfg).get(cfg.graph_id)
-    if cached:
-        for layer in sorted(int(k) for k in cached):
-            req = manifest.layer_requests(cfg.job, layer)  # validates the whole curve
-            note(
-                f"  L{layer}: {cached[str(layer)]} chunks · "
-                f"{req['cpu']} cpu / {req['memory']} per pod"
-            )
-    else:
-        note("  layer counts are computed during setup")
-    if not yes:
-        click.confirm("proceed?", abort=True)
-
-
-def _oneshot_run(cfg):
-    """setup -> ingest L2..root -> mesh-meta -> meshing; resumable at every step."""
-    ctx = click.get_current_context()
-    ingest_cfg = config.load(cfg.source, workload="ingest")
-    ingest_cfg.graph_id = cfg.graph_id  # carry a -g override
-    ctx.obj = ingest_cfg
-    try:
-        counts = util.read_layer_counts(ingest_cfg)
-        note("graph exists; skipping setup")
-    except SystemExit:  # no readable graph -> first run; setup is not re-runnable
-        ctx.invoke(setup)
-        counts = util.read_layer_counts(ingest_cfg)
-    for layer in sorted(counts):
-        _run_layer(ctx, ingest_cfg, layer)
-    if "mesh_config" not in cfg.dataset:
-        note("oneshot complete (no meshing)")
-        return
-    mesh_cfg = config.load(cfg.source, workload="meshing")
-    mesh_cfg.graph_id = cfg.graph_id
-    ctx.obj = mesh_cfg
-    ctx.invoke(mesh_meta)
-    top = min(int(cfg.dataset["mesh_config"]["max_layer"]), max(counts))
-    for layer in range(2, top + 1):
-        _run_layer(ctx, mesh_cfg, layer)
-    note("oneshot complete")
-
-
-def _read_job(cfg, layer):
-    try:
-        return kube.batch().read_namespaced_job(
-            manifest.job_name(cfg, layer), cfg.namespace
-        )
-    except ApiException as exc:
-        if exc.status == 404:
-            return None
-        raise
-
-
-def _run_layer(ctx, cfg, layer):
-    """Submit (or attach to) one layer and poll it to completion; stop on dead tasks."""
-    job = _read_job(cfg, layer)
-    if job:
-        _check_graph_owner(job, cfg)
-        if util.job_state(job) == "complete":
-            note(f"L{layer} ({cfg.workload}) already complete; skipping")
-            return
-    if job and util.job_state(job) == "running":
-        note(f"L{layer} ({cfg.workload}) already running; attaching")
-    else:
-        ctx.invoke(submit, layer=layer)
-    while True:
-        costdb.sample(cfg)  # pod runtimes are durable once recorded
-        p = util.job_progress(_read_job(cfg, layer))
-        note(
-            f"  L{layer} {cfg.workload}: {p['done']}/{p['total']} {p['pct']}% · "
-            f"active {p['active']} · retries {p['retries']} · dead {p['dead']}"
-        )
-        if p["dead"] or p["state"] == "failed":
-            raise SystemExit(
-                f"L{layer} ({cfg.workload}) has dead tasks — `pipeline inspect {layer}`; "
-                f"re-run `pipeline deploy --oneshot` to resume (finished layers skip)"
-            )
-        if p["state"] == "complete":
-            note(f"L{layer} ({cfg.workload}) complete")
-            return
-        time.sleep(ONESHOT_POLL_SEC)
-
-
-def _check_graph_owner(job, cfg, force=False):
-    """A job left by another graph makes layer-state checks meaningless — never mix."""
-    owner = (job.metadata.labels or {}).get("graph", "")
-    if owner and owner != cfg.graph_id and not force:
-        raise SystemExit(
-            f"job {job.metadata.name} belongs to graph '{owner}', not "
-            f"'{cfg.graph_id}' — delete it first (--force only if you're sure)"
-        )
-
-
-def _require_prev_complete(cfg, layer, force=False):
-    """Refuse to submit a layer until the one below it is 100% complete (--force overrides)."""
-    if layer <= 2 or force:
-        return
-    prev = manifest.job_name(cfg, layer - 1)
-    try:
-        job = kube.batch().read_namespaced_job(prev, cfg.namespace)
-    except ApiException as exc:
-        if exc.status == 404:
-            raise SystemExit(
-                f"layer {layer - 1} has no job; submit it first "
-                f"(--force only if you're sure it's already done)"
-            )
-        raise
-    _check_graph_owner(job, cfg, force)
-    if util.job_state(job) != "complete":
-        raise SystemExit(
-            f"layer {layer - 1} is not complete; finish it first "
-            f"(--force only if you're sure)"
-        )
+    ops.mesh_meta(cfg)
 
 
 @cli.command(help="submit one layer's Indexed Job and ramp parallelism")
@@ -326,53 +140,7 @@ def _require_prev_complete(cfg, layer, force=False):
 )
 @pass_cfg
 def submit(cfg, layer, force=False):
-    """Create one layer's Indexed Job (completions from cg.meta) and ramp parallelism."""
-    note(f"submit L{layer} ({cfg.workload})")
-    _require_prev_complete(cfg, layer, force=force)
-    try:  # re-submitting replaces a job; never silently absorb another graph's
-        _check_graph_owner(
-            kube.batch().read_namespaced_job(
-                manifest.job_name(cfg, layer), cfg.namespace
-            ),
-            cfg,
-            force,
-        )
-    except ApiException as exc:
-        if exc.status != 404:
-            raise
-    n = util.read_n(cfg, layer)
-    completions = util.ceil_div(n, cfg.job.batch_size)
-    pmax = min(cfg.job.ramp.max, completions)
-    parallelism = min(cfg.job.ramp.start, pmax)
-    spec = manifest.job_spec(cfg, layer, n, completions, parallelism)
-    name = spec.metadata.name
-    req = spec.spec.template.spec.containers[0].resources.requests
-    note(
-        f"{name}: {n} chunks, {completions} tasks, workers {parallelism}->{pmax}, "
-        f"{req['cpu']} cpu / {req['memory']} per pod"
-    )
-    kube.recreate_job(cfg.namespace, spec)
-    p = parallelism
-    while p < pmax:
-        time.sleep(cfg.job.ramp.period)
-        p = min(p * cfg.job.ramp.factor, pmax)
-        kube.set_parallelism(cfg.namespace, name, p)
-        note(f"  parallelism -> {p}/{pmax}")
-        costdb.sample(cfg)
-    costdb.sample(cfg)
-    note("at full parallelism; watch with `pipeline status`")
-    rate = costs.rate_for(costs.load_table(), cfg.region, cfg.job.compute_class)
-    if rate:
-        try:
-            burn = (
-                costs.parse_cpu(req["cpu"]) * rate["cpu_spot"]
-                + costs.parse_mem(req["memory"]) * rate["mem_spot"]
-            )
-            note(
-                f"~${burn:.4f}/pod-hr spot; `pipeline costs {layer}` for the running total"
-            )
-        except Exception:  # noqa: BLE001 - cost is auxiliary, never fatal
-            pass
+    ops.submit(cfg, layer, force=force)
 
 
 @cli.command(help="resize the running layer's workers (set Job parallelism)")
@@ -380,10 +148,7 @@ def submit(cfg, layer, force=False):
 @click.argument("parallelism", type=int)
 @pass_cfg
 def scale(cfg, layer, parallelism):
-    """Resize the running layer's workers: set its Indexed Job parallelism."""
-    name = manifest.job_name(cfg, layer)
-    kube.set_parallelism(cfg.namespace, name, parallelism)
-    note(f"{name}: parallelism -> {parallelism}")
+    ops.scale(cfg, layer, parallelism)
 
 
 @cli.command(help="run N scattered chunks of a layer to size CPU/memory")
@@ -391,13 +156,14 @@ def scale(cfg, layer, parallelism):
 @click.argument("count", type=int)
 @pass_cfg
 def sample(cfg, layer, count):
-    """Run `count` scattered chunks of the layer (one per pod) to size CPU/memory."""
-    spec = manifest.job_spec(
-        cfg, layer, count, count, min(count, cfg.job.ramp.max), batch_size=1
-    )
-    name = spec.metadata.name
-    note(f"{name}: launching {count} sample chunks; size with `pipeline top {layer}`")
-    kube.recreate_job(cfg.namespace, spec)
+    ops.sample(cfg, layer, count)
+
+
+@cli.command(help="delete the layer's Job and pods")
+@_LAYER
+@pass_cfg
+def delete(cfg, layer):
+    ops.delete(cfg, layer)
 
 
 @cli.command(help="list a layer's failed indexes; add an index for its pod log")
@@ -408,7 +174,13 @@ def inspect(cfg, layer, index):
     """List a layer's failed indexes; with an index, show that index's pod log."""
     name = manifest.job_name(cfg, layer)
     if index is None:
-        s = kube.batch().read_namespaced_job(name, cfg.namespace).status
+        try:
+            s = kube.batch().read_namespaced_job(name, cfg.namespace).status
+        except ApiException as exc:
+            if exc.status == 404:
+                note(f"no job '{name}' in ns '{cfg.namespace}'")
+                return
+            raise
         note(
             f"{name}: {s.succeeded or 0} ok, {s.active or 0} active, "
             f"{s.failed or 0} failed pod attempts"
@@ -496,22 +268,6 @@ def events(cfg, layer):
         )
 
 
-@cli.command(help="delete the layer's Job and pods")
-@_LAYER
-@pass_cfg
-def delete(cfg, layer):
-    """Delete the layer's Job and its pods."""
-    name = manifest.job_name(cfg, layer)
-    try:
-        kube.delete_job(cfg.namespace, name)
-    except ApiException as exc:
-        if exc.status == 404:
-            note(f"no job '{name}' in ns '{cfg.namespace}'")
-            return
-        raise
-    note(f"deleting {name}")
-
-
 @cli.command(help="live per-pod CPU/memory usage in cores/GiB (needs metrics-server)")
 @_LAYER
 @click.option("-o", "--once", is_flag=True, help="print one snapshot and exit")
@@ -523,12 +279,12 @@ def top(cfg, layer, once, interval):
     """Live per-pod usage for the layer, ordered by task index; Ctrl-C to stop."""
     name = manifest.job_name(cfg, layer)
     if once:
-        Console().print(util.usage_table(cfg, name))
+        Console().print(util.usage_table(cfg, name, layer))
         return
     try:
         with Live(refresh_per_second=4) as live:
             while True:
-                live.update(util.usage_table(cfg, name))
+                live.update(util.usage_table(cfg, name, layer))
                 time.sleep(interval)
     except KeyboardInterrupt:
         pass

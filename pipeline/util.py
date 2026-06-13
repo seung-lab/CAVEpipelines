@@ -238,10 +238,10 @@ def recorded_costs(cfg, rate_table) -> tuple:
 def usage_table(cfg, job_name, layer=None) -> Table:
     """Per-pod usage for one layer Job, in cores/GiB, ordered by task index."""
     if layer is None:
-        caption = f"requests: {cfg.job.cpu} cpu · {cfg.job.memory} per pod"
+        caption = f"requests: {cfg.job.cpu} cpu | {cfg.job.memory} per pod"
     else:  # the layer's actual request (curves/overrides), not the flat default
         cpu, mem = manifest.requests_for(cfg.job, layer)
-        caption = f"requests: {cpu:g} cpu · {mem:g}Gi per pod"
+        caption = f"requests: {cpu:g} cpu | {mem:g}Gi per pod"
     table = Table(title=f"{job_name} usage", caption=caption)
     for col, justify in (("pod", "left"), ("cpu", "right"), ("memory", "right")):
         table.add_column(col, justify=justify)
@@ -276,13 +276,13 @@ def status_table(cfg, layer_totals=None) -> Table:
     try:
         n_nodes, spot, by_type = kube.node_summary()
         types = ", ".join(f"{c}×{t}" for t, c in sorted(by_type.items()))
-        nodes = f"{n_nodes} nodes · {spot} spot" + (f" · {types}" if types else "")
+        nodes = f"{n_nodes} nodes | {spot} spot" + (f" | {types}" if types else "")
     except Exception:  # noqa: BLE001 - node list may be RBAC-denied; not essential
         nodes = "nodes ?"
     table = Table(
-        title=f"{cfg.workload} · {cfg.graph_id} · {nodes}",
-        caption="retries = failed attempts (transient) · failed = dead tasks (`inspect`) · "
-        "active−ready ≈ pods waiting on capacity · cost = recorded Spot estimate",
+        title=f"{cfg.workload} | {cfg.graph_id} | {nodes}",
+        caption="retries = failed attempts (transient) | failed = dead tasks (`inspect`) | "
+        "active−ready ≈ pods waiting on capacity | cost = recorded Spot estimate",
     )
     cols = (
         "layer",

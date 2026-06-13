@@ -175,38 +175,40 @@ def submit(cfg, layer, force=False) -> None:
     if existing:  # re-submitting replaces a job; never silently absorb another graph's
         check_graph_owner(cfg, existing, force)
     n = util.read_n(cfg, layer)
-    completions = util.ceil_div(n, manifest.batch_for(cfg.job, layer))
+    batch = manifest.batch_for(cfg.job, layer)
+    completions = util.ceil_div(n, batch)
     pmax = min(cfg.job.ramp.max, completions)
     parallelism = min(cfg.job.ramp.start, pmax)
     spec = manifest.job_spec(cfg, layer, n, completions, parallelism)
     name = spec.metadata.name
     req = spec.spec.template.spec.containers[0].resources.requests
+    vcpu = costs.parse_cpu(req["cpu"])  # millicores/bytes -> readable cores / GiB
+    gib = costs.parse_mem(req["memory"])
+    cost = ""
+    rate = costs.rate_for(costs.load_table(), cfg.region, cfg.job.compute_class)
+    if rate:
+        try:  # cost is auxiliary, never fatal
+            burn = vcpu * rate["cpu_spot"] + gib * rate["mem_spot"]
+            cost = f" | ~${burn:.4f}/pod-hr spot"
+        except Exception:  # noqa: BLE001
+            pass
     note(
-        f"{name}: {n} chunks, {completions} tasks, workers {parallelism}->{pmax}, "
-        f"{req['cpu']} cpu / {req['memory']} per pod"
+        f"{name}: {n} chunks, batch {batch}, {completions} tasks | "
+        f"workers {parallelism}->{pmax} | {vcpu:g} cpu, {gib:g}Gi per pod{cost}"
     )
     kube.recreate_job(cfg.namespace, spec)
+    full = "at full parallelism; watch with `pipeline status`"
     p = parallelism
     while p < pmax:
         time.sleep(cfg.job.ramp.period)
         p = min(p * cfg.job.ramp.factor, pmax)
         kube.set_parallelism(cfg.namespace, name, p)
-        note(f"  parallelism -> {p}/{pmax}")
+        tail = f" ({full})" if p >= pmax else ""  # the step that maxes carries it inline
+        note(f"  parallelism -> {p}/{pmax}{tail}")
         costdb.sample(cfg)
     costdb.sample(cfg)
-    note("at full parallelism; watch with `pipeline status`")
-    rate = costs.rate_for(costs.load_table(), cfg.region, cfg.job.compute_class)
-    if rate:
-        try:
-            burn = (
-                costs.parse_cpu(req["cpu"]) * rate["cpu_spot"]
-                + costs.parse_mem(req["memory"]) * rate["mem_spot"]
-            )
-            note(
-                f"~${burn:.4f}/pod-hr spot; `pipeline costs {layer}` for the running total"
-            )
-        except Exception:  # noqa: BLE001 - cost is auxiliary, never fatal
-            pass
+    if parallelism >= pmax:  # already maxed: no ramp line to carry the note
+        note(full)
 
 
 def scale(cfg, layer, parallelism) -> None:
@@ -259,10 +261,9 @@ def _phase_cfg(cfg, workload):
 def _layer_plan(cfg, cached, top) -> None:
     for layer in sorted(layer for layer in cached if layer <= top):
         req = manifest.layer_requests(cfg.job, layer)
-        note(
-            f"    L{layer}: {cached[layer]} chunks · "
-            f"{req['cpu']} cpu / {req['memory']} per pod"
-        )
+        vcpu = costs.parse_cpu(req["cpu"])
+        gib = costs.parse_mem(req["memory"])
+        note(f"    L{layer}: {cached[layer]} chunks | {vcpu:g} cpu, {gib:g}Gi per pod")
 
 
 def all_layers_plan(cfg, yes) -> None:

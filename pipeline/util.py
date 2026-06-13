@@ -30,6 +30,20 @@ except Exception:
     os._exit(1)
 """
 
+# Has mesh-meta run? ("yes" iff the graph meta has a mesh block.)
+_MESH_META_CODE = """
+import os, sys, traceback
+try:
+    from pychunkedgraph.graph import ChunkedGraph
+    print("yes" if ChunkedGraph(graph_id={gid!r}).meta.custom_data.get("mesh") else "no")
+    sys.stdout.flush()
+    os._exit(0)
+except Exception:
+    traceback.print_exc()
+    sys.stderr.flush()
+    os._exit(1)
+"""
+
 
 def ceil_div(a, b):
     return -(-a // b)
@@ -140,6 +154,17 @@ def read_n(cfg, layer):
     if layer not in counts:
         raise SystemExit(f"layer {layer} not in {sorted(counts)} for '{cfg.graph_id}'")
     return counts[layer]
+
+
+def mesh_meta_written(cfg) -> bool:
+    """Whether mesh-meta has run (graph meta has a mesh block). Read errors surface."""
+    out = run_pcg(
+        cfg,
+        "mesh-check",
+        ["python", "-u", "-c", _MESH_META_CODE.format(gid=cfg.graph_id)],
+        timeout=CG_TIMEOUT,
+    )
+    return out.strip().split("\n")[-1].strip() == "yes"
 
 
 def count_indexes(intervals) -> int:

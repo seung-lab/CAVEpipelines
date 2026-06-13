@@ -38,7 +38,7 @@ from `pipeline.yml`'s `bigtable:`.
 | `namespace` | k8s namespace for all pods |
 | `graph_id` | the ChunkedGraph id (table name); `-g` overrides it per invocation |
 | `dataset` | dataset yaml, relative to the pipeline yaml's directory (default `dataset.yml`; subdirs ok) |
-| `workload` | `ingest` \| `l2cache` \| `meshing` \| `migrate` \| `migrate_cleanup` — one at a time (ignored by `deploy --oneshot`, which runs ingest then meshing) |
+| `workload` | `ingest` \| `l2cache` \| `meshing` \| `migrate` \| `migrate_cleanup` — the active workload; honored by every command. `deploy --all-layers` runs all its layers; `deploy --oneshot` (end-to-end ingest→mesh) requires `workload: ingest` |
 | `persistent_util` | keep the spot util pod alive between layers; `false` = one-shot pod (idle 0 nodes) |
 | `secret_files` | `{container_filename: local_path under ./secrets}`; must include `google-secret.json` — all Google clients authenticate with it |
 | `secret_name` | name of the k8s Secret built from `secret_files` (default `cloud-volume-secrets`) |

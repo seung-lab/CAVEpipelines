@@ -31,7 +31,20 @@ def _fake_load(cfg):
 def test_oneshot_conflicts_with_setup_flags(cfg):
     res = _invoke(["--oneshot", "--setup"], cfg)  # CliRunner absorbs the SystemExit
     assert res.exit_code != 0
-    assert "supersedes" in res.output
+    assert "supersede" in res.output
+
+
+def test_oneshot_and_all_layers_are_exclusive(cfg):
+    res = _invoke(["--oneshot", "--all-layers"], cfg)
+    assert res.exit_code != 0
+    assert "mutually exclusive" in res.output
+
+
+def test_oneshot_refuses_non_ingest_workload(cfg):
+    cfg.workload = "meshing"  # --oneshot builds from ingest; honor the yaml
+    res = _invoke(["--oneshot"], cfg)
+    assert res.exit_code != 0
+    assert "--all-layers" in res.output
 
 
 def test_oneshot_aborts_before_any_mutation(monkeypatch, cfg):
@@ -55,20 +68,21 @@ def test_oneshot_sequences_phases(monkeypatch, cfg):
     monkeypatch.setattr(
         ops,
         "setup",
-        lambda c, exist_ok=False: calls.append(f"setup(exist_ok={exist_ok})"),
+        lambda c, exist_ok=False: calls.append(
+            f"setup({c.workload},exist_ok={exist_ok})"
+        ),
     )
-    monkeypatch.setattr(ops, "mesh_meta", lambda c: calls.append("mesh-meta"))
     monkeypatch.setattr(
         ops, "run_layer", lambda c, layer: calls.append(f"{c.workload}-l{layer}")
     )
     _invoke(["--oneshot", "--yes"], cfg)
     assert calls == [
         "helm",
-        "setup(exist_ok=True)",  # always run, resume-safe (skips a created table)
+        "setup(ingest,exist_ok=True)",  # resume-safe (skips a created table)
         "ingest-l2",
         "ingest-l3",
         "ingest-l4",
-        "mesh-meta",
+        "setup(meshing,exist_ok=False)",  # mesh-meta, via the per-workload setup dispatch
         "meshing-l2",
         "meshing-l3",  # capped by mesh_config.max_layer, not the root
     ]
@@ -88,6 +102,40 @@ def test_oneshot_setup_is_resume_safe_and_skips_meshing(monkeypatch, cfg):
     monkeypatch.setattr(ops, "run_layer", lambda c, layer: calls.append(f"l{layer}"))
     _invoke(["--oneshot", "--yes"], cfg)
     assert calls == ["helm", "setup(exist_ok=True)", "l2"]  # no mesh_config -> no meshing
+
+
+def _mock_all_layers(monkeypatch, cfg, counts, calls):
+    cfg.config_dir = "nonexistent"
+    _mock_helm(monkeypatch, calls)
+    monkeypatch.setattr(ops.util, "read_layer_counts", lambda c: counts)
+    monkeypatch.setattr(
+        ops,
+        "setup",
+        lambda c, exist_ok=False: calls.append(
+            f"setup({c.workload},exist_ok={exist_ok})"
+        ),
+    )
+    monkeypatch.setattr(
+        ops, "run_layer", lambda c, layer: calls.append(f"{c.workload}-l{layer}")
+    )
+
+
+def test_all_layers_meshing_runs_only_meshing(monkeypatch, cfg):
+    cfg.workload = "meshing"
+    cfg.dataset["mesh_config"] = {"max_layer": 3}
+    calls = []
+    _mock_all_layers(monkeypatch, cfg, {2: 100, 3: 10, 4: 1}, calls)
+    _invoke(["--all-layers", "--yes"], cfg)
+    # mesh-meta (meshing setup) + meshing layers capped at max_layer; never ingest
+    assert calls == ["helm", "setup(meshing,exist_ok=True)", "meshing-l2", "meshing-l3"]
+
+
+def test_all_layers_ingest_runs_setup_then_ingest_layers(monkeypatch, cfg):
+    cfg.workload = "ingest"
+    calls = []
+    _mock_all_layers(monkeypatch, cfg, {2: 100, 3: 10}, calls)
+    _invoke(["--all-layers", "--yes"], cfg)
+    assert calls == ["helm", "setup(ingest,exist_ok=True)", "ingest-l2", "ingest-l3"]
 
 
 _CONDS = {

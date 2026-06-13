@@ -65,13 +65,14 @@ def pass_cfg(fn):
             cfg = config.resolve(name)
             if graph_id:
                 cfg.graph_id = graph_id
+            ctx_id = f"graph: {cfg.graph_id}, workload: {cfg.workload}"
             if newly_selected:  # announce the session lock loudly
                 note(
-                    f"config: {cfg.source} (graph: {cfg.graph_id}) — session config; "
+                    f"config: {cfg.source} ({ctx_id}) — session config; "
                     f"every command uses it until `pipeline reset`"
                 )
             else:
-                note(f"config: {cfg.source} (graph: {cfg.graph_id})")
+                note(f"config: {cfg.source} ({ctx_id})")
             ctx.obj = cfg
         return ctx.invoke(fn, ctx.obj, *args, **kwargs)
 
@@ -97,20 +98,40 @@ _LAYER = click.argument("layer", type=int)
 @click.option(
     "--oneshot",
     is_flag=True,
-    help="run everything: setup -> ingest layers -> mesh-meta -> meshing layers",
+    help="end-to-end build: setup -> ingest layers -> mesh-meta -> meshing (requires workload: ingest)",
 )
-@click.option("--yes", is_flag=True, help="skip the --oneshot confirmation (unattended)")
+@click.option(
+    "--all-layers",
+    "all_layers",
+    is_flag=True,
+    help="run all layers of the configured workload (+ its setup), nothing else",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    help="skip the --oneshot/--all-layers confirmation (unattended)",
+)
 @pass_cfg
-def deploy(cfg, secrets, run_setup, submit_l2, oneshot, yes):
-    if oneshot and (run_setup or submit_l2):
-        raise SystemExit("--oneshot supersedes --setup/--submit-l2")
+def deploy(cfg, secrets, run_setup, submit_l2, oneshot, all_layers, yes):
+    if oneshot and all_layers:
+        raise SystemExit("--oneshot and --all-layers are mutually exclusive")
+    if (oneshot or all_layers) and (run_setup or submit_l2):
+        raise SystemExit("--oneshot/--all-layers supersede --setup/--submit-l2")
     if submit_l2 and not run_setup:
         raise SystemExit("--submit-l2 requires --setup")
+    if oneshot and cfg.workload != "ingest":  # honor the yaml; never silently re-ingest
+        raise SystemExit(
+            f"--oneshot builds from ingest, but workload is '{cfg.workload}'; use --all-layers"
+        )
     if oneshot:
         ops.oneshot_plan(cfg, yes)  # confirm before any cluster mutation
+    elif all_layers:
+        ops.all_layers_plan(cfg, yes)
     ops.deploy_infra(cfg, secrets)
     if oneshot:
         ops.oneshot_run(cfg)
+    elif all_layers:
+        ops.all_layers_run(cfg)
     elif run_setup:
         ops.setup(cfg)
         if submit_l2:

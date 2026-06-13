@@ -56,7 +56,7 @@ account each appear once.
 
 | command | does |
 |---|---|
-| `pipeline deploy` | `helm upgrade --install` the static infra + create the Secret from `secrets/` (`--setup` also runs `setup`; `--submit-l2` also submits layer 2; `--oneshot` runs the whole pipeline end to end, `--yes` skips its confirmation) |
+| `pipeline deploy` | `helm upgrade --install` the static infra + create the Secret from `secrets/` (`--setup` also runs `setup`; `--submit-l2` also submits layer 2; `--oneshot` = end-to-end ingest→mesh build (needs `workload: ingest`); `--all-layers` = all layers of the configured workload; `--yes` skips the confirmation) |
 | `pipeline setup` | create the graph table + meta — a one-shot pod mounting the graph's own dataset ConfigMap; raw agglomeration input enabled automatically when the dataset has `ingest_config.AGGLOMERATION` |
 | `pipeline mesh-meta` | write the graph's mesh metadata once (meshing only, after ingest reaches root) |
 | `pipeline submit <layer>` | submit (or re-submit) the layer's Indexed Job; ramp parallelism (refuses if the layer below is not 100% — `--force` to override) |
@@ -175,12 +175,20 @@ it, a different `-c` is refused, and `pipeline reset` clears the selection. `-g`
 overrides `graph_id` per invocation
 (test iterations without editing files).
 
-`pipeline deploy --oneshot` runs the full pipeline: setup, ingest L2→root,
-`mesh-meta`, meshing L2→`mesh_config.max_layer`, gating each layer on the previous
-and stopping on dead tasks. It prints the plan (phases, per-layer requests) and asks
-for confirmation (`--yes` to skip); re-running resumes — an existing graph skips
-setup, finished layers are skipped. The file's `workload:` is ignored; per-phase
-sizing comes from `job.workloads`.
+Two whole-pipeline flags, mutually exclusive:
+
+- **`pipeline deploy --oneshot`** — the end-to-end build: setup → ingest L2→root →
+  `mesh-meta` → meshing L2→`mesh_config.max_layer`. It **requires `workload: ingest`**
+  (the build starts from ingest); with any other workload it errors and points to
+  `--all-layers`, so the yaml `workload:` is never silently overridden. Per-phase sizing
+  comes from `job.workloads`.
+- **`pipeline deploy --all-layers`** — runs **every layer of the configured `workload:`**
+  plus that workload's own setup, and nothing else. Use it to (re)run a single workload
+  end to end, e.g. `workload: meshing` → `mesh-meta` + meshing L2→max_layer, no ingest.
+
+Both print the plan (phases, per-layer requests) and ask for confirmation (`--yes` to
+skip); re-running resumes — an existing graph skips setup, finished layers skip; a layer
+with dead tasks stops the run. Every command also logs the active workload at start.
 
 (`deploy`/`setup`/`submit` remain separate commands; the flags chain them for a
 first run. `--submit-l2` requires `--setup`.)
@@ -219,6 +227,10 @@ pipeline mesh-meta    # one-shot: write the graph's mesh.* metadata (run once, b
 pipeline submit 2     # L2: marching cubes on each chunk
 pipeline submit 3     # L3..max_layer: stitch child meshes into bigger ones, bottom-up
 ```
+
+Or run the whole meshing pass in one command: `pipeline deploy --all-layers` (with
+`workload: meshing`) does `mesh-meta` then meshing L2→`max_layer`. Submitting a meshing
+layer without mesh metadata is refused — run `mesh-meta` (or `--all-layers`) first.
 
 `mesh-meta` writes the graph's mesh metadata (mesh dir, sharded spec, draco grid, and the
 bigtable mesh block). It derives `initial_ts` from a root sampled before any edit, so mesh
@@ -264,7 +276,8 @@ Idempotent (overwrites), no per-chunk lock. Migration is **two full passes** ove
 in order: `migrate_cleanup` (fixes corrupt nodes) on every layer first, then `migrate` (the
 upgrade). Each pass is a separate `workload` in `pipeline.yml`; within a pass, submit each layer
 lowest-first and wait for completion before the next (the same operator-gated flow as ingest —
-layers do not auto-advance).
+layers do not auto-advance), or run the whole pass in one command with `pipeline deploy
+--all-layers`. Run the full `migrate_cleanup` pass before any `migrate` (ordering is operator-gated).
 
 Prepare the table once:
 

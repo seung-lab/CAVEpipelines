@@ -72,14 +72,21 @@ def undeploy(cfg) -> None:
 
 
 def setup(cfg, exist_ok=False) -> None:
-    """Prepare the graph for the workload: ingest creates the table; migrate preps it.
+    """Run the configured workload's setup, dispatched by workload: ingest creates the
+    table, migrate preps it, meshing writes mesh metadata, l2cache needs none.
     exist_ok lets ingest setup skip an already-created table (resume) instead of erroring."""
+    if cfg.workload == "meshing":
+        mesh_meta(cfg)  # mesh metadata is meshing's setup
+        return
+    if cfg.workload == "l2cache":
+        note("l2cache: no graph setup needed (graph already ingested)")
+        return
     note(f"setup ({cfg.workload})")
     if cfg.workload in ("migrate", "migrate_cleanup"):
         # migrate reads everything from Bigtable; no dataset file involved
         argv = ["python", "-m", "pychunkedgraph.pipeline.migrate.setup", cfg.graph_id]
         note(util.run_pcg(cfg, "setup", argv) or "setup done")
-    else:
+    else:  # ingest
         argv = ["python", "-m", "pychunkedgraph.pipeline.ingest.setup", cfg.graph_id]
         if cfg.dataset.get("ingest_config", {}).get("AGGLOMERATION"):
             argv.append("--raw")  # an agglomeration source implies the raw input path
@@ -87,6 +94,17 @@ def setup(cfg, exist_ok=False) -> None:
             argv.append("--exist-ok")
         note(util.run_with_dataset(cfg, "setup", argv) or "setup done")
     util.invalidate_layer_counts(cfg)  # graph may have changed; recompute on next read
+
+
+def top_layer(cfg, counts) -> int:
+    """Highest layer to run for the configured workload: root for ingest/migrate,
+    capped at mesh_config.max_layer for meshing, a single L2 pass for l2cache."""
+    root = max(counts)
+    if cfg.workload == "meshing":
+        return min(int(cfg.dataset["mesh_config"]["max_layer"]), root)
+    if cfg.workload == "l2cache":
+        return 2
+    return root
 
 
 def mesh_meta(cfg) -> None:
@@ -144,6 +162,9 @@ def require_prev_complete(cfg, layer, force=False) -> None:
 def submit(cfg, layer, force=False) -> None:
     """Create one layer's Indexed Job (completions from cg.meta) and ramp parallelism."""
     note(f"submit L{layer} ({cfg.workload})")
+    if cfg.workload == "meshing" and layer == 2 and not util.mesh_meta_written(cfg):
+        # without it workers silently default mip=0; only need to check at the leaf layer
+        raise SystemExit("meshing has no mesh metadata; run `pipeline mesh-meta` first")
     require_prev_complete(cfg, layer, force=force)
     existing = _read_job(cfg, layer)
     if existing:  # re-submitting replaces a job; never silently absorb another graph's
@@ -223,14 +244,48 @@ def delete(cfg, layer) -> None:
     note(f"deleting {name}")
 
 
+def _phase_cfg(cfg, workload):
+    """A config loaded for `workload` (per-workload job merge) carrying the -g override."""
+    c = config.load(cfg.source, workload=workload)
+    c.graph_id = cfg.graph_id
+    return c
+
+
+def _layer_plan(cfg, cached, top) -> None:
+    for layer in sorted(layer for layer in cached if layer <= top):
+        req = manifest.layer_requests(cfg.job, layer)
+        note(
+            f"    L{layer}: {cached[layer]} chunks · "
+            f"{req['cpu']} cpu / {req['memory']} per pod"
+        )
+
+
+def all_layers_plan(cfg, yes) -> None:
+    """Preview the single-workload all-layers run and confirm before any mutation."""
+    note(f"all-layers: graph '{cfg.graph_id}' ({cfg.source}) workload '{cfg.workload}'")
+    cached = util.cached_layer_counts(cfg)
+    if cached:
+        _layer_plan(cfg, cached, top_layer(cfg, cached))
+    else:
+        note("  layer counts are computed during setup")
+    if not yes:
+        click.confirm("proceed?", abort=True)
+
+
+def all_layers_run(cfg) -> None:
+    """Run every layer of the configured workload, with its setup; nothing else."""
+    if cfg.persistent_util:
+        kube.util_pod(cfg.namespace, wait_create=True)  # helm just created it
+    setup(cfg, exist_ok=True)
+    counts = util.read_layer_counts(cfg)
+    for layer in range(2, top_layer(cfg, counts) + 1):
+        run_layer(cfg, layer)
+    note(f"all layers complete ({cfg.workload})")
+
+
 def oneshot_plan(cfg, yes) -> None:
-    """Preview the full run and confirm before any cluster mutation."""
+    """Preview the end-to-end build and confirm before any cluster mutation."""
     mesh = "mesh_config" in cfg.dataset
-    phase_cfgs = []
-    for workload in ["ingest"] + (["meshing"] if mesh else []):
-        c = config.load(cfg.source, workload=workload)
-        c.graph_id = cfg.graph_id
-        phase_cfgs.append(c)
     note(
         f"oneshot: graph '{cfg.graph_id}' ({cfg.source}): "
         f"setup -> ingest L2..root{' -> mesh-meta -> meshing' if mesh else ''}"
@@ -239,17 +294,10 @@ def oneshot_plan(cfg, yes) -> None:
         note("  (no mesh_config in the dataset; meshing will be skipped)")
     cached = util.cached_layer_counts(cfg)
     if cached:
-        for c in phase_cfgs:  # validate each phase's curve with ITS merged job config
-            top = max(cached)
-            if c.workload == "meshing":
-                top = min(int(cfg.dataset["mesh_config"]["max_layer"]), top)
-            note(f"  {c.workload}:")
-            for layer in sorted(layer for layer in cached if layer <= top):
-                req = manifest.layer_requests(c.job, layer)
-                note(
-                    f"    L{layer}: {cached[layer]} chunks · "
-                    f"{req['cpu']} cpu / {req['memory']} per pod"
-                )
+        for workload in ["ingest"] + (["meshing"] if mesh else []):
+            c = _phase_cfg(cfg, workload)  # each phase's curve with ITS merged job config
+            note(f"  {workload}:")
+            _layer_plan(c, cached, top_layer(c, cached))
     else:
         note("  layer counts are computed during setup")
     if not yes:
@@ -258,24 +306,19 @@ def oneshot_plan(cfg, yes) -> None:
 
 def oneshot_run(cfg) -> None:
     """setup -> ingest L2..root -> mesh-meta -> meshing; resumable at every step."""
-    ingest_cfg = config.load(cfg.source, workload="ingest")
-    ingest_cfg.graph_id = cfg.graph_id  # carry a -g override
+    ingest_cfg = _phase_cfg(cfg, "ingest")
     if ingest_cfg.persistent_util:
         kube.util_pod(ingest_cfg.namespace, wait_create=True)  # helm just created it
-    setup(
-        ingest_cfg, exist_ok=True
-    )  # ask forgiveness: a fresh graph creates, a resume skips
+    setup(ingest_cfg, exist_ok=True)  # forgiveness: a fresh graph creates, a resume skips
     counts = util.read_layer_counts(ingest_cfg)
-    for layer in sorted(counts):
+    for layer in range(2, top_layer(ingest_cfg, counts) + 1):
         run_layer(ingest_cfg, layer)
     if "mesh_config" not in cfg.dataset:
         note("oneshot complete (no meshing)")
         return
-    mesh_cfg = config.load(cfg.source, workload="meshing")
-    mesh_cfg.graph_id = cfg.graph_id
-    mesh_meta(mesh_cfg)
-    top = min(int(cfg.dataset["mesh_config"]["max_layer"]), max(counts))
-    for layer in range(2, top + 1):
+    mesh_cfg = _phase_cfg(cfg, "meshing")
+    setup(mesh_cfg)  # mesh-meta
+    for layer in range(2, top_layer(mesh_cfg, counts) + 1):
         run_layer(mesh_cfg, layer)
     note("oneshot complete")
 

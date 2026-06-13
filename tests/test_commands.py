@@ -97,6 +97,25 @@ def test_setup_runs_migrate_setup_for_migrate_workload(monkeypatch, cfg):
     ]
 
 
+def test_setup_dispatches_meshing_to_mesh_meta(monkeypatch, cfg):
+    cfg.workload = "meshing"  # meshing's setup is mesh-meta, never ingest.setup
+    seen = _capture_run_with_dataset(monkeypatch)
+    run_cmd(cli.setup, [], cfg)
+    assert seen["argv"] == [
+        "python",
+        "-m",
+        "pychunkedgraph.pipeline.meshing.setup",
+        cfg.graph_id,
+    ]
+
+
+def test_meshing_submit_requires_mesh_meta(monkeypatch, cfg):
+    cfg.workload = "meshing"  # workers silently default mip=0 without it
+    monkeypatch.setattr(ops.util, "mesh_meta_written", lambda c: False)
+    with pytest.raises(SystemExit, match="mesh-meta"):
+        ops.submit(cfg, 2)
+
+
 def test_env_injected_into_job_and_oneshot(cfg):
     cfg.env = {"TASK_SIZE": "1", "PROCESS_MULTIPLIER": "5", "BIGTABLE_PROJECT": None}
     job = manifest.job_spec(cfg, layer=2, chunks=100, completions=1, parallelism=1)

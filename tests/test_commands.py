@@ -142,7 +142,9 @@ def test_api_errors_exit_cleanly(monkeypatch, cfg):
 
 
 def test_status_quiet_when_no_jobs(monkeypatch, cfg):
-    monkeypatch.setattr(cli.util, "read_layer_counts", lambda c: None)
+    # cached a-priori counts persist locally across runs; they are NOT evidence of a
+    # live deployment. With counts present but zero jobs, status must stay quiet.
+    monkeypatch.setattr(cli.util, "read_layer_counts", lambda c: {2: 847, 3: 144})
     monkeypatch.setattr(cli.kube, "list_jobs", lambda ns, workload=None: [])
     built = {}
     monkeypatch.setattr(
@@ -343,6 +345,21 @@ def test_undeploy_deletes_jobs_then_uninstalls_release(monkeypatch, cfg):
     run_cmd(cli.undeploy, [], cfg)
     assert deleted == ["ingest-l2", "pcg-dataset-g"]  # jobs, then dataset configmaps
     assert ran["argv"][:2] == ["helm", "uninstall"]
+
+
+def test_undeploy_clears_layer_counts_cache(monkeypatch, cfg, tmp_path):
+    # stale cached counts would phantom-fill `status` after teardown; undeploy drops them.
+    cfg.config_dir = str(tmp_path)
+    cli.util._write_cache(cfg, {cfg.graph_id: {"2": 847, "3": 144}})
+    monkeypatch.setattr(cli.kube, "list_jobs", lambda ns, workload=None: [])
+    monkeypatch.setattr(cli.kube, "list_configmaps", lambda ns, sel: [])
+    monkeypatch.setattr(
+        ops.subprocess,
+        "run",
+        lambda argv, **kw: SimpleNamespace(returncode=0, stdout="released", stderr=""),
+    )
+    run_cmd(cli.undeploy, [], cfg)
+    assert cli.util.cached_layer_counts(cfg) is None
 
 
 def test_helm_values_carry_secret(cfg):

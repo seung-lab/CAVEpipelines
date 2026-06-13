@@ -53,7 +53,9 @@ def deploy_infra(cfg, secrets_dir: str) -> None:
 
 
 def undeploy(cfg) -> None:
-    """Tear down everything deploy/submit created: Jobs, dataset ConfigMaps, helm release."""
+    """Tear down everything deploy/submit created: Jobs, dataset ConfigMaps, helm release,
+    and the local layer-counts cache. The cost db and terraform-managed infra (cluster,
+    identities, Bigtable) are untouched."""
     note("undeploy: deleting jobs, dataset configmaps + helm release")
     for job in kube.list_jobs(cfg.namespace):
         kube.delete_job(cfg.namespace, job.metadata.name)
@@ -69,6 +71,9 @@ def undeploy(cfg) -> None:
             f"helm uninstall failed (exit {res.returncode}):\n{res.stderr.strip()}"
         )
     note(res.stdout.strip() or res.stderr.strip() or "release removed")
+    # derived temp state; stale counts would otherwise phantom-fill `status`
+    util.invalidate_layer_counts(cfg)
+    note("cleared local layer-counts cache")
 
 
 def setup(cfg, exist_ok=False) -> None:

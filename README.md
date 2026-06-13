@@ -70,7 +70,7 @@ account each appear once.
 | `pipeline costs <layer>` | the layer's recorded Spot spend so far (from the local cost db; estimate) |
 | `pipeline delete <layer>` | delete the layer's Job and pods |
 | `pipeline reset` | forget the session config (the next `-c` selects a new one) |
-| `pipeline undeploy` | delete all pipeline Jobs + the helm release (KSA, ConfigMaps, util pod, secret) |
+| `pipeline undeploy` | delete all pipeline Jobs + the helm release (KSA, ConfigMaps, util pod, secret) + the local layer-counts cache |
 
 **One graph, one workload at a time** — both `graph_id` and `workload`
 (`ingest`/`l2cache`/`meshing`) live in `pipeline.yml`, so commands carry only a
@@ -444,7 +444,8 @@ failed index maps back to its coords).
 
 `pipeline undeploy` removes what the CLI created in-cluster — all pipeline Jobs, the
 per-graph dataset ConfigMaps, and the helm release (service account, env ConfigMap,
-util pod, and the credentials Secret with it); the cluster remains.
+util pod, and the credentials Secret with it), and clears the local layer-counts
+cache; the cost db and the cluster remain.
 
 `terraform destroy` removes everything terraform created — the Autopilot cluster
 (which takes the Jobs, pods, and secret with it) and the Workload-Identity service

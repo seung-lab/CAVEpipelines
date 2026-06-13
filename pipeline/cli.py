@@ -140,7 +140,9 @@ def deploy(cfg, secrets, run_setup, submit_l2, oneshot, all_layers, yes):
             note("pipeline ready; run `pipeline submit <layer>`")
 
 
-@cli.command(help="delete all pipeline Jobs and the helm release (incl. secret)")
+@cli.command(
+    help="delete all pipeline Jobs, the helm release (incl. secret) + layer-counts cache"
+)
 @pass_cfg
 def undeploy(cfg):
     ops.undeploy(cfg)
@@ -337,13 +339,13 @@ def top(cfg, layer, once, interval):
 @pass_cfg
 def status(cfg, once, interval):
     """Live progress over all layers (a-priori chunk counts); runs until Ctrl-C."""
-    try:
-        layer_totals = util.read_layer_counts(cfg)
-    except (SystemExit, Exception):  # noqa: BLE001 - totals are enrichment; degrade gracefully
-        layer_totals = None
-    if not layer_totals and not kube.list_jobs(cfg.namespace, cfg.workload):
-        note(f"no {cfg.workload} jobs in ns '{cfg.namespace}'")
+    if not kube.list_jobs(cfg.namespace, cfg.workload):  # deployed Jobs are the only
+        note(f"no {cfg.workload} jobs in ns '{cfg.namespace}'")  # evidence of a live run
         return
+    try:  # totals only enrich the table (fill pending-layer counts), so degrade gracefully
+        layer_totals = util.read_layer_counts(cfg)
+    except (SystemExit, Exception):  # noqa: BLE001
+        layer_totals = None
     if once:
         costdb.sample(cfg)
         Console().print(util.status_table(cfg, layer_totals))

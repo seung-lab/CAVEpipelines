@@ -159,16 +159,16 @@ def test_layer_counts_cache_round_trip(monkeypatch, cfg, tmp_path):
     calls = []
     monkeypatch.setattr(
         cli.util,
-        "run_pcg",
-        lambda c, name, argv, **kw: calls.append(name) or "import noise\n100 50 1\n",
+        "_query_meta",
+        lambda c, op, gid: calls.append(op) or "import noise\n100 50 1\n",
     )
     assert cli.util.read_layer_counts(cfg) == {2: 100, 3: 50, 4: 1}
     assert cli.util.read_layer_counts(cfg) == {2: 100, 3: 50, 4: 1}  # served from cache
-    assert calls == ["layer-counts"]  # ChunkedGraph hit exactly once
+    assert calls == ["counts"]  # ChunkedGraph hit exactly once
     assert cli.util.read_n(cfg, 3) == 50
     cli.util.invalidate_layer_counts(cfg)
     cli.util.read_layer_counts(cfg)
-    assert calls == ["layer-counts", "layer-counts"]  # recomputed after invalidate
+    assert calls == ["counts", "counts"]  # recomputed after invalidate
 
 
 def test_graph_id_flag_overrides_config(monkeypatch, cfg):
@@ -418,7 +418,7 @@ def test_all_commands_registered():
 def test_layer_counts_failure_is_loud(monkeypatch, cfg):
     # unparseable pod output must never be read as empty/zero counts
     monkeypatch.setattr(
-        cli.util, "run_pcg", lambda c, name, argv, **kw: "WARNING: only noise\n"
+        cli.util, "_query_meta", lambda c, op, gid: "WARNING: only noise\n"
     )
     with pytest.raises(SystemExit, match="could not read layer counts"):
         cli.util.read_layer_counts(cfg)

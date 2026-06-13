@@ -6,7 +6,7 @@ import re
 
 from kubernetes import client
 
-from . import config as cfgmod, note
+from . import cgcache, config as cfgmod, note
 from .costs import normalize_requests, parse_cpu, parse_mem
 
 INGEST_COMMAND = ["python", "-m", "pychunkedgraph.pipeline.ingest"]
@@ -326,6 +326,7 @@ def _util_deployment(cfg) -> dict:
             {
                 "name": "util",
                 "image": {"repository": repo, "tag": tag or "latest"},
+                "command": ["python", "-u", "-c", cgcache.SERVER_SRC, cgcache.CG_SOCK],
                 "volumeMounts": [
                     {
                         "name": "secrets-volume",

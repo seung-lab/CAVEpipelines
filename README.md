@@ -98,7 +98,7 @@ class are chosen per Job via nodeSelectors) and one Workload-Identity service
 account. No node pools, no Redis, default network. The cluster starts at zero nodes and
 scales back to zero when idle (Autopilot's autoscaler is the aggressive
 `OPTIMIZE_UTILIZATION` profile); a persistent util pod, if enabled, holds one small spot
-node between layers.
+node between layers, running the warm cg-cache server.
 
 Required roles: Kubernetes Engine Admin, Service Account Admin, Project IAM Admin.
 
@@ -164,8 +164,9 @@ ones, so one `secrets/` directory serves multiple projects.
 **Setup pods.** `setup`/`mesh-meta` run as one-shot pods mounting the graph's
 dataset ConfigMap (`pcg-dataset-<graph>`); per-graph maps coexist, and a fresh
 mount avoids kubelet ConfigMap sync lag. `submit` reads graph meta through a small
-spot util pod kept alive between layers (`persistent_util: true`) or a one-shot pod
-(`false`), letting the cluster idle at zero nodes.
+spot util pod that holds a warm cg-cache server, kept alive between layers
+(`persistent_util: true`), or a one-shot pod per probe (`false`), letting the cluster
+idle at zero nodes.
 
 Keep any number of projects side by side (e.g. `config/my_project.yml` paired to
 its dataset via the `dataset:` key); `-c` is the path to one (relative or absolute,
@@ -340,8 +341,8 @@ capture the main levers — operators mainly right-size requests and keep the de
   automatically. The CLI snaps every layer to the cheapest valid Autopilot request (≥ 250m/512Mi,
   1:1–1:6.5 cpu:mem) and refuses past the general-purpose ceiling instead of silently billing a
   pricier class — see [config/README.md](config/README.md).
-- **Scale to zero between layers** — `persistent_util: false` runs setup/meta in a one-shot pod, so
-  the cluster idles at zero nodes when no Job is running (no pods = no compute cost).
+- **Scale to zero between layers** — `persistent_util: false` runs setup/meta in a one-shot pod (no
+  warm server), so the cluster idles at zero nodes when no Job is running (no pods = no compute cost).
 - **System logs only** — the cluster ships only system logs to Cloud Logging (terraform
   `logging_config`); pod stdout stays on the kubelet, so chunk pods do not bill ~$0.50/GiB of
   log ingestion; `pipeline inspect` / `kubectl logs` still work.

@@ -7,42 +7,11 @@ from datetime import datetime, timezone
 import yaml
 from rich.table import Table
 
-from . import costdb, costs, kube, manifest, note
+from . import cgcache, costdb, costs, kube, manifest, note
 
-# In-pod snippet that reads the graph: prints the counts and exits 0, or prints
-# the real PCG traceback and exits non-zero (the CLI surfaces it verbatim — the
-# pipeline never interprets PCG errors). os._exit dodges the bigtable channel-thread
-# exit hang; the 30s cap fits a healthy init with headroom.
+# Cold ChunkedGraph init fits in 30s with headroom; the warm cg-cache server pays it
+# once at boot, so every later probe returns well within this.
 CG_TIMEOUT = 30
-
-# All layers' chunk counts (L2..root); cached locally, recomputed after setup.
-_COUNTS_CODE = """
-import os, sys, traceback
-try:
-    from pychunkedgraph.graph import ChunkedGraph
-    cg = ChunkedGraph(graph_id={gid!r})
-    print(*[int(c) for c in cg.meta.layer_chunk_counts])
-    sys.stdout.flush()
-    os._exit(0)
-except Exception:
-    traceback.print_exc()
-    sys.stderr.flush()
-    os._exit(1)
-"""
-
-# Has mesh-meta run? ("yes" iff the graph meta has a mesh block.)
-_MESH_META_CODE = """
-import os, sys, traceback
-try:
-    from pychunkedgraph.graph import ChunkedGraph
-    print("yes" if ChunkedGraph(graph_id={gid!r}).meta.custom_data.get("mesh") else "no")
-    sys.stdout.flush()
-    os._exit(0)
-except Exception:
-    traceback.print_exc()
-    sys.stderr.flush()
-    os._exit(1)
-"""
 
 
 def ceil_div(a, b):
@@ -63,6 +32,29 @@ def run_pcg(cfg, name, argv, timeout=300):
             on_line=lambda ln: note(f"  [{name}] {ln}"),
         )
     note(f"{name}: in one-shot pod")
+    return kube.run_oneshot(cfg.namespace, manifest.oneshot_pod_spec(cfg, name, argv))
+
+
+def _query_meta(cfg, op, gid) -> str:
+    """Run a cg meta probe ('counts'|'mesh') and return its stdout: the persistent util
+    pod's warm cg-cache server over its socket, else a one-shot pod that imports cg
+    inline. A PCG error surfaces via the non-zero exit, traceback already streamed."""
+    name = {"counts": "layer-counts", "mesh": "mesh-check"}[op]
+    if cfg.persistent_util:
+        pod = kube.util_pod(cfg.namespace)
+        note(f"{name}: in util pod")
+        argv = ["python", "-u", "-c", cgcache.CLIENT_SRC, cgcache.CG_SOCK, op, gid]
+        argv.append(str(CG_TIMEOUT))  # the client's own connect-retry deadline
+        # exec cap exceeds that deadline so the client's 'unreachable' message wins
+        return kube.exec_cmd(
+            cfg.namespace,
+            pod,
+            argv,
+            timeout=CG_TIMEOUT + 5,
+            on_line=lambda ln: note(f"  [{name}] {ln}"),
+        )
+    note(f"{name}: in one-shot pod")
+    argv = ["python", "-u", "-c", cgcache.ONESHOT_SRC, op, gid]
     return kube.run_oneshot(cfg.namespace, manifest.oneshot_pod_spec(cfg, name, argv))
 
 
@@ -130,12 +122,7 @@ def read_layer_counts(cfg) -> dict:
     cache = _read_cache(cfg)
     if cfg.graph_id in cache:
         return {int(k): v for k, v in cache[cfg.graph_id].items()}
-    out = run_pcg(
-        cfg,
-        "layer-counts",
-        ["python", "-u", "-c", _COUNTS_CODE.format(gid=cfg.graph_id)],
-        timeout=CG_TIMEOUT,
-    )
+    out = _query_meta(cfg, "counts", cfg.graph_id)
     for line in reversed(out.splitlines()):
         parts = line.split()
         if parts and all(p.isdigit() for p in parts):
@@ -158,12 +145,7 @@ def read_n(cfg, layer):
 
 def mesh_meta_written(cfg) -> bool:
     """Whether mesh-meta has run (graph meta has a mesh block). Read errors surface."""
-    out = run_pcg(
-        cfg,
-        "mesh-check",
-        ["python", "-u", "-c", _MESH_META_CODE.format(gid=cfg.graph_id)],
-        timeout=CG_TIMEOUT,
-    )
+    out = _query_meta(cfg, "mesh", cfg.graph_id)
     return out.strip().split("\n")[-1].strip() == "yes"
 
 

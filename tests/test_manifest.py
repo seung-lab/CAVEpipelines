@@ -1,7 +1,7 @@
 import pytest
 from kubernetes import client
 
-from pipeline import config, manifest
+from pipeline import cgcache, config, manifest
 
 
 def _job(cfg, **kw):
@@ -167,6 +167,8 @@ def test_helm_values_persistent_util_toggle(cfg):
     dep = manifest.helm_values(cfg)["deployments"][0]
     assert dep["nodeSelector"]["cloud.google.com/gke-spot"] == "true"
     assert dep["tolerations"][0]["effect"] == "NoSchedule"
+    # the persistent pod runs the warm cg-cache server, not the sleep-infinity default
+    assert cgcache.SERVER_SRC in dep["containers"][0]["command"]
     cfg.persistent_util = False
     assert "deployments" not in manifest.helm_values(cfg)  # idle -> 0 nodes
 

@@ -370,14 +370,18 @@ def test_all_commands_registered():
     } <= set(cli.cli.commands)
 
 
-def test_layer_counts_failures_are_loud(monkeypatch, cfg):
+def test_layer_counts_failure_is_loud(monkeypatch, cfg):
+    # unparseable pod output must never be read as empty/zero counts
     monkeypatch.setattr(
         cli.util, "run_pcg", lambda c, name, argv, **kw: "WARNING: only noise\n"
     )
     with pytest.raises(SystemExit, match="could not read layer counts"):
         cli.util.read_layer_counts(cfg)
-    monkeypatch.setattr(
-        cli.util, "run_pcg", lambda c, name, argv, **kw: "PIPELINE_NO_GRAPH\n"
-    )
-    with pytest.raises(SystemExit, match="not readable"):
-        cli.util.read_layer_counts(cfg)  # missing graph is distinguishable from infra
+
+
+def test_graph_exists_reads_a_clean_yes_no(monkeypatch, cfg):
+    # the resume path trusts a yes/no, never a swallowed error
+    monkeypatch.setattr(cli.util, "run_pcg", lambda c, name, argv, **kw: "yes")
+    assert cli.util.graph_exists(cfg) is True
+    monkeypatch.setattr(cli.util, "run_pcg", lambda c, name, argv, **kw: "no")
+    assert cli.util.graph_exists(cfg) is False

@@ -149,6 +149,6 @@ Bigtable is the only supported backend; leave unchanged.
 - `mip` — mip level to mesh at.
 - `max_layer` — highest layer to mesh and stitch to.
 - `max_error` — marching-cubes simplification error.
-- `chunk_size` — mesh chunk size `[x, y, z]` (mip-adjusted).
+- `chunk_size` — mesh chunk size `[x, y, z]`: `graph_config.CHUNK_SIZE` divided per axis by the mip's downsample factor (usually X/Y for anisotropic EM, Z unchanged).
 - `minishard_bits` — sharded-mesh minishard bits per layer, `{layer: bits}`.
 - `dynamic_mesh_dir` — directory for post-edit dynamic meshes. Use `dynamic` on `main`; on `pcgv3` the graph id is appended automatically (default `dynamic_<graph_id>`).

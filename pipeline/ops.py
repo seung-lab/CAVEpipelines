@@ -259,14 +259,11 @@ def oneshot_run(cfg) -> None:
     ingest_cfg.graph_id = cfg.graph_id  # carry a -g override
     if ingest_cfg.persistent_util:
         kube.util_pod(ingest_cfg.namespace, wait_create=True)  # helm just created it
-    try:
-        counts = util.read_layer_counts(ingest_cfg)
-        note("graph exists; skipping setup")
-    except SystemExit as exc:
-        if "not readable" not in str(exc):
-            raise  # infra failure — never guess; setup is not re-runnable
+    if util.graph_exists(ingest_cfg):  # a clean yes/no — never guess from an error
+        note(f"graph '{ingest_cfg.graph_id}' exists; skipping setup")
+    else:
         setup(ingest_cfg)
-        counts = util.read_layer_counts(ingest_cfg)
+    counts = util.read_layer_counts(ingest_cfg)
     for layer in sorted(counts):
         run_layer(ingest_cfg, layer)
     if "mesh_config" not in cfg.dataset:

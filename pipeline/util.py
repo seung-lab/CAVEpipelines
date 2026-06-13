@@ -9,19 +9,41 @@ from rich.table import Table
 
 from . import costdb, costs, kube, manifest, note
 
-# All layers' chunk counts (L2..root). ChunkedGraph init is costly, so this runs at most
-# once (os._exit dodges the bigtable channel-thread exit hang); the result is cached
-# locally and setup invalidates the cache so a re-setup recomputes.
+# In-pod snippets that touch the graph. Each prints its result and exits 0, or
+# prints the real PCG traceback and exits non-zero (the CLI surfaces it verbatim —
+# the pipeline never interprets PCG errors). os._exit dodges the bigtable
+# channel-thread exit hang; the 30s cap fits a healthy init/create with headroom.
+CG_TIMEOUT = 30
+
+# All layers' chunk counts (L2..root); cached locally, recomputed after setup.
 _COUNTS_CODE = """
-import os, sys
+import os, sys, traceback
 try:
     from pychunkedgraph.graph import ChunkedGraph
     cg = ChunkedGraph(graph_id={gid!r})
     print(*[int(c) for c in cg.meta.layer_chunk_counts])
+    sys.stdout.flush()
+    os._exit(0)
 except Exception:
-    print("PIPELINE_NO_GRAPH")
-sys.stdout.flush()
-os._exit(0)
+    traceback.print_exc()
+    sys.stderr.flush()
+    os._exit(1)
+"""
+
+# Does the graph's table exist? A clean yes/no via PCG's own existence primitive.
+_EXISTS_CODE = """
+import os, sys, traceback
+try:
+    from pychunkedgraph.graph import get_client_class, get_default_client_info
+    info = get_default_client_info()
+    client = get_client_class(info.TYPE)({gid!r}, config=info.CONFIG)
+    print("yes" if client._admin_table.exists() else "no")
+    sys.stdout.flush()
+    os._exit(0)
+except Exception:
+    traceback.print_exc()
+    sys.stderr.flush()
+    os._exit(1)
 """
 
 
@@ -29,14 +51,18 @@ def ceil_div(a, b):
     return -(-a // b)
 
 
-def run_pcg(cfg, name, argv):
+def run_pcg(cfg, name, argv, timeout=300):
     """Run a command in the PCG image: util pod (logs streamed live) or one-shot
     pod (log returned on completion)."""
     if cfg.persistent_util:
         pod = kube.util_pod(cfg.namespace)
         note(f"{name}: in util pod")
         return kube.exec_cmd(
-            cfg.namespace, pod, argv, on_line=lambda ln: note(f"  [{name}] {ln}")
+            cfg.namespace,
+            pod,
+            argv,
+            timeout=timeout,
+            on_line=lambda ln: note(f"  [{name}] {ln}"),
         )
     note(f"{name}: in one-shot pod")
     return kube.run_oneshot(cfg.namespace, manifest.oneshot_pod_spec(cfg, name, argv))
@@ -99,17 +125,31 @@ def cached_layer_counts(cfg) -> dict:
     return {int(k): v for k, v in cached.items()} if cached else None
 
 
+def graph_exists(cfg) -> bool:
+    """Whether the graph's table exists — a clean yes/no the resume path can trust.
+    A real failure (bad creds, unreachable Bigtable) raises with the PCG traceback."""
+    out = run_pcg(
+        cfg,
+        "graph-check",
+        ["python", "-u", "-c", _EXISTS_CODE.format(gid=cfg.graph_id)],
+        timeout=CG_TIMEOUT,
+    )
+    return out.strip().split("\n")[-1].strip() == "yes"
+
+
 def read_layer_counts(cfg) -> dict:
     """{layer: chunk_count} for every layer (L2..root). Cached locally after the first
-    read, so ChunkedGraph is initialized at most once per graph."""
+    read, so ChunkedGraph is initialized at most once per graph. Any read failure
+    raises with the PCG traceback already streamed above."""
     cache = _read_cache(cfg)
     if cfg.graph_id in cache:
         return {int(k): v for k, v in cache[cfg.graph_id].items()}
     out = run_pcg(
-        cfg, "layer-counts", ["python", "-u", "-c", _COUNTS_CODE.format(gid=cfg.graph_id)]
+        cfg,
+        "layer-counts",
+        ["python", "-u", "-c", _COUNTS_CODE.format(gid=cfg.graph_id)],
+        timeout=CG_TIMEOUT,
     )
-    if "PIPELINE_NO_GRAPH" in out:
-        raise SystemExit(f"graph '{cfg.graph_id}' is not readable (not created yet?)")
     for line in reversed(out.splitlines()):
         parts = line.split()
         if parts and all(p.isdigit() for p in parts):
@@ -118,7 +158,7 @@ def read_layer_counts(cfg) -> dict:
             _write_cache(cfg, cache)
             return counts
     raise SystemExit(
-        f"could not read layer counts for '{cfg.graph_id}'; pod output:\n{out}"
+        f"could not read layer counts for graph '{cfg.graph_id}'; pod output:\n{out}"
     )
 
 

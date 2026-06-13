@@ -225,8 +225,10 @@ bigtable mesh block). It derives `initial_ts` from a root sampled before any edi
 idempotent (re-meshing overwrites shards) and needs no per-chunk lock.
 
 Choosing `mesh_config` values:
-- **`mip` / `chunk_size`** — mesh at the `mip` the segmentation is downsampled to; `chunk_size`
-  must match the ChunkedGraph chunk size adjusted for that mip.
+- **`mip` / `chunk_size`** — mesh at the `mip` the segmentation is downsampled to. `chunk_size` is
+  the ChunkedGraph `CHUNK_SIZE` divided **per axis** by that mip's downsample factor
+  (`resolution(mip) / resolution(0)` from the watershed scales) — for anisotropic EM that is
+  usually X and Y, with Z unchanged; it is not one fixed axis.
 - **`max_error`** — marching-cubes simplification error, typically the largest dimension of the
   resolution at the chosen mip.
 - **`max_layer`** — highest layer to stitch to. Stitching memory grows ~8× per layer (a single

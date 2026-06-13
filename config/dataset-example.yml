@@ -21,7 +21,11 @@ mesh_config:
   mip: 0
   max_layer: 6
   max_error: 40
-  chunk_size: [512, 512, 256]
+  # CRITICAL: chunk_size = graph_config.CHUNK_SIZE divided per axis by the mip's
+  # downsample factor (resolution(mip)/resolution(0) from the watershed scales).
+  # For anisotropic EM that is usually [2^mip, 2^mip, 1] — X and Y shrink, Z is
+  # unchanged; at mip 0 it equals CHUNK_SIZE. Mismatched values mis-tile every mesh.
+  chunk_size: [512, 512, 128]
   minishard_bits:
     2: 1
     3: 3

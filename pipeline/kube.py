@@ -154,7 +154,10 @@ def exec_cmd(
             if partial[chan]:
                 on_line(partial[chan])
     if ws.returncode:
-        raise SystemExit(f"in-pod command exited {ws.returncode}: {' '.join(argv)}")
+        shown = " ".join(a if len(a) <= 60 else a[:57] + "..." for a in argv)
+        raise SystemExit(
+            f"in-pod command exited {ws.returncode} (traceback above): {shown}"
+        )
     return "".join(out_buf).strip()
 
 

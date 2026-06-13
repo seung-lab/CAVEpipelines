@@ -12,7 +12,7 @@ import click
 import yaml
 from kubernetes.client import ApiException
 
-from . import config, costdb, costs, kube, manifest, note, util
+from . import config, costdb, costs, kube, manifest, note, stages, util
 
 HELM_CHART = "helm"
 ONESHOT_POLL_SEC = 30
@@ -77,46 +77,18 @@ def undeploy(cfg) -> None:
 
 
 def setup(cfg, exist_ok=False) -> None:
-    """Run the configured workload's setup, dispatched by workload: ingest creates the
-    table, migrate preps it, meshing writes mesh metadata, l2cache needs none.
-    exist_ok lets ingest setup skip an already-created table (resume) instead of erroring."""
-    if cfg.workload == "meshing":
-        mesh_meta(cfg)  # mesh metadata is meshing's setup
-        return
-    if cfg.workload == "l2cache":
-        note("l2cache: no graph setup needed (graph already ingested)")
-        return
-    note(f"setup ({cfg.workload})")
-    if cfg.workload in ("migrate", "migrate_cleanup"):
-        # migrate reads everything from Bigtable; no dataset file involved
-        argv = ["python", "-m", "pychunkedgraph.pipeline.migrate.setup", cfg.graph_id]
-        note(util.run_pcg(cfg, "setup", argv) or "setup done")
-    else:  # ingest
-        argv = ["python", "-m", "pychunkedgraph.pipeline.ingest.setup", cfg.graph_id]
-        if cfg.dataset.get("ingest_config", {}).get("AGGLOMERATION"):
-            argv.append("--raw")  # an agglomeration source implies the raw input path
-        if exist_ok:
-            argv.append("--exist-ok")
-        note(util.run_with_dataset(cfg, "setup", argv) or "setup done")
-    util.invalidate_layer_counts(cfg)  # graph may have changed; recompute on next read
+    """Run the configured workload's setup (dispatched per stage)."""
+    stages.STAGES[cfg.workload].setup(cfg, exist_ok=exist_ok)
 
 
 def top_layer(cfg, counts) -> int:
-    """Highest layer to run for the configured workload: root for ingest/migrate,
-    capped at mesh_config.max_layer for meshing, a single L2 pass for l2cache."""
-    root = max(counts)
-    if cfg.workload == "meshing":
-        return min(int(cfg.dataset["mesh_config"]["max_layer"]), root)
-    if cfg.workload == "l2cache":
-        return 2
-    return root
+    """Highest layer to run for the configured workload (per stage)."""
+    return stages.STAGES[cfg.workload].top_layer(cfg, counts)
 
 
 def mesh_meta(cfg) -> None:
     """Write mesh metadata once (after ingest reaches root); needs `mesh_config:`."""
-    argv = ["python", "-m", "pychunkedgraph.pipeline.meshing.setup", cfg.graph_id]
-    note("mesh-meta: writing mesh metadata")
-    note(util.run_with_dataset(cfg, "mesh-meta", argv) or "mesh metadata written")
+    stages.STAGES["meshing"].setup(cfg)
 
 
 def _read_job(cfg, layer):

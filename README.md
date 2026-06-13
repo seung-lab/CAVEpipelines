@@ -31,7 +31,7 @@ pods absorb preemption; a cold Bigtable is ramped into gradually.
 3. **Run** — submit each layer and watch it to completion: `pipeline submit 2`,
    `pipeline status`, next layer ([§4 ingest](#4-ingest), [§5 meshing](#5-meshing),
    [§6 l2cache](#6-l2cache), [§7 migration](#7-migration)) — or let
-   `pipeline deploy --oneshot` chain setup → ingest → meshing end to end.
+   `pipeline deploy --oneshot` run the whole build DAG (ingest, then meshing/l2cache).
 4. **Spend** — every watch tick records pod runtimes locally;
    `pipeline costs <layer>` prices them ([Cost-effective compute](#cost-effective-compute)).
 5. **Teardown** — `pipeline undeploy`, then `terraform destroy` ([Teardown](#teardown)).
@@ -56,7 +56,7 @@ account each appear once.
 
 | command | does |
 |---|---|
-| `pipeline deploy` | `helm upgrade --install` the static infra + create the Secret from `secrets/` (`--setup` also runs `setup`; `--submit-l2` also submits layer 2; `--oneshot` = end-to-end ingest→mesh build (needs `workload: ingest`); `--all-layers` = all layers of the configured workload; `--yes` skips the confirmation) |
+| `pipeline deploy` | `helm upgrade --install` the static infra + create the Secret from `secrets/` (`--setup` also runs `setup`; `--submit-l2` also submits layer 2; `--oneshot` = build DAG, prompts for a start/end depth (or `--from`/`--to`), same-depth stages in parallel; `--all-layers` = the configured workload's layers; `--sequential` serializes parallel stages; `--yes` skips the prompt + confirmation) |
 | `pipeline setup` | create the graph table + meta — a one-shot pod mounting the graph's own dataset ConfigMap; raw agglomeration input enabled automatically when the dataset has `ingest_config.AGGLOMERATION` |
 | `pipeline mesh-meta` | write the graph's mesh metadata once (meshing only, after ingest reaches root) |
 | `pipeline submit <layer>` | submit (or re-submit) the layer's Indexed Job; ramp parallelism (refuses if the layer below is not 100% — `--force` to override) |
@@ -178,17 +178,21 @@ overrides `graph_id` per invocation
 
 Two whole-pipeline flags, mutually exclusive:
 
-- **`pipeline deploy --oneshot`** — the end-to-end build: setup → ingest L2→root →
-  `mesh-meta` → meshing L2→`mesh_config.max_layer`. It **requires `workload: ingest`**
-  (the build starts from ingest); with any other workload it errors and points to
-  `--all-layers`, so the yaml `workload:` is never silently overridden. Per-phase sizing
-  comes from `job.workloads`.
-- **`pipeline deploy --all-layers`** — runs **every layer of the configured `workload:`**
-  plus that workload's own setup, and nothing else. Use it to (re)run a single workload
-  end to end, e.g. `workload: meshing` → `mesh-meta` + meshing L2→max_layer, no ingest.
+- **`pipeline deploy --oneshot`** — runs the build DAG (ingest → meshing/l2cache). The build
+  always includes **ingest** and **meshing** (every build meshes); **l2cache** joins only when
+  the dataset declares `l2cache_config`. It
+  **displays the DAG and prompts for a start/end depth** (default full, top→bottom);
+  `--from N`/`--to N` set the depths non-interactively. Stages at the same depth run **in
+  parallel** (`--sequential` to serialize). The DAG only **orders** the selected stages —
+  upstream deps outside the selection are assumed already satisfied (by any means), so e.g.
+  `--from 1` runs meshing ∥ l2cache when ingest is already built. Refused only for
+  `workload: migrate`/`migrate_cleanup`. Per-stage sizing comes from `job.workloads`.
+- **`pipeline deploy --all-layers`** — runs **the configured `workload:`** (its setup +
+  every layer) and nothing else. E.g. `workload: meshing` → `mesh-meta` + meshing
+  L2→max_layer; its upstream (ingest) is the operator's responsibility, not verified.
 
-Both print the plan (phases, per-layer requests) and ask for confirmation (`--yes` to
-skip); re-running resumes — an existing graph skips setup, finished layers skip; a layer
+Both print the plan (the DAG batches, per-stage layer requests) and ask for confirmation
+(`--yes` to skip); re-running resumes — an existing graph skips setup, finished layers skip; a layer
 with dead tasks stops the run. Every command also logs the active workload at start.
 
 (`deploy`/`setup`/`submit` remain separate commands; the flags chain them for a

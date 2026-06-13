@@ -3,7 +3,8 @@
 **Index:** [pipeline.yml](#pipelineyml) — [env](#env) · [cost](#cost) · [tuning](#tuning-per-dataset) ·
 [resource curves](#how-per-layer-resources-scale) | [dataset.yml](#datasetyml) —
 [data_source](#data_source) · [graph_config](#graph_config) · [ingest_config](#ingest_config-optional) ·
-[backend_client](#backend_client) · [mesh_config](#mesh_config-meshing-only)
+[backend_client](#backend_client) · [mesh_config](#mesh_config-meshing-only) ·
+[l2cache_config](#l2cache_config-l2cache-optional)
 
 `config/` is the conventional home for run configs — two files per project:
 
@@ -38,7 +39,7 @@ from `pipeline.yml`'s `bigtable:`.
 | `namespace` | k8s namespace for all pods |
 | `graph_id` | the ChunkedGraph id (table name); `-g` overrides it per invocation |
 | `dataset` | dataset yaml, relative to the pipeline yaml's directory (default `dataset.yml`; subdirs ok) |
-| `workload` | `ingest` \| `l2cache` \| `meshing` \| `migrate` \| `migrate_cleanup` — the active workload; honored by every command. `deploy --all-layers` runs all its layers; `deploy --oneshot` (end-to-end ingest→mesh) requires `workload: ingest` |
+| `workload` | `ingest` \| `l2cache` \| `meshing` \| `migrate` \| `migrate_cleanup` — the active workload; honored by every command. `deploy --all-layers` runs its layers; `deploy --oneshot` runs a chosen depth range of the build DAG (ingest → meshing/l2cache, same-depth stages in parallel) regardless of this value, except migrate |
 | `persistent_util` | keep the spot util pod alive between layers running a warm cg-cache server (sub-second meta probes); `false` = a one-shot pod per probe (idle 0 nodes) |
 | `secret_files` | `{container_filename: local_path under ./secrets}`; must include `google-secret.json` — all Google clients authenticate with it |
 | `secret_name` | name of the k8s Secret built from `secret_files` (default `cloud-volume-secrets`) |
@@ -53,7 +54,7 @@ from `pipeline.yml`'s `bigtable:`.
 | `job.workloads.<name>` | per-workload deep-overrides of `job` (own `batch_size`, curves, ramp) |
 | `job.ramp.*` | parallelism ramp: `start`, `factor`, `period` (s), `max` |
 | `env` | extra env on every worker + setup pod (below) |
-| `commands` | container command for non-built-in workloads (only `l2cache` today) |
+| `commands` | container command for non-built-in workloads (only `l2cache` today); whether l2cache runs is driven by the dataset's `l2cache_config`, not by this entry |
 
 ### `env`
 
@@ -144,6 +145,10 @@ See the [graphene](https://github.com/seung-lab/cloud-volume/wiki/Graphene) wiki
 ### `backend_client`
 Bigtable is the only supported backend; leave unchanged.
 
+The dataset drives the build DAG: meshing is **required** (every `--oneshot` build meshes, so a
+build needs `mesh_config`), while l2cache is **optional** — it joins the build only when
+`l2cache_config` is present.
+
 ### `mesh_config` (meshing only)
 - `dir` — mesh directory inside the watershed CloudVolume (e.g. `graphene_meshes`).
 - `mip` — mip level to mesh at.
@@ -152,3 +157,7 @@ Bigtable is the only supported backend; leave unchanged.
 - `chunk_size` — mesh chunk size `[x, y, z]`: `graph_config.CHUNK_SIZE` divided per axis by the mip's downsample factor (usually X/Y for anisotropic EM, Z unchanged).
 - `minishard_bits` — sharded-mesh minishard bits per layer, `{layer: bits}`.
 - `dynamic_mesh_dir` — directory for post-edit dynamic meshes. Use `dynamic` on `main`; on `pcgv3` the graph id is appended automatically (default `dynamic_<graph_id>`).
+
+### `l2cache_config` (l2cache, optional)
+Its presence adds the optional l2cache stage to the build DAG (and holds l2cache parameters). The
+l2cache container command still comes from `pipeline.yml`'s `commands.l2cache`.

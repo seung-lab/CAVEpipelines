@@ -22,6 +22,7 @@ class Stage(Protocol):
     name: str
     deps: frozenset[str]
     build: bool
+    optional: bool
 
     def applies(self, cfg) -> bool: ...
     def setup(self, cfg, exist_ok: bool = False) -> None: ...
@@ -30,11 +31,12 @@ class Stage(Protocol):
 
 
 class BaseStage:
-    """Defaults our stages reuse: no deps, part of a build, always applies, root top
-    layer, no setup, no output dir."""
+    """Defaults our stages reuse: no deps, a required part of a build, always applies, root
+    top layer, no setup, no output dir."""
 
     deps: frozenset[str] = frozenset()
     build: bool = True
+    optional: bool = False  # an optional stage joins a build only when configured
 
     def applies(self, cfg) -> bool:
         return True
@@ -90,9 +92,10 @@ class Meshing(BaseStage):
 class L2Cache(BaseStage):
     name = "l2cache"
     deps = frozenset({"ingest"})
+    optional = True  # only part of a build when the dataset declares l2cache_config
 
     def applies(self, cfg) -> bool:
-        return bool(cfg.commands.get("l2cache"))
+        return "l2cache_config" in cfg.dataset
 
     def setup(self, cfg, exist_ok: bool = False) -> None:
         note("l2cache: no graph setup needed (graph already ingested)")
@@ -123,5 +126,8 @@ STAGES: dict[str, Stage] = {
 
 
 def build_set(cfg) -> set:
-    """Workloads a full build runs for this config: ingest + any applicable optional stage."""
-    return {s.name for s in STAGES.values() if s.build and s.applies(cfg)}
+    """Stages a full build runs: required build stages always, optional ones only when the
+    dataset configures them. Meshing is required; l2cache is optional (needs l2cache_config)."""
+    return {
+        s.name for s in STAGES.values() if s.build and (not s.optional or s.applies(cfg))
+    }

@@ -98,7 +98,7 @@ _LAYER = click.argument("layer", type=int)
 @click.option(
     "--oneshot",
     is_flag=True,
-    help="end-to-end build: setup -> ingest layers -> mesh-meta -> meshing (requires workload: ingest)",
+    help="build DAG; prompts for start/end depth (or --from/--to), independents in parallel",
 )
 @click.option(
     "--all-layers",
@@ -106,32 +106,43 @@ _LAYER = click.argument("layer", type=int)
     is_flag=True,
     help="run all layers of the configured workload (+ its setup), nothing else",
 )
+@click.option("--from", "start", type=int, help="--oneshot start depth (skip the prompt)")
+@click.option("--to", "end", type=int, help="--oneshot end depth (skip the prompt)")
+@click.option(
+    "--sequential",
+    is_flag=True,
+    help="run independent stages one at a time instead of in parallel",
+)
 @click.option(
     "--yes",
     is_flag=True,
-    help="skip the --oneshot/--all-layers confirmation (unattended)",
+    help="skip the --oneshot/--all-layers prompt + confirmation (unattended, full range)",
 )
 @pass_cfg
-def deploy(cfg, secrets, run_setup, submit_l2, oneshot, all_layers, yes):
+def deploy(
+    cfg, secrets, run_setup, submit_l2, oneshot, all_layers, start, end, sequential, yes
+):
     if oneshot and all_layers:
         raise SystemExit("--oneshot and --all-layers are mutually exclusive")
     if (oneshot or all_layers) and (run_setup or submit_l2):
         raise SystemExit("--oneshot/--all-layers supersede --setup/--submit-l2")
     if submit_l2 and not run_setup:
         raise SystemExit("--submit-l2 requires --setup")
-    if oneshot and cfg.workload != "ingest":  # honor the yaml; never silently re-ingest
-        raise SystemExit(
-            f"--oneshot builds from ingest, but workload is '{cfg.workload}'; use --all-layers"
-        )
+    if oneshot and cfg.workload in ("migrate", "migrate_cleanup"):
+        raise SystemExit(f"'{cfg.workload}' is not part of a build; use --all-layers")
+    parallel = not sequential
+    run_set = None
     if oneshot:
-        ops.oneshot_plan(cfg, yes)  # confirm before any cluster mutation
+        run_set = ops.select_range(cfg, start, end, yes)  # DAG + start/end prompt
     elif all_layers:
-        ops.all_layers_plan(cfg, yes)
+        run_set = {cfg.workload}
+    if run_set is not None:
+        ops.confirm_run(
+            cfg, run_set, parallel, yes
+        )  # confirm before any cluster mutation
     ops.deploy_infra(cfg, secrets)
-    if oneshot:
-        ops.oneshot_run(cfg)
-    elif all_layers:
-        ops.all_layers_run(cfg)
+    if run_set is not None:
+        ops.orchestrate(cfg, run_set, parallel)
     elif run_setup:
         ops.setup(cfg)
         if submit_l2:

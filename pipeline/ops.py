@@ -4,6 +4,8 @@ cli.py stays lean (argument parsing + read-only presentation); these are plain
 functions with no click context, so `deploy --oneshot` composes them directly.
 """
 
+import concurrent.futures
+import graphlib
 import subprocess
 import tempfile
 import time
@@ -238,67 +240,116 @@ def _layer_plan(cfg, cached, top) -> None:
         note(f"    L{layer}: {cached[layer]} chunks | {vcpu:g} cpu, {gib:g}Gi per pod")
 
 
-def all_layers_plan(cfg, yes) -> None:
-    """Preview the single-workload all-layers run and confirm before any mutation."""
-    note(f"all-layers: graph '{cfg.graph_id}' ({cfg.source}) workload '{cfg.workload}'")
-    cached = util.cached_layer_counts(cfg)
-    if cached:
-        _layer_plan(cfg, cached, top_layer(cfg, cached))
-    else:
-        note("  layer counts are computed during setup")
-    if not yes:
-        click.confirm("proceed?", abort=True)
-
-
-def all_layers_run(cfg) -> None:
-    """Run every layer of the configured workload, with its setup; nothing else."""
+def orchestrate(cfg, run_set, parallel=True) -> None:
+    """Run `run_set`; the DAG only orders it (independents run in parallel unless `parallel`
+    is False). Deps outside run_set are assumed satisfied — the operator owns the selection;
+    a truly-missing upstream surfaces as that stage's own worker failure."""
     if cfg.persistent_util:
         kube.util_pod(cfg.namespace, wait_create=True)  # helm just created it
-    setup(cfg, exist_ok=True)
-    counts = util.read_layer_counts(cfg)
-    for layer in range(2, top_layer(cfg, counts) + 1):
-        run_layer(cfg, layer)
-    note(f"all layers complete ({cfg.workload})")
+    ts = graphlib.TopologicalSorter({w: stages.STAGES[w].deps & run_set for w in run_set})
+    ts.prepare()  # a dependency cycle fails loud here
+    while ts.is_active():
+        ready = list(ts.get_ready())
+        _run_ready(cfg, ready, parallel)
+        ts.done(*ready)  # only on success -> a failed batch halts downstream stages
+    note("orchestrate: all workloads complete")
 
 
-def oneshot_plan(cfg, yes) -> None:
-    """Preview the end-to-end build and confirm before any cluster mutation."""
-    mesh = "mesh_config" in cfg.dataset
-    note(
-        f"oneshot: graph '{cfg.graph_id}' ({cfg.source}): "
-        f"setup -> ingest L2..root{' -> mesh-meta -> meshing' if mesh else ''}"
-    )
-    if not mesh:
-        note("  (no mesh_config in the dataset; meshing will be skipped)")
+def _run_ready(cfg, ready, parallel) -> None:
+    """Run a batch of ready workloads — concurrently when parallel, else serially."""
+    cfgs = {w: _phase_cfg(cfg, w) for w in ready}
+    if not parallel or len(ready) == 1:
+        for w in ready:
+            run_workload(cfgs[w])
+        return
+    util.read_layer_counts(cfgs[ready[0]])  # warm the shared cache before threads read it
+    errors = {}
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=len(ready))
+    try:
+        futs = {ex.submit(run_workload, cfgs[w]): w for w in ready}
+        for fut in concurrent.futures.as_completed(futs):
+            try:
+                fut.result()
+            except KeyboardInterrupt:
+                raise
+            except SystemExit as exc:
+                errors[futs[fut]] = str(exc)
+            except Exception as exc:  # noqa: BLE001 - report every failure, not the first
+                errors[futs[fut]] = repr(exc)
+    except KeyboardInterrupt:
+        ex.shutdown(
+            wait=False, cancel_futures=True
+        )  # Jobs keep running; re-run to resume
+        raise
+    finally:
+        ex.shutdown(wait=False)
+    if errors:
+        detail = "; ".join(f"{w}: {m}" for w, m in sorted(errors.items()))
+        raise SystemExit(f"workload(s) failed: {detail} — fix and re-run to resume")
+
+
+def run_workload(cfg_w) -> None:
+    """Run every layer of one workload, with its setup."""
+    setup(cfg_w, exist_ok=True)  # forgiveness: a fresh graph creates, a resume skips
+    counts = util.read_layer_counts(cfg_w)
+    for layer in range(2, top_layer(cfg_w, counts) + 1):
+        run_layer(cfg_w, layer)
+    note(f"all layers complete ({cfg_w.workload})")
+
+
+def dag_levels(run_set) -> list:
+    """Topological depth levels of run_set, e.g. [['ingest'], ['l2cache', 'meshing']]."""
+    ts = graphlib.TopologicalSorter({w: stages.STAGES[w].deps & run_set for w in run_set})
+    ts.prepare()
+    levels = []
+    while ts.is_active():
+        batch = sorted(ts.get_ready())
+        levels.append(batch)
+        ts.done(*batch)
+    return levels
+
+
+def select_range(cfg, start, end, yes) -> set:
+    """The operator's start..end depth of the build DAG -> the run set. Displays the DAG and
+    prompts for any unset depth (unless `yes`, which defaults to the full top->bottom range)."""
+    levels = dag_levels(stages.build_set(cfg))
+    last = len(levels) - 1
+    if not yes and (start is None or end is None):
+        note(f"build DAG for graph '{cfg.graph_id}':")
+        for depth, batch in enumerate(levels):
+            note(f"  {depth}  {', '.join(batch)}")
+        if start is None:
+            start = click.prompt("start depth", default=0, type=int)
+        if end is None:
+            end = click.prompt("end depth", default=last, type=int)
+    start, end = (0 if start is None else start), (last if end is None else end)
+    if not 0 <= start <= end <= last:
+        raise SystemExit(f"depth range {start}..{end} is outside 0..{last}")
+    return {w for batch in levels[start : end + 1] for w in batch}
+
+
+def confirm_run(cfg, run_set, parallel, yes) -> None:
+    """Validate the selected stages are configured, preview the run, and confirm — all
+    before any mutation."""
+    for w in sorted(run_set):
+        if not stages.STAGES[w].applies(cfg):
+            raise SystemExit(
+                f"stage '{w}' is selected but not configured in the dataset "
+                f"(meshing needs `mesh_config`, l2cache needs `l2cache_config`)"
+            )
+    note(f"run: graph '{cfg.graph_id}' ({cfg.source}) -> {sorted(run_set)}")
     cached = util.cached_layer_counts(cfg)
-    if cached:
-        for workload in ["ingest"] + (["meshing"] if mesh else []):
-            c = _phase_cfg(cfg, workload)  # each phase's curve with ITS merged job config
-            note(f"  {workload}:")
-            _layer_plan(c, cached, top_layer(c, cached))
-    else:
+    for batch in dag_levels(run_set):
+        tag = " (parallel)" if parallel and len(batch) > 1 else ""
+        note(f"  {' + '.join(batch)}{tag}")
+        for w in batch:
+            if cached:
+                c = _phase_cfg(cfg, w)
+                _layer_plan(c, cached, top_layer(c, cached))
+    if not cached:
         note("  layer counts are computed during setup")
     if not yes:
         click.confirm("proceed?", abort=True)
-
-
-def oneshot_run(cfg) -> None:
-    """setup -> ingest L2..root -> mesh-meta -> meshing; resumable at every step."""
-    ingest_cfg = _phase_cfg(cfg, "ingest")
-    if ingest_cfg.persistent_util:
-        kube.util_pod(ingest_cfg.namespace, wait_create=True)  # helm just created it
-    setup(ingest_cfg, exist_ok=True)  # forgiveness: a fresh graph creates, a resume skips
-    counts = util.read_layer_counts(ingest_cfg)
-    for layer in range(2, top_layer(ingest_cfg, counts) + 1):
-        run_layer(ingest_cfg, layer)
-    if "mesh_config" not in cfg.dataset:
-        note("oneshot complete (no meshing)")
-        return
-    mesh_cfg = _phase_cfg(cfg, "meshing")
-    setup(mesh_cfg)  # mesh-meta
-    for layer in range(2, top_layer(mesh_cfg, counts) + 1):
-        run_layer(mesh_cfg, layer)
-    note("oneshot complete")
 
 
 def run_layer(cfg, layer) -> None:

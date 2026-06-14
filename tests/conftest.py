@@ -7,6 +7,16 @@ import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 from pipeline import config  # noqa: E402
+from pipeline.db import base  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _isolate_db_caches():
+    """Reset the process-global engine cache + create-once set after each test, so DB
+    state (or a test that deletes its db) never leaks into the next."""
+    yield
+    base._engine.cache_clear()
+    base._initialized.clear()
 
 
 @pytest.fixture

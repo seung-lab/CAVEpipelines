@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 import yaml
 from rich.table import Table
 
-from . import cgcache, costdb, costs, kube, manifest, note
+from . import cgcache, costs, kube, manifest, note
+from .db import cost
 
 # Cold ChunkedGraph init fits in 30s with headroom; the warm cg-cache server pays it
 # once at boot, so every later probe returns well within this.
@@ -210,26 +211,22 @@ def recorded_costs(cfg, rate_table) -> tuple:
     """({layer: priced totals}, cluster fee) from the local cost record."""
     per_layer = {}
     now = datetime.now(timezone.utc).timestamp()
-    conn = costdb.connect(cfg)
-    try:
-        jobs = costdb.job_rows(conn)
-        for j in jobs:
-            rate = costs.rate_for(rate_table, cfg.region, j["compute_class"])
-            if not rate:
-                continue
-            usage = costs.usage_from_rows(j, costdb.pod_rows(conn, j["job_uid"]), now)
-            priced = costs.price_usage(usage, rate)
-            agg = per_layer.setdefault(
-                j["layer"],
-                {"total": 0.0, "cpu": 0.0, "mem": 0.0, "pod_hours": 0.0, "basis": set()},
-            )
-            for key in ("total", "cpu", "mem"):
-                agg[key] += priced[key]
-            agg["pod_hours"] += usage["pod_hours"]
-            agg["basis"].add(usage["basis"])
-        cluster_fee = costs.fee(rate_table, cfg.region, jobs, now)
-    finally:
-        conn.close()
+    jobs = cost.jobs(cfg)
+    for j in jobs:
+        rate = costs.rate_for(rate_table, cfg.region, j.compute_class)
+        if not rate:
+            continue
+        usage = costs.usage_from_rows(j, cost.pods(cfg, j.job_uid), now)
+        priced = costs.price_usage(usage, rate)
+        agg = per_layer.setdefault(
+            j.layer,
+            {"total": 0.0, "cpu": 0.0, "mem": 0.0, "pod_hours": 0.0, "basis": set()},
+        )
+        for key in ("total", "cpu", "mem"):
+            agg[key] += priced[key]
+        agg["pod_hours"] += usage["pod_hours"]
+        agg["basis"].add(usage["basis"])
+    cluster_fee = costs.fee(rate_table, cfg.region, jobs, now)
     for agg in per_layer.values():
         agg["basis"] = "+".join(sorted(agg["basis"]))
     return per_layer, cluster_fee

@@ -356,9 +356,10 @@ capture the main levers — operators mainly right-size requests and keep the de
   the same billing account already consumes it, this cluster's fee applies in full.
 
 Costs are **recorded, not derived**: whenever the CLI watches the cluster (each `pipeline status`
-tick, `submit`'s ramp, `pipeline costs`), it samples every pod's runtime into a local SQLite db
-(`costs/<graph>.<workload>.db`) and prices the record at read time from
-[rates.csv](pipeline/rates.csv). Kubernetes
+tick, `submit`'s ramp, `pipeline costs`), it samples every pod's runtime into the cost database —
+a SQLAlchemy URL (`database.cost`, default a local SQLite file under `costs/`), so the same record
+lives on a shared server by changing one config line. Rows are scoped by graph and workload, and
+priced at read time from [rates.csv](pipeline/rates.csv). Kubernetes
 deletes finished pods (their runtimes with them), so the recorded history is the only number that
 survives a run; completions that finished unwatched are backfilled from the mean observed runtime
 (flagged in the printed `basis`), and the $0.10/hr cluster fee is charged once over the union of

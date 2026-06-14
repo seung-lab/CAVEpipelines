@@ -8,6 +8,7 @@ dependencies = [
     "kubernetes>=29",
     "PyYAML>=6.0",
     "rich>=13",
+    "SQLAlchemy>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -21,7 +22,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["pipeline"]
+packages = ["pipeline", "pipeline.db"]
 
 [tool.setuptools.package-data]
 pipeline = ["rates.csv"]

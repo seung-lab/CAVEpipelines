@@ -176,7 +176,7 @@ def test_run_layer_skips_complete_layers(monkeypatch, cfg, make_job):
 
 def test_run_layer_attaches_and_stops_on_dead_tasks(monkeypatch, cfg, make_job):
     job = make_job(conditions=_CONDS["running"], succeeded=5, failed_indexes="0-3")
-    monkeypatch.setattr(ops.costdb, "sample", lambda c: None)
+    monkeypatch.setattr(ops.cost, "sample", lambda c: None)
     monkeypatch.setattr(ops, "_read_job", lambda c, layer: job)
     submitted = []
     monkeypatch.setattr(ops, "submit", lambda c, layer: submitted.append(True))
@@ -188,7 +188,7 @@ def test_run_layer_attaches_and_stops_on_dead_tasks(monkeypatch, cfg, make_job):
 def test_run_layer_stops_cleanly_when_job_vanishes(monkeypatch, cfg, make_job):
     job = make_job(conditions=_CONDS["running"])
     reads = iter([job, None])  # present at attach, deleted before the first poll
-    monkeypatch.setattr(ops.costdb, "sample", lambda c: None)
+    monkeypatch.setattr(ops.cost, "sample", lambda c: None)
     monkeypatch.setattr(ops, "_read_job", lambda c, layer: next(reads))
     with pytest.raises(SystemExit, match="disappeared"):
         ops.run_layer(cfg, 2)

@@ -14,7 +14,8 @@ import click
 import yaml
 from kubernetes.client import ApiException
 
-from . import config, costdb, costs, kube, manifest, note, stages, util
+from . import config, costs, kube, manifest, note, stages, util
+from .db import cost
 
 HELM_CHART = "helm"
 ONESHOT_POLL_SEC = 30
@@ -158,17 +159,17 @@ def submit(cfg, layer, force=False) -> None:
     req = spec.spec.template.spec.containers[0].resources.requests
     vcpu = costs.parse_cpu(req["cpu"])  # millicores/bytes -> readable cores / GiB
     gib = costs.parse_mem(req["memory"])
-    cost = ""
+    spot_note = ""
     rate = costs.rate_for(costs.load_table(), cfg.region, cfg.job.compute_class)
     if rate:
         try:  # cost is auxiliary, never fatal
             burn = vcpu * rate["cpu_spot"] + gib * rate["mem_spot"]
-            cost = f" | ~${burn:.4f}/pod-hr spot"
+            spot_note = f" | ~${burn:.4f}/pod-hr spot"
         except Exception:  # noqa: BLE001
             pass
     note(
         f"{name}: {n} chunks, batch {batch}, {completions} tasks | "
-        f"workers {parallelism}->{pmax} | {vcpu:g} cpu, {gib:g}Gi per pod{cost}"
+        f"workers {parallelism}->{pmax} | {vcpu:g} cpu, {gib:g}Gi per pod{spot_note}"
     )
     kube.recreate_job(cfg.namespace, spec)
     full = "at full parallelism; watch with `pipeline status`"
@@ -179,8 +180,8 @@ def submit(cfg, layer, force=False) -> None:
         kube.set_parallelism(cfg.namespace, name, p)
         tail = f" ({full})" if p >= pmax else ""  # the step that maxes carries it inline
         note(f"  parallelism -> {p}/{pmax}{tail}")
-        costdb.sample(cfg)
-    costdb.sample(cfg)
+        cost.sample(cfg)
+    cost.sample(cfg)
     if parallelism >= pmax:  # already maxed: no ramp line to carry the note
         note(full)
 
@@ -365,7 +366,7 @@ def run_layer(cfg, layer) -> None:
     else:  # absent, failed, or a leftover sample run -> (re)submit replaces it
         submit(cfg, layer)
     while True:
-        costdb.sample(cfg)  # pod runtimes are durable once recorded
+        cost.sample(cfg)  # pod runtimes are durable once recorded
         job = _read_job(cfg, layer)
         if job is None:
             raise SystemExit(

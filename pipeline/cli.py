@@ -17,7 +17,8 @@ from rich.console import Console
 from rich.live import Live
 from rich.table import Table
 
-from . import NOTE, config, costdb, costs, kube, log, manifest, note, ops, util
+from . import NOTE, config, costs, kube, log, manifest, note, ops, util
+from .db import cost
 
 
 @click.group(help=__doc__, context_settings={"help_option_names": ["-h", "--help"]})
@@ -358,13 +359,13 @@ def status(cfg, once, interval):
     except (SystemExit, Exception):  # noqa: BLE001
         layer_totals = None
     if once:
-        costdb.sample(cfg)
+        cost.sample(cfg)
         Console().print(util.status_table(cfg, layer_totals))
         return
     try:
         with Live(refresh_per_second=4) as live:
             while True:  # stays up across layers; Ctrl-C to stop
-                costdb.sample(cfg)  # pod runtimes are durable once recorded
+                cost.sample(cfg)  # pod runtimes are durable once recorded
                 live.update(util.status_table(cfg, layer_totals))
                 time.sleep(interval)
     except KeyboardInterrupt:
@@ -391,7 +392,7 @@ def show_costs(cfg, layer):
             f"or run `python -m pipeline.rates`"
         )
         return
-    costdb.sample(cfg)
+    cost.sample(cfg)
     try:
         per_layer, _ = util.recorded_costs(cfg, rate_table)
     except Exception as exc:  # noqa: BLE001 - cost is auxiliary, never fatal

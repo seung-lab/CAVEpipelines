@@ -3,7 +3,7 @@
 Autopilot bills pod resource *requests* (not usage) per second; for pod-based
 compute classes (general-purpose / Balanced / Scale-Out) the node machine type is
 irrelevant, so recorded quantity-hours x the class rate is structurally exact.
-The runtimes come from the local costdb samples — never from live cluster state,
+The runtimes come from the local cost db samples — never from live cluster state,
 which Kubernetes garbage-collects. This is an estimate, not the invoice.
 """
 
@@ -105,7 +105,7 @@ def rate_for(table: dict, region: str, compute_class: str):
     return table.get(region, {}).get(compute_class or _GENERAL)
 
 
-def usage_from_rows(job_row, pod_rows, now: float) -> dict:
+def usage_from_rows(job, pods, now: float) -> dict:
     """Quantity-hours for one recorded Job; backfills pods that were never observed.
 
     Observed pods accrue started->finished (or ->now while live). A closed-out
@@ -115,33 +115,33 @@ def usage_from_rows(job_row, pod_rows, now: float) -> dict:
     cpu_h = mem_h = pod_h = 0.0
     durations = []
     succeeded_seen = 0
-    for p in pod_rows:
-        if p["started_at"] is None:
+    for p in pods:
+        if p.started_at is None:
             continue
-        hours = max(0.0, (p["finished_at"] or now) - p["started_at"]) / 3600
+        hours = max(0.0, (p.finished_at or now) - p.started_at) / 3600
         pod_h += hours
-        cpu_h += p["cpu_req"] * hours
-        mem_h += p["mem_req"] * hours
-        if p["finished_at"]:
+        cpu_h += p.cpu_req * hours
+        mem_h += p.mem_req * hours
+        if p.finished_at:
             durations.append(hours)
-        if p["phase"] in ("Succeeded", "Gone"):
+        if p.phase in ("Succeeded", "Gone"):
             succeeded_seen += 1
     basis = "observed"
-    missing = max(0, (job_row["succeeded"] or 0) - succeeded_seen)
+    missing = max(0, (job.succeeded or 0) - succeeded_seen)
     if missing and durations:
         mean = sum(durations) / len(durations)
         pod_h += missing * mean
-        cpu_h += missing * job_row["cpu_req"] * mean
-        mem_h += missing * job_row["mem_req"] * mean
+        cpu_h += missing * job.cpu_req * mean
+        mem_h += missing * job.mem_req * mean
         basis = "observed+backfill"
-    elif pod_h == 0.0 and job_row["started_at"] is not None:
-        wall = max(0.0, (job_row["finished_at"] or now) - job_row["started_at"]) / 3600
-        count = (job_row["succeeded"] or 0) + (job_row["active"] or 0)
+    elif pod_h == 0.0 and job.started_at is not None:
+        wall = max(0.0, (job.finished_at or now) - job.started_at) / 3600
+        count = (job.succeeded or 0) + (job.active or 0)
         # tasks never run all at once; true pod-hours <= wall x peak workers
-        workers = min(job_row["parallelism"] or count, count)
+        workers = min(job.parallelism or count, count)
         pod_h = wall * workers
-        cpu_h = job_row["cpu_req"] * pod_h
-        mem_h = job_row["mem_req"] * pod_h
+        cpu_h = job.cpu_req * pod_h
+        mem_h = job.mem_req * pod_h
         basis = "wall"
     return {
         "cpu_hours": cpu_h,
@@ -172,15 +172,13 @@ def union_hours(intervals) -> float:
     return total / 3600
 
 
-def fee(table: dict, region: str, job_rows, now: float) -> float:
+def fee(table: dict, region: str, jobs, now: float) -> float:
     """Cluster fee over the union of job wall spans — charged once, never per layer."""
     rate = next(iter(table.get(region, {}).values()), None)
     if not rate:
         return 0.0
     spans = [
-        (j["started_at"], j["finished_at"] or now)
-        for j in job_rows
-        if j["started_at"] is not None
+        (j.started_at, j.finished_at or now) for j in jobs if j.started_at is not None
     ]
     return rate["cluster_fee_hr"] * union_hours(spans)
 

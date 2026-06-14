@@ -90,6 +90,9 @@ class Config:
     secret_files: dict = field(default_factory=dict)
     commands: dict = field(default_factory=dict)
     env: dict = field(default_factory=dict)
+    database: dict = field(
+        default_factory=dict
+    )  # {cost, state} URLs; default local SQLite
     region: str = (
         ""  # GKE region; selects the cost rate row (no default — set per cluster)
     )
@@ -171,6 +174,7 @@ def load(name: str = None, workload: str = None) -> Config:
         secret_files=raw.get("secret_files") or {},
         commands=raw.get("commands") or {},
         env=raw.get("env") or {},
+        database=raw.get("database") or {},
         region=raw.get("region", ""),
         zone=raw.get("zone", ""),
         config_dir=config_dir,

@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from pipeline import costs, rates
 
 REGION = "us-east1"
@@ -14,26 +16,26 @@ HOUR = 3600.0
 
 
 def _job_row(cpu=1.0, mem=2.0, succeeded=0, active=0, start=0.0, end=None, workers=0):
-    return {
-        "cpu_req": cpu,
-        "mem_req": mem,
-        "succeeded": succeeded,
-        "active": active,
-        "started_at": start,
-        "finished_at": end,
-        "compute_class": "",
-        "parallelism": workers,
-    }
+    return SimpleNamespace(
+        cpu_req=cpu,
+        mem_req=mem,
+        succeeded=succeeded,
+        active=active,
+        started_at=start,
+        finished_at=end,
+        compute_class="",
+        parallelism=workers,
+    )
 
 
 def _pod_row(start, end, phase="Succeeded", cpu=1.0, mem=2.0):
-    return {
-        "started_at": start,
-        "finished_at": end,
-        "phase": phase,
-        "cpu_req": cpu,
-        "mem_req": mem,
-    }
+    return SimpleNamespace(
+        started_at=start,
+        finished_at=end,
+        phase=phase,
+        cpu_req=cpu,
+        mem_req=mem,
+    )
 
 
 def test_parse_cpu_mem_units():

@@ -235,7 +235,7 @@ def test_submit_sizes_job_and_ramps_to_pmax(monkeypatch, cfg, make_job):
     created, scaled = [], []
     monkeypatch.setattr(cli.kube, "recreate_job", lambda ns, s: created.append(s))
     monkeypatch.setattr(cli.kube, "set_parallelism", lambda ns, n, p: scaled.append(p))
-    monkeypatch.setattr(ops.costdb, "sample", lambda c: None)
+    monkeypatch.setattr(ops.cost, "sample", lambda c: None)
     monkeypatch.setattr(ops.time, "sleep", lambda s: None)
     ops.submit(cfg, 2)
     spec = created[0].spec
@@ -251,7 +251,7 @@ def test_submit_uses_the_layer_adjusted_batch(monkeypatch, cfg, make_job):
     created = []
     monkeypatch.setattr(cli.kube, "recreate_job", lambda ns, s: created.append(s))
     monkeypatch.setattr(cli.kube, "set_parallelism", lambda ns, n, p: None)
-    monkeypatch.setattr(ops.costdb, "sample", lambda c: None)
+    monkeypatch.setattr(ops.cost, "sample", lambda c: None)
     monkeypatch.setattr(ops.time, "sleep", lambda s: None)
     ops.submit(cfg, 3)
     # completions and the worker's batch annotation must agree, or tasks mis-slice

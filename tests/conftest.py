@@ -11,7 +11,7 @@ from pipeline import config  # noqa: E402
 
 @pytest.fixture
 def cfg(tmp_path):
-    # config_dir isolated per test: never read/write the repo's real config/
+    # config_dir + databases isolated per test: never touch the repo's real config/ or costs/
     return config.Config(
         namespace="ns",
         graph_id="g",
@@ -23,6 +23,7 @@ def cfg(tmp_path):
         dataset={"data_source": {"EDGES": "gs://b/e"}},
         job=config.Job(perm_seed=7, batch_size=1000, compute_class="Balanced"),
         config_dir=str(tmp_path),
+        database={"cost": f"sqlite:///{tmp_path}/cost.db"},
     )
 
 

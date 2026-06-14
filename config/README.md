@@ -55,6 +55,7 @@ from `pipeline.yml`'s `bigtable:`.
 | `job.ramp.*` | parallelism ramp: `start`, `factor`, `period` (s), `max` |
 | `env` | extra env on every worker + setup pod (below) |
 | `commands` | container command for non-built-in workloads (only `l2cache` today); whether l2cache runs is driven by the dataset's `l2cache_config`, not by this entry |
+| `database` | `{cost, state}` SQLAlchemy URLs for the cost and state databases; each defaults to a local SQLite file under `costs/`. Point at a server (e.g. `postgresql://…`) to share/persist centrally |
 
 ### `env`
 
@@ -68,9 +69,9 @@ do not list them here. Unset keys are skipped (a per-pod env entry overrides the
 
 ### Cost
 
-The CLI records every pod's runtime into a local SQLite file (`costs/<graph_id>.<workload>.db`,
-gitignored) whenever it watches the cluster — each `pipeline status` tick, `submit`'s ramp, and
-`pipeline costs`. Dollars are computed at read time as recorded requests x runtime x the
+The CLI records every pod's runtime into the cost database (`database.cost`; default a gitignored
+local SQLite file under `costs/`, rows scoped by graph and workload) whenever it watches the
+cluster — each `pipeline status` tick, `submit`'s ramp, and `pipeline costs`. Dollars are computed at read time as recorded requests x runtime x the
 (`region`, compute class) rate from [rates.csv](../pipeline/rates.csv) (refreshed by the
 [update-rates](../.github/workflows/update-rates.yml) workflow), so a
 rates refresh re-prices history. Records survive pod garbage collection; completions that finished

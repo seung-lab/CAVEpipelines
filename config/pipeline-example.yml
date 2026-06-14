@@ -77,3 +77,9 @@ env:
 # (l2cache pending — its pipeline entrypoint is not in PCGL2Cache yet)
 # commands:
 #   l2cache: ["python", "-m", "pcgl2cache.batch"]
+
+# cost + state databases as SQLAlchemy URLs; default a local SQLite file under costs/.
+# point at a server to share/persist centrally (any SQLAlchemy-supported backend)
+# database:
+#   cost: postgresql://user:pass@host/cave_cost
+#   state: postgresql://user:pass@host/cave_state

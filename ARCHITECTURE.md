@@ -120,6 +120,16 @@ the foreground driver is the simplest thing that satisfies the actual need, paus
 - **Stall detection.** The state db records the driver's pid; a run still marked `running`
   whose pid is dead is reported as stalled, and `resume` can adopt it.
 
+**How long a paused run lives.** Indefinitely — a paused run is lost only if the operator deletes
+it. The Job spec sets no `ttlSecondsAfterFinished` or `activeDeadlineSeconds`, and a *suspended*
+Job is not a *finished* one, so the finish-TTL controller never collects it; Kubernetes keeps the
+completed indexes for resume, and Autopilot's scale-to-zero removes only nodes, not the Job object.
+Even a deleted Job is recoverable — `resume` re-submits it and done chunks skip, since the work
+product lives in Bigtable, not the Job. The single durable dependency is the state-db `Run` row,
+which `pause` only flips to `paused`; only `undeploy`/`purge` remove it. **Caveat:** with the
+default local-SQLite state db that durability is tied to the operator's machine — point
+`database.state` at a server to survive losing that machine (and to resume from another).
+
 ## The worker harness (container side)
 
 All workloads share one generic harness. A workload supplies a `make_processor(cg, layer, env)

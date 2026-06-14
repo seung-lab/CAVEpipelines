@@ -10,7 +10,7 @@
 [6 l2cache](#6-l2cache) · [7 migration](#7-migration) · [how a layer behaves](#how-a-layer-behaves) ·
 [costs](#cost-effective-compute) · [debugging](#debugging-failures) ·
 [chunk distribution](#how-chunks-are-distributed-toy-example) · [teardown](#teardown) ·
-[reference](#reference)
+[reference](#reference) · [architecture](ARCHITECTURE.md)
 
 Runs the connectomics pipelines — **chunkedgraph ingest**, **meshing**,
 **l2cache** — on **GKE Autopilot** as stock Kubernetes **Indexed Jobs**: no
@@ -20,6 +20,9 @@ All three are the same shape: a layer's chunks form an `X·Y·Z` grid; one Index
 Job per layer hands each pod a scattered slice of that grid; each chunk is
 processed under a per-chunk lock (ingest) or idempotently (meshing/l2cache). Spot
 pods absorb preemption; a cold Bigtable is ramped into gradually.
+
+This README is the operator's guide (how to run it). For the design and the reasoning
+behind it, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## The end-to-end flow
 
@@ -375,6 +378,7 @@ they are left intact.
 
 ## Reference
 
+- [ARCHITECTURE.md](ARCHITECTURE.md) — design and rationale: how the system works and why.
 - [config/README.md](config/README.md) — the dataset / `mesh_config` field reference.
 
 ## How chunks are distributed (toy example)

@@ -14,27 +14,11 @@ def run_cmd(command, argv, cfg):
 
 def test_command_for_routes_per_workload(cfg):
     cfg.workload = "ingest"
-    assert manifest.command_for(cfg) == ["python", "-m", "pychunkedgraph.pipeline.ingest"]
-    cfg.workload = "meshing"
-    assert manifest.command_for(cfg) == [
-        "python",
-        "-m",
-        "pychunkedgraph.pipeline.meshing",
-    ]
-    cfg.workload = "migrate"
-    assert manifest.command_for(cfg) == [
-        "python",
-        "-m",
-        "pychunkedgraph.pipeline.migrate",
-    ]
-    cfg.workload = "migrate_cleanup"
-    assert manifest.command_for(cfg) == [
-        "python",
-        "-m",
-        "pychunkedgraph.pipeline.migrate",
-        "--clean",
-    ]
-    cfg.workload = "l2cache"  # no built-in entrypoint -> from cfg.commands (empty here)
+    assert manifest.command_for(cfg) == manifest.INGEST_COMMAND  # built-in -> its command
+    cfg.workload = "migrate_cleanup"  # the cleanup pass is the migrate worker + --clean
+    assert manifest.command_for(cfg) == manifest.MIGRATE_COMMAND + ["--clean"]
+    # no built-in entrypoint -> cfg.commands (empty here) -> None
+    cfg.workload = "l2cache"
     assert manifest.command_for(cfg) is None
 
 

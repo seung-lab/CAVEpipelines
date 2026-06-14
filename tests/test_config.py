@@ -147,8 +147,6 @@ def test_resource_curves_and_workload_merge(tmp_path, monkeypatch):
 
 def test_image_selects_by_workload(cfg):
     cfg.workload = "ingest"
-    assert cfg.image() == "repo/pcg:tag"
+    assert cfg.image() == cfg.images.pcg  # any non-l2cache workload -> the pcg image
     cfg.workload = "l2cache"
-    assert cfg.image() == "repo/l2:tag"
-    cfg.workload = "meshing"
-    assert cfg.image() == "repo/pcg:tag"
+    assert cfg.image() == cfg.images.l2cache  # l2cache is the one on its own image

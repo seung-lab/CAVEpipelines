@@ -103,21 +103,29 @@ def test_one_db_scopes_by_graph_and_workload(cfg, monkeypatch):
     # a re-submitted layer is a NEW uid under the same name: history accrues
     _patch_cluster(monkeypatch, [_job(uid="a"), _job(uid="b")], [])
     cost.sample(cfg)
-    assert {j.job_uid for j in cost.jobs(cfg)} == {"a", "b"}  # this graph+workload only
-    assert [j.job_uid for j in cost.jobs(dataclasses.replace(cfg, graph_id="other"))] == [
-        "c"
-    ]
-    assert [
-        j.job_uid for j in cost.jobs(dataclasses.replace(cfg, workload="meshing"))
-    ] == ["d"]
+    other = dataclasses.replace(cfg, graph_id="other")
+    assert {j.job_uid for j in cost.jobs(cfg, "", "ingest")} == {"a", "b"}  # this graph
+    assert [j.job_uid for j in cost.jobs(other, "", "ingest")] == ["c"]  # graph scopes
+    assert [j.job_uid for j in cost.jobs(cfg, "", "meshing")] == ["d"]  # workload scopes
 
 
 def test_record_stamps_run_id_from_the_job_annotation(cfg, monkeypatch):
     job = _job(annotations={"run-id": "g-260614-070000"})
     _patch_cluster(monkeypatch, [job], [_pod("p1")])
     cost.sample(cfg)
-    assert cost.jobs(cfg)[0].run_id == "g-260614-070000"  # from the Job annotation
+    assert cost.jobs(cfg, "g-260614-070000")[0].run_id == "g-260614-070000"  # the Job's
     assert cost.pods(cfg, "j1")[0].run_id == "g-260614-070000"  # propagated to its pods
+
+
+def test_run_id_scopes_cost_to_one_deploy_not_the_sum(cfg, monkeypatch):
+    # the conflation fix: same (graph, workload) deployed twice -> each run's cost is its
+    # own. Before run-ids, cost.jobs(cfg) returned both and the layer total was the sum.
+    _patch_cluster(monkeypatch, [_job(uid="a", annotations={"run-id": "g-1"})], [])
+    cost.sample(cfg)
+    _patch_cluster(monkeypatch, [_job(uid="b", annotations={"run-id": "g-2"})], [])
+    cost.sample(cfg)
+    assert [j.job_uid for j in cost.jobs(cfg, "g-1")] == ["a"]  # only the first deploy
+    assert [j.job_uid for j in cost.jobs(cfg, "g-2")] == ["b"]  # only the second
 
 
 def test_started_at_keeps_first_seen(cfg, monkeypatch):
@@ -126,7 +134,9 @@ def test_started_at_keeps_first_seen(cfg, monkeypatch):
     later = T0 + timedelta(hours=1)
     _patch_cluster(monkeypatch, [_job(start=later)], [_pod("p1", start=later)])
     cost.sample(cfg)
-    assert cost.jobs(cfg)[0].started_at == T0.timestamp()  # COALESCE keeps first start
+    assert (
+        cost.jobs(cfg, "")[0].started_at == T0.timestamp()
+    )  # COALESCE keeps first start
     assert cost.pods(cfg, "j1")[0].started_at == T0.timestamp()
 
 
@@ -135,7 +145,7 @@ def test_parallelism_never_shrinks(cfg, monkeypatch):
     cost.sample(cfg)
     _patch_cluster(monkeypatch, [_job(parallelism=2)], [])  # scaled back down
     cost.sample(cfg)
-    assert cost.jobs(cfg)[0].parallelism == 8  # MAX records the peak
+    assert cost.jobs(cfg, "")[0].parallelism == 8  # MAX records the peak
 
 
 def test_terminal_pod_without_container_state_freezes_at_now(cfg, monkeypatch):
@@ -152,7 +162,7 @@ def test_failed_job_ends_at_its_condition(cfg, monkeypatch):
     ]  # no completion_time on a Failed Job
     _patch_cluster(monkeypatch, [_job(end=None, conditions=failed)], [])
     cost.sample(cfg)
-    assert cost.jobs(cfg)[0].finished_at == end.timestamp()
+    assert cost.jobs(cfg, "")[0].finished_at == end.timestamp()
 
 
 def test_relisted_live_pod_unfreezes(cfg, monkeypatch):
@@ -173,7 +183,7 @@ def test_deleted_jobs_stop_accruing(cfg, monkeypatch):
     # the Job is deleted/replaced between samples: nothing listed any more
     _patch_cluster(monkeypatch, [], [])
     cost.sample(cfg)
-    job = cost.jobs(cfg)[0]
+    job = cost.jobs(cfg, "")[0]
     pod = cost.pods(cfg, "j1")[0]
     assert job.finished_at == job.last_seen and job.active == 0
     assert pod.phase == "Gone" and pod.finished_at == pod.last_seen
@@ -198,7 +208,7 @@ def test_sample_does_not_raise_when_db_deleted_mid_run(cfg, monkeypatch):
 def test_deleted_db_recreated_on_next_run(cfg, monkeypatch):
     _patch_cluster(monkeypatch, [_job()], [_pod("p1")])
     cost.sample(cfg)
-    assert cost.jobs(cfg)
+    assert cost.jobs(cfg, "")
     # operator removes the cost db; a fresh process (no cached engine/schema) reopens it
     for suffix in ("", "-wal", "-shm"):
         path = _db_file(cfg) + suffix
@@ -206,9 +216,9 @@ def test_deleted_db_recreated_on_next_run(cfg, monkeypatch):
             os.remove(path)
     base._engine.cache_clear()
     base._initialized.clear()
-    assert cost.jobs(cfg) == []  # schema recreated empty, no crash
+    assert cost.jobs(cfg, "") == []  # schema recreated empty, no crash
     cost.sample(cfg)
-    assert cost.jobs(cfg)  # records again
+    assert cost.jobs(cfg, "")  # records again
 
 
 def test_concurrent_first_session_is_race_safe(cfg):

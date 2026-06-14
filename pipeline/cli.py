@@ -374,12 +374,14 @@ def _cost_note(cfg, workloads) -> None:
         return
     try:
         now = datetime.now(timezone.utc).timestamp()
+        run = state.get_run(cfg)
+        run_id = run.run_id if run else ""  # this deploy's spend, not all past runs'
         compute, jobs = 0.0, []
         for w in workloads:
             cfg_w = dataclasses.replace(cfg, workload=w)
-            per_layer, _ = util.recorded_costs(cfg_w, rate_table)
+            per_layer, _ = util.recorded_costs(cfg_w, rate_table, run_id)
             compute += sum(agg["total"] for agg in per_layer.values())
-            jobs += cost.jobs(cfg_w)
+            jobs += cost.jobs(cfg_w, run_id, w)
         total = compute + costs.fee(rate_table, cfg.region, jobs, now)
         note(f"estimated cost so far ~{costs.fmt_dollars(total)} (incl. cluster fee)")
     except Exception as exc:  # noqa: BLE001 - cost is auxiliary, never fatal
@@ -461,13 +463,15 @@ def show_costs(cfg, layer):
         )
         return
     cost.sample(cfg)
+    run = state.get_run(cfg)
+    run_id = run.run_id if run else ""  # this deploy's spend, not all past runs'
     try:
-        per_layer, _ = util.recorded_costs(cfg, rate_table)
+        per_layer, _ = util.recorded_costs(cfg, rate_table, run_id)
     except Exception as exc:  # noqa: BLE001 - cost is auxiliary, never fatal
         note(f"cost unavailable: {exc}")
         return
     if layer not in per_layer:
-        note(f"no recorded runs for layer {layer}")
+        note(f"no recorded cost for layer {layer} in this run")
         return
     note(f"{manifest.job_name(cfg, layer)}: {costs.format_cost(per_layer[layer])}")
 

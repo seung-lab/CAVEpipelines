@@ -70,11 +70,12 @@ do not list them here. Unset keys are skipped (a per-pod env entry overrides the
 ### Cost
 
 The CLI records every pod's runtime into the cost database (`database.cost`; default a gitignored
-local SQLite file under `costs/`, rows scoped by graph and workload) whenever it watches the
-cluster — each `pipeline status` tick, `submit`'s ramp, and `pipeline costs`. Dollars are computed at read time as recorded requests x runtime x the
+local SQLite file under `costs/`, rows scoped by graph, workload, and a per-deploy run-id) whenever
+it watches the cluster — each `pipeline status` tick, `submit`'s ramp, and `pipeline costs`. Dollars are computed at read time as recorded requests x runtime x the
 (`region`, compute class) rate from [rates.csv](../pipeline/rates.csv) (refreshed by the
 [update-rates](../.github/workflows/update-rates.yml) workflow), so a
-rates refresh re-prices history. Records survive pod garbage collection; completions that finished
+rates refresh re-prices history. `pipeline costs` and `pipeline status` report the **current run**
+only (the active deploy's run-id), so re-running a graph never sums past runs into the figure. Records survive pod garbage collection; completions that finished
 unwatched are backfilled from the mean observed runtime (the printed `basis` says so), and the
 cluster fee is charged once over the union of job wall-time — never per layer. A Job or pod that
 vanishes between samples (deleted, replaced, GC'd) is closed out at its last sighting — cost stops

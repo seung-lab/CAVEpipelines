@@ -215,11 +215,13 @@ avoids re-initializing a ChunkedGraph on every submit.
 
 Both are backend-agnostic SQLAlchemy, defaulting to a local SQLite file under `costs/`:
 
-- **Cost db** (`database.cost`) — **durable**. Rows scoped by graph and workload record each
-  pod's *physical quantities* (runtime, requested vCPU/GiB), sampled whenever the CLI watches
-  the cluster (`status` ticks, `submit`'s ramp, `costs`). Dollars are computed **at read time**
-  = requests × runtime × the (region, compute-class) rate from a maintained rate table, so a
-  rate refresh re-prices history. Unwatched completions
+- **Cost db** (`database.cost`) — **durable**. Rows scoped by graph, workload, and a per-deploy
+  run-id record each pod's *physical quantities* (runtime, requested vCPU/GiB), sampled whenever
+  the CLI watches the cluster (`status` ticks, `submit`'s ramp, `costs`). Dollars are computed
+  **at read time** = requests × runtime × the (region, compute-class) rate from a maintained rate
+  table, so a rate refresh re-prices history. `costs`/`status` scope to the active deploy's
+  run-id, so re-running a graph never sums past runs into the figure; the durable db keeps every
+  run. Unwatched completions
   are backfilled from the mean observed runtime; the cluster fee is charged once over the union
   of job wall-time. Records survive pod garbage collection — they are the only number that
   outlives a run.

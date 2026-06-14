@@ -209,11 +209,11 @@ def elapsed(job):
     return f"{hours}h{mins:02d}m" if hours else f"{mins}m"
 
 
-def recorded_costs(cfg, rate_table) -> tuple:
-    """({layer: priced totals}, cluster fee) from the local cost record."""
+def recorded_costs(cfg, rate_table, run_id) -> tuple:
+    """({layer: priced totals}, cluster fee) for one run of this (graph, workload)."""
     per_layer = {}
     now = datetime.now(timezone.utc).timestamp()
-    jobs = cost.jobs(cfg)
+    jobs = cost.jobs(cfg, run_id, cfg.workload)
     for j in jobs:
         rate = costs.rate_for(rate_table, cfg.region, j.compute_class)
         if not rate:
@@ -265,9 +265,10 @@ def usage_table(cfg, job_name, layer=None) -> Table:
     return table
 
 
-def status_table(cfg, layer_totals=None) -> Table:
+def status_table(cfg, layer_totals=None, run_id="") -> Table:
     """Per-layer progress. With `layer_totals` ({layer: chunks}), every layer is shown —
-    submitted ones with live progress, the rest with their a-priori total (pending)."""
+    submitted ones with live progress, the rest with their a-priori total (pending).
+    The cost column is scoped to `run_id` (the current run; "" for ad-hoc/no run)."""
     jobs_by_layer = {
         int((j.metadata.labels or {}).get("layer", "0")): j
         for j in kube.list_jobs(cfg.namespace, cfg.workload)
@@ -301,7 +302,7 @@ def status_table(cfg, layer_totals=None) -> Table:
     recorded = {}
     if cfg.region and rate_table:
         try:
-            recorded, _ = recorded_costs(cfg, rate_table)
+            recorded, _ = recorded_costs(cfg, rate_table, run_id)
         except Exception:  # noqa: BLE001 - cost is auxiliary, never fatal
             recorded = {}
     layers = sorted(layer_totals) if layer_totals else sorted(jobs_by_layer)
@@ -359,9 +360,9 @@ def _fmt_span(start_ts: float, end_ts: float) -> str:
     return f"{hours}h{mins:02d}m" if hours else f"{mins}m"
 
 
-def stage_summary(cfg_w, rate_table) -> str:
-    """One line for a completed stage, from the durable cost record (survives undeploy)."""
-    jobs = cost.jobs(cfg_w)
+def stage_summary(cfg_w, rate_table, run_id="") -> str:
+    """One line for a completed stage of `run_id`, from the durable cost record."""
+    jobs = cost.jobs(cfg_w, run_id, cfg_w.workload)
     if not jobs:
         return f"  {cfg_w.workload}: complete"
     layers = sorted({j.layer for j in jobs})
@@ -370,7 +371,7 @@ def stage_summary(cfg_w, rate_table) -> str:
     span = _fmt_span(min(starts), max(ends)) if starts and ends else "-"
     spend = ""
     if cfg_w.region and rate_table:
-        per_layer, fee = recorded_costs(cfg_w, rate_table)
+        per_layer, fee = recorded_costs(cfg_w, rate_table, run_id)
         total = sum(a["total"] for a in per_layer.values()) + fee
         spend = f"  ~{costs.fmt_dollars(total)}" if per_layer else ""
     return f"  {cfg_w.workload}: complete  layers {layers[0]}-{layers[-1]}  {span}{spend}"
@@ -391,9 +392,9 @@ def run_view(cfg, run, order, stage_states, layer_totals=None) -> Group:
         st = stage_states.get(w, state.PENDING)
         cfg_w = dataclasses.replace(cfg, workload=w)
         if st == state.RUNNING:
-            parts.append(status_table(cfg_w, layer_totals))
+            parts.append(status_table(cfg_w, layer_totals, run.run_id))
         elif st == state.COMPLETE:
-            parts.append(stage_summary(cfg_w, rate_table))
+            parts.append(stage_summary(cfg_w, rate_table, run.run_id))
         else:
             parts.append(f"  {w}: {st}")
     return Group(*parts)

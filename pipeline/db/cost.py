@@ -151,10 +151,15 @@ def sample(cfg) -> None:
         pass
 
 
-def jobs(cfg) -> list[Job]:
-    """Recorded Jobs for this (graph, workload), ordered by layer."""
+def jobs(cfg, run_id, workload=None) -> list[Job]:
+    """Recorded Jobs for one run of this graph (+ optional workload), ordered by layer.
+
+    `run_id` scopes to a single deploy; `run_id=""` is the ad-hoc bucket (standalone
+    submits/samples). graph still scopes so `""` doesn't span graphs."""
     with _session(cfg) as s:
-        stmt = select(Job).where(Job.graph == cfg.graph_id, Job.workload == cfg.workload)
+        stmt = select(Job).where(Job.graph == cfg.graph_id, Job.run_id == run_id)
+        if workload is not None:
+            stmt = stmt.where(Job.workload == workload)
         return list(s.scalars(stmt.order_by(Job.layer)))
 
 

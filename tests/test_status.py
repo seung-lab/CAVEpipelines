@@ -1,24 +1,11 @@
 import dataclasses
-import io
 import os
-from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
-from rich.console import Console
 
 from pipeline import cli, util
 from pipeline.db import state
-
-_NO_CLUSTER = SimpleNamespace(list_jobs=lambda ns, w: [], node_summary=lambda: (0, 0, {}))
-
-
-def _render(renderable) -> str:
-    # force_terminal renders markup like production (so a bad style tag that swallows
-    # text — e.g. [running] — would be caught), while keeping plain words intact
-    buf = io.StringIO()
-    Console(file=buf, width=200, force_terminal=True).print(renderable)
-    return buf.getvalue()
 
 
 def test_pid_alive_distinguishes_live_and_dead_pids():
@@ -27,13 +14,13 @@ def test_pid_alive_distinguishes_live_and_dead_pids():
     assert util.pid_alive(None) is False
 
 
-def test_run_view_renders_table_summary_and_pending(cfg, monkeypatch):
-    monkeypatch.setattr(util, "kube", _NO_CLUSTER)
+def test_run_view_renders_table_summary_and_pending(cfg, monkeypatch, no_cluster, render):
+    monkeypatch.setattr(util, "kube", no_cluster)
     cfg = dataclasses.replace(cfg, region="")  # skip cost lookups
     state.start_run(cfg, {"ingest", "meshing", "l2cache"}, parallel=True)
     state.set_state(cfg, "ingest", state.COMPLETE)
     state.set_state(cfg, "meshing", state.RUNNING)
-    out = _render(
+    out = render(
         util.run_view(
             cfg, state.get_run(cfg), ["ingest", "meshing", "l2cache"], state.states(cfg)
         )
@@ -44,16 +31,18 @@ def test_run_view_renders_table_summary_and_pending(cfg, monkeypatch):
     assert "l2cache: pending" in out  # pending stage -> one line
 
 
-def test_run_view_flags_a_stalled_run(cfg, monkeypatch):
-    monkeypatch.setattr(util, "kube", _NO_CLUSTER)
+def test_run_view_flags_a_stalled_run(cfg, monkeypatch, no_cluster, render):
+    monkeypatch.setattr(util, "kube", no_cluster)
     cfg = dataclasses.replace(cfg, region="")
     state.start_run(cfg, {"ingest"}, parallel=True, pid=2**31 - 1)  # recorded pid is dead
-    out = _render(util.run_view(cfg, state.get_run(cfg), ["ingest"], state.states(cfg)))
+    out = render(util.run_view(cfg, state.get_run(cfg), ["ingest"], state.states(cfg)))
     assert "driver not running" in out  # running status + dead driver pid -> stalled
 
 
-def test_status_once_with_a_run_renders_the_multi_stage_view(cfg, monkeypatch):
-    monkeypatch.setattr(util, "kube", _NO_CLUSTER)
+def test_status_once_with_a_run_renders_the_multi_stage_view(
+    cfg, monkeypatch, no_cluster
+):
+    monkeypatch.setattr(util, "kube", no_cluster)
     monkeypatch.setattr(cli.cost, "sample", lambda c: None)
     monkeypatch.setattr(cli.util, "read_layer_counts", lambda c: {})
     cfg = dataclasses.replace(cfg, region="")
@@ -65,10 +54,12 @@ def test_status_once_with_a_run_renders_the_multi_stage_view(cfg, monkeypatch):
     assert "ingest: complete" in res.output and "meshing | g" in res.output
 
 
-def test_status_recorded_run_reads_cache_and_shows_unsubmitted_layers(cfg, monkeypatch):
+def test_status_recorded_run_reads_cache_and_shows_unsubmitted_layers(
+    cfg, monkeypatch, no_cluster
+):
     # the driver cached the layer counts; status must read them (not probe a cold util pod)
     # so the table shows every layer, including those not yet submitted as a Job
-    monkeypatch.setattr(util, "kube", _NO_CLUSTER)
+    monkeypatch.setattr(util, "kube", no_cluster)
     monkeypatch.setattr(cli.cost, "sample", lambda c: None)
     cfg = dataclasses.replace(cfg, region="")
     util._write_cache(cfg, {cfg.graph_id: {"2": 847, "3": 144, "4": 18}})
@@ -86,10 +77,10 @@ def test_status_recorded_run_reads_cache_and_shows_unsubmitted_layers(cfg, monke
     )  # every cached layer, no Job needed
 
 
-def test_status_exits_cleanly_when_run_cleared_mid_watch(cfg, monkeypatch):
+def test_status_exits_cleanly_when_run_cleared_mid_watch(cfg, monkeypatch, no_cluster):
     # the run exists when status starts but is cleared (undeploy/purge) before the first
     # render: status must exit cleanly, not crash in run_view on a None run
-    monkeypatch.setattr(util, "kube", _NO_CLUSTER)
+    monkeypatch.setattr(util, "kube", no_cluster)
     monkeypatch.setattr(cli.cost, "sample", lambda c: None)
     cfg = dataclasses.replace(cfg, region="")
     state.start_run(cfg, {"ingest"}, parallel=True)

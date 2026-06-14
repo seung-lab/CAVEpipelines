@@ -1,8 +1,10 @@
+import io
 import pathlib
 import sys
 from types import SimpleNamespace
 
 import pytest
+from rich.console import Console
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
@@ -80,3 +82,24 @@ def make_job():
         )
 
     return _make
+
+
+@pytest.fixture
+def render():
+    """Render a Rich renderable to a string; force_terminal keeps markup, so a style
+    tag that swallows its own text is caught (not hidden by no-color)."""
+
+    def _render(renderable, *, width=200) -> str:
+        buf = io.StringIO()
+        Console(file=buf, width=width, force_terminal=True).print(renderable)
+        return buf.getvalue()
+
+    return _render
+
+
+@pytest.fixture
+def no_cluster():
+    """Stand-in for the kube module with an empty cluster (no jobs, no nodes)."""
+    return SimpleNamespace(
+        list_jobs=lambda ns, w=None: [], node_summary=lambda: (0, 0, {})
+    )

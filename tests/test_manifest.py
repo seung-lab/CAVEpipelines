@@ -191,9 +191,31 @@ def test_command_for_routes_per_workload(cfg):
     assert manifest.command_for(cfg) == manifest.INGEST_COMMAND  # built-in -> its command
     cfg.workload = "migrate_cleanup"  # the cleanup pass is the migrate worker + --clean
     assert manifest.command_for(cfg) == manifest.MIGRATE_COMMAND + ["--clean"]
-    # no built-in entrypoint -> cfg.commands (empty here) -> None
+    cfg.workload = "l2cache"  # built-in default ...
+    assert manifest.command_for(cfg) == manifest.L2CACHE_COMMAND
+    cfg.commands = {"l2cache": ["custom", "cmd"]}  # ... overridable from pipeline.yml
+    assert manifest.command_for(cfg) == ["custom", "cmd"]
+
+
+def test_l2cache_job_injects_cache_config_env(cfg):
+    cfg.dataset["l2cache_config"] = {
+        "cv_path": "graphene://h/segmentation/table/g",
+        "table_id": "l2cache_g",
+    }
     cfg.workload = "l2cache"
-    assert manifest.command_for(cfg) is None
+    env = {
+        e["name"]: e["value"]
+        for e in _job(cfg)["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert env["PCG_LAYER"] == "2"  # l2cache runs on the L2 grid
+    assert env["L2CACHE_CV_PATH"] == "graphene://h/segmentation/table/g"
+    assert env["L2CACHE_TABLE_ID"] == "l2cache_g"
+    cfg.workload = "ingest"  # the cache config is scoped to the l2cache workload only
+    other = {
+        e["name"]: e["value"]
+        for e in _job(cfg)["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert "L2CACHE_CV_PATH" not in other
 
 
 def test_env_injected_into_job_and_oneshot(cfg):

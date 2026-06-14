@@ -12,6 +12,7 @@ from .costs import normalize_requests, parse_cpu, parse_mem
 INGEST_COMMAND = ["python", "-m", "pychunkedgraph.pipeline.ingest"]
 MESHING_COMMAND = ["python", "-m", "pychunkedgraph.pipeline.meshing"]
 MIGRATE_COMMAND = ["python", "-m", "pychunkedgraph.pipeline.migrate"]
+L2CACHE_COMMAND = ["python", "-m", "pcgl2cache.pipeline.l2cache"]
 SPOT_SELECTOR = {"cloud.google.com/gke-spot": "true"}
 SPOT_TOLERATION = {
     "key": "cloud.google.com/gke-spot",
@@ -88,7 +89,9 @@ def command_for(cfg):
         return MIGRATE_COMMAND
     if cfg.workload == "migrate_cleanup":
         return MIGRATE_COMMAND + ["--clean"]
-    return cfg.commands.get(cfg.workload)  # l2cache entrypoint from pipeline.yml
+    if cfg.workload == "l2cache":  # commands.l2cache overrides the built-in
+        return cfg.commands.get("l2cache") or L2CACHE_COMMAND
+    return cfg.commands.get(cfg.workload)  # any other custom workload from pipeline.yml
 
 
 def _spot_tolerations():
@@ -125,6 +128,20 @@ def _extra_env(cfg):
         for k, v in cfg.env.items()
         if v is not None and v != ""
     ]
+
+
+def _l2cache_env(cfg):
+    """The l2cache worker's config from ``l2cache_config`` (graphene cv + cache table);
+    the snapshot timestamp is read worker-side off the cache table (recorded at setup,
+    so the whole fleet shares it), not passed here. Empty for other workloads."""
+    if cfg.workload != "l2cache":
+        return []
+    lc = cfg.dataset.get("l2cache_config") or {}
+    pairs = {
+        "L2CACHE_CV_PATH": lc.get("cv_path"),
+        "L2CACHE_TABLE_ID": lc.get("table_id"),
+    }
+    return [client.V1EnvVar(name=k, value=str(v)) for k, v in pairs.items() if v]
 
 
 def job_spec(
@@ -168,6 +185,7 @@ def job_spec(
                 ("PCG_N_THREADS", "2" if cfg.job.parallel else "1"),
             )
         ]
+        + _l2cache_env(cfg)
         + _extra_env(cfg),
         env_from=_env_from(),
         resources=client.V1ResourceRequirements(requests=layer_requests(cfg.job, layer)),

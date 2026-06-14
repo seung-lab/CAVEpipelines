@@ -54,7 +54,7 @@ from `pipeline.yml`'s `bigtable:`.
 | `job.workloads.<name>` | per-workload deep-overrides of `job` (own `batch_size`, curves, ramp) |
 | `job.ramp.*` | parallelism ramp: `start`, `factor`, `period` (s), `max` |
 | `env` | extra env on every worker + setup pod (below) |
-| `commands` | container command for non-built-in workloads (only `l2cache` today); whether l2cache runs is driven by the dataset's `l2cache_config`, not by this entry |
+| `commands` | override the container command for a workload; built-ins exist for ingest/meshing/migrate/l2cache, so this is rarely needed |
 | `database` | `{cost, state}` SQLAlchemy URLs for the cost and state databases; each defaults to a local SQLite file under `costs/` (`cost.db` and `state.db`). Point at a server (e.g. `postgresql://…`) to share/persist centrally |
 
 ### `env`
@@ -171,5 +171,11 @@ build needs `mesh_config`), while l2cache is **optional** — it joins the build
 - `dynamic_mesh_dir` — directory for post-edit dynamic meshes. Use `dynamic` on `main`; on `pcgv3` the graph id is appended automatically (default `dynamic_<graph_id>`).
 
 ### `l2cache_config` (l2cache, optional)
-Its presence adds the optional l2cache stage to the build DAG (and holds l2cache parameters). The
-l2cache container command still comes from `pipeline.yml`'s `commands.l2cache`.
+Its presence adds the optional l2cache stage to the build DAG and configures the worker:
+
+- `cv_path` — the graph's graphene CloudVolume (`graphene://…/table/<graph_id>`); the L2 chunk grid
+  and per-chunk features are read from it.
+- `table_id` — the cache's Bigtable table (created by the l2cache stage's setup, one row per L2 id).
+
+The container command is built in (`python -m pcgl2cache.pipeline.l2cache`); the snapshot timestamp
+is taken once at setup and shared by the whole worker fleet (not configured here).

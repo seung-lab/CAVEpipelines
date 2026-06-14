@@ -36,6 +36,11 @@ mesh_config:
     8: 18
     9: 18
 
+# l2 feature cache; its presence adds the optional l2cache stage to the build
+# l2cache_config:
+#   cv_path: graphene://https://server/segmentation/table/my_graph
+#   table_id: l2cache_my_graph
+
 # raw agglomeration input; its presence enables the raw ingest path automatically
 # ingest_config:
 #   AGGLOMERATION: gs://bucket/agg

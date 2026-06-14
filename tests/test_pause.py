@@ -87,14 +87,18 @@ def test_drive_exits_cleanly_when_paused(monkeypatch, cfg):
         raise ops.Paused("suspended")
 
     monkeypatch.setattr(ops, "orchestrate", paused)
-    monkeypatch.setattr(ops, "pause", lambda c: pytest.fail("must not re-pause on a pause"))
+    monkeypatch.setattr(
+        ops, "pause", lambda c: pytest.fail("must not re-pause on a pause")
+    )
     ops.drive(cfg)  # returns cleanly — no traceback, the operator's pause is not undone
 
 
 def test_resume_refuses_a_live_driver(monkeypatch, cfg):
     state.start_run(cfg, {"ingest"}, parallel=True)  # status running
     state.set_run_pid(cfg, os.getpid())  # a healthy driver is recorded
-    monkeypatch.setattr(ops, "drive", lambda c: pytest.fail("must not start a second driver"))
+    monkeypatch.setattr(
+        ops, "drive", lambda c: pytest.fail("must not start a second driver")
+    )
     with pytest.raises(SystemExit, match="already running"):
         ops.resume(cfg)
 
@@ -132,7 +136,9 @@ def test_resume_drives_a_stalled_run(monkeypatch, cfg):
 
 
 def test_run_ready_surfaces_a_pause_not_a_failure(monkeypatch, cfg):
-    monkeypatch.setattr(ops, "_phase_cfg", lambda c, w: dataclasses.replace(c, workload=w))
+    monkeypatch.setattr(
+        ops, "_phase_cfg", lambda c, w: dataclasses.replace(c, workload=w)
+    )
     monkeypatch.setattr(ops.util, "read_layer_counts", lambda c: {2: 1})
 
     def run_workload(cfg_w):

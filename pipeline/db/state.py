@@ -112,3 +112,13 @@ def clear(cfg) -> None:
             s.execute(delete(Run).where(Run.graph == cfg.graph_id))
     except Exception:  # noqa: BLE001 - cleanup is best-effort
         pass
+
+
+def purge(cfg) -> None:
+    """Delete every run + stage row (all graphs); best-effort. Cost db is untouched."""
+    try:
+        with _session(cfg) as s:
+            s.execute(delete(Stage))
+            s.execute(delete(Run))
+    except Exception:  # noqa: BLE001 - cleanup is best-effort
+        pass

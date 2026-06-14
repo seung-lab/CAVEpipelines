@@ -44,6 +44,15 @@ def test_clear_drops_only_this_graphs_run_and_stages(cfg):
     assert state.get_run(other) is not None  # another graph's run is untouched
 
 
+def test_purge_drops_every_graphs_run_and_stages(cfg):
+    other = dataclasses.replace(cfg, graph_id="other")
+    state.start_run(cfg, {"ingest"}, parallel=True)
+    state.start_run(other, {"meshing"}, parallel=True)
+    state.purge(cfg)
+    assert state.get_run(cfg) is None and state.get_run(other) is None
+    assert state.states(cfg) == {} and state.states(other) == {}
+
+
 def test_progress_writes_are_best_effort_but_run_creation_surfaces(cfg, tmp_path):
     # a directory where the state db file should be: SQLite cannot open it
     os.makedirs(f"{tmp_path}/blocked/state.db")

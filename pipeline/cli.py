@@ -176,6 +176,14 @@ def resume(cfg):
     ops.resume(cfg)
 
 
+@cli.command(help="purge all run/stage tracking (every graph); cost db + Jobs untouched")
+@click.confirmation_option(prompt="purge ALL run/stage tracking for every graph?")
+@pass_cfg
+def purge(cfg):
+    state.purge(cfg)
+    note("purged all run state")
+
+
 @cli.command(help="create the graph table + meta (one-shot pod with the dataset)")
 @click.option(
     "--exists", is_flag=True, help="skip (don't error) if the graph already exists"

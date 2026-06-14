@@ -191,3 +191,17 @@ def test_layer_counts_failure_is_loud(monkeypatch, cfg):
     )
     with pytest.raises(SystemExit, match="could not read layer counts"):
         cli.util.read_layer_counts(cfg)
+
+
+def test_runs_command_reads_the_cost_db(cfg, seed_cost):
+    assert run_cmd(cli.runs, [], cfg).output == ""  # empty db -> note (stderr), no table
+    seed_cost("r1")
+    assert "r1" in run_cmd(cli.runs, [], cfg).output  # rows -> table printed to stdout
+
+
+def test_run_command_reads_the_cost_db(cfg, seed_cost):
+    assert run_cmd(cli.run, ["r1"], cfg).output == ""  # unknown run -> note, no table
+    seed_cost("r1", workload="meshing")
+    assert (
+        "r1" in run_cmd(cli.run, ["r1"], cfg).output
+    )  # found -> breakdown (title "run r1")

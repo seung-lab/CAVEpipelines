@@ -233,6 +233,129 @@ def recorded_costs(cfg, rate_table, run_id) -> tuple:
     return per_layer, cluster_fee
 
 
+def _job_cost(cfg, rate_table, job, now) -> tuple:
+    """(usage, priced, pods) for one recorded Job; priced is zeros when no rate applies."""
+    pods = cost.pods(cfg, job.job_uid)
+    usage = costs.usage_from_rows(job, pods, now)
+    rate = costs.rate_for(rate_table, cfg.region, job.compute_class)
+    priced = (
+        costs.price_usage(usage, rate) if rate else {"cpu": 0.0, "mem": 0.0, "total": 0.0}
+    )
+    return usage, priced, pods
+
+
+def _run_start(jobs) -> float:
+    """Earliest start of a run's jobs (0.0 if none started), for newest-first ordering."""
+    starts = [j.started_at for j in jobs if j.started_at is not None]
+    return min(starts) if starts else 0.0
+
+
+def _fmt_started(ts: float) -> str:
+    return (
+        datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d %H:%M") if ts else "-"
+    )
+
+
+def runs_table(cfg, rate_table, graph=None) -> Table:
+    """One row per recorded run (newest first): run-id, graph, workloads, layer span,
+    started, total cost. Spans the durable cost db, so it outlives undeploy."""
+    now = datetime.now(timezone.utc).timestamp()
+    groups = {}
+    for j in cost.runs(cfg, graph):
+        groups.setdefault((j.graph, j.run_id), []).append(j)
+    has_rates = bool(cfg.region) and bool(rate_table)
+    table = Table(title=f"recorded runs{f' | {graph}' if graph else ''}")
+    for col in ("run", "graph", "workloads", "layers", "started", "cost"):
+        table.add_column(col, justify="right")
+    for (g, run_id), js in sorted(
+        groups.items(), key=lambda kv: _run_start(kv[1]), reverse=True
+    ):
+        layers = sorted({j.layer for j in js})
+        table.add_row(
+            run_id or "(ad-hoc)",
+            g,
+            ",".join(sorted({j.workload for j in js})),
+            f"{layers[0]}-{layers[-1]}" if layers else "-",
+            _fmt_started(_run_start(js)),
+            costs.fmt_dollars(_price_jobs(cfg, rate_table, js, now))
+            if has_rates
+            else "-",
+        )
+    return table
+
+
+def _price_jobs(cfg, rate_table, jobs, now) -> float:
+    """Total Spot dollars over `jobs` (each priced from its pods) + the one-time cluster fee."""
+    total = sum(_job_cost(cfg, rate_table, j, now)[1]["total"] for j in jobs)
+    return total + costs.fee(rate_table, cfg.region, jobs, now)
+
+
+def run_breakdown(cfg, rate_table, run_id) -> Table:
+    """One run's recorded cost by (workload, layer): requests, pods, succeeded/failed,
+    runtime, priced cost, and the backfill basis. Spans the durable cost db."""
+    now = datetime.now(timezone.utc).timestamp()
+    jobs = cost.run_jobs(cfg, run_id)
+    rows = {}
+    for j in jobs:
+        usage, priced, pods = _job_cost(cfg, rate_table, j, now)
+        agg = rows.setdefault(
+            (j.workload, j.layer),
+            {
+                "cpu": j.cpu_req,
+                "mem": j.mem_req,
+                "pods": 0,
+                "ok": 0,
+                "fail": 0,
+                "pod_hours": 0.0,
+                "total": 0.0,
+                "basis": set(),
+            },
+        )
+        agg["pods"] += len(pods)
+        agg["ok"] += j.succeeded or 0
+        agg["fail"] += j.failed or 0
+        agg["pod_hours"] += usage["pod_hours"]
+        agg["total"] += priced["total"]
+        agg["basis"].add(usage["basis"])
+    has_rates = bool(cfg.region) and bool(rate_table)
+    fee = costs.fee(rate_table, cfg.region, jobs, now) if has_rates else 0.0
+    grand = sum(a["total"] for a in rows.values()) + fee
+    table = Table(
+        title=f"run {run_id}",
+        caption=f"total ~{costs.fmt_dollars(grand)} (incl. cluster fee {costs.fmt_dollars(fee)})"
+        if has_rates
+        else "no cost rates (set `region`)",
+    )
+    for col in (
+        "workload",
+        "layer",
+        "cpu",
+        "mem",
+        "pods",
+        "ok",
+        "fail",
+        "pod-hr",
+        "cost",
+        "basis",
+    ):
+        table.add_column(col, justify="right")
+    for w, layer in sorted(rows):
+        a = rows[(w, layer)]
+        table.add_row(
+            w,
+            str(layer),
+            f"{a['cpu']:g}",
+            f"{a['mem']:g}Gi",
+            str(a["pods"]),
+            str(a["ok"]),
+            str(a["fail"]),
+            f"{a['pod_hours']:.1f}",
+            costs.fmt_dollars(a["total"]) if has_rates else "-",
+            "+".join(sorted(a["basis"])),
+        )
+    return table
+
+
 def usage_table(cfg, job_name, layer=None) -> Table:
     """Per-pod usage for one layer Job, in cores/GiB, ordered by task index."""
     if layer is None:

@@ -68,6 +68,8 @@ which lives in `dataset.yml` (read only by `setup`; workers read graph meta from
 | `pipeline events <layer>` | the layer's Job + pod events (scheduling, scale-up, failures) |
 | `pipeline top <layer>` | live per-pod usage in cores/GiB vs the request, by task index (needs metrics-server; `-o`/`--once` for one snapshot, `-i`/`--interval` refresh seconds) |
 | `pipeline costs <layer>` | the layer's recorded Spot spend for the current run (from the local cost db; estimate) |
+| `pipeline runs` | every recorded run in the cost db (newest first): graph, workloads, layer span, started, cost; `--graph` to filter |
+| `pipeline run <run-id>` | one run's recorded cost, broken down by workload and layer (durable; survives undeploy) |
 | `pipeline delete <layer>` | delete the layer's Job and pods |
 | `pipeline reset` | forget the session config (the next `-c` selects a new one) |
 | `pipeline pause` | suspend every pipeline Job — pods get SIGTERM, Autopilot scales to 0, **nothing is deleted** (finished indexes are kept); the driver stops on its next poll |
@@ -320,7 +322,8 @@ local SQLite under `costs/`; point it at a server to share), priced at read time
 [rates.csv](pipeline/rates.csv). It is an estimate — keep `pipeline status` running during a layer
 for exact accounting. Each deploy is tagged with a run-id, so `pipeline costs <layer>` and the
 `status` cost column report **this run's** spend — re-running the same graph starts a fresh tally
-rather than summing past runs (the cost db still keeps every run).
+rather than summing past runs. The cost db keeps every run: `pipeline runs` lists them (newest
+first), `pipeline run <run-id>` breaks one down by workload and layer.
 
 ## Debugging failures
 

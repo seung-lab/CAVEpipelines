@@ -75,7 +75,9 @@ it watches the cluster — each `pipeline status` tick, `submit`'s ramp, and `pi
 (`region`, compute class) rate from [rates.csv](../pipeline/rates.csv) (refreshed by the
 [update-rates](../.github/workflows/update-rates.yml) workflow), so a
 rates refresh re-prices history. `pipeline costs` and `pipeline status` report the **current run**
-only (the active deploy's run-id), so re-running a graph never sums past runs into the figure. Records survive pod garbage collection; completions that finished
+only (the active deploy's run-id), so re-running a graph never sums past runs into the figure;
+`pipeline runs` lists every recorded run and `pipeline run <run-id>` breaks one down (durable,
+survives undeploy). Records survive pod garbage collection; completions that finished
 unwatched are backfilled from the mean observed runtime (the printed `basis` says so), and the
 cluster fee is charged once over the union of job wall-time — never per layer. A Job or pod that
 vanishes between samples (deleted, replaced, GC'd) is closed out at its last sighting — cost stops

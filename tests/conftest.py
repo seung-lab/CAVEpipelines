@@ -10,7 +10,7 @@ from rich.console import Console
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 from pipeline import config, util  # noqa: E402
-from pipeline.db import base, cost, state  # noqa: E402
+from pipeline.db import base, cost, models, state  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -123,6 +123,32 @@ def no_cost_sample(monkeypatch):
 def no_sleep(monkeypatch):
     """No real sleeps in ramp/poll loops."""
     monkeypatch.setattr(time, "sleep", lambda s: None)
+
+
+@pytest.fixture
+def seed_cost(cfg):
+    """Insert one recorded cost Job into the isolated cost db (for the run explorer)."""
+
+    def _seed(run_id, *, graph="g", workload="ingest", layer=2, uid=None, **fields):
+        row = {
+            "job_uid": uid or f"{run_id}-{workload}-{layer}",
+            "graph": graph,
+            "workload": workload,
+            "run_id": run_id,
+            "name": f"{workload}-l{layer}",
+            "layer": layer,
+            "cpu_req": 2.0,
+            "mem_req": 4.0,
+            "started_at": 0.0,
+            "finished_at": 3600.0,
+            "last_seen": 3600.0,
+            "succeeded": 1,
+            **fields,
+        }
+        with base.session(cfg.database["cost"], models.CostBase) as s:
+            s.add(models.Job(**row))
+
+    return _seed
 
 
 @pytest.fixture

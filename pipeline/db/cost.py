@@ -162,10 +162,22 @@ def jobs(cfg, run_id, workload=None) -> list[Job]:
 
 
 def pods(cfg, job_uid: str) -> list[Pod]:
+    """The recorded pods of one Job; job_uid is unique, so graph/workload are implied."""
     with _session(cfg) as s:
-        stmt = select(Pod).where(
-            Pod.graph == cfg.graph_id,
-            Pod.workload == cfg.workload,
-            Pod.job_uid == job_uid,
-        )
+        return list(s.scalars(select(Pod).where(Pod.job_uid == job_uid)))
+
+
+def runs(cfg, graph=None) -> list[Job]:
+    """Every recorded Job, optionally one graph, ordered by run_id — for the run listing."""
+    with _session(cfg) as s:
+        stmt = select(Job)
+        if graph is not None:
+            stmt = stmt.where(Job.graph == graph)
+        return list(s.scalars(stmt.order_by(Job.run_id)))
+
+
+def run_jobs(cfg, run_id) -> list[Job]:
+    """Every Job of one run, any workload/graph, ordered by workload then layer."""
+    with _session(cfg) as s:
+        stmt = select(Job).where(Job.run_id == run_id).order_by(Job.workload, Job.layer)
         return list(s.scalars(stmt))

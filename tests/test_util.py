@@ -162,3 +162,28 @@ def test_query_meta_routes_oneshot_when_not_persistent(monkeypatch, cfg):
     )
     assert util._query_meta(cfg, "mesh", "g") == "yes\n"
     assert cgcache.ONESHOT_SRC in seen["argv"]  # the inline import snippet
+
+
+def test_runs_table_lists_newest_first_and_filters_by_graph(cfg, seed_cost, render):
+    seed_cost("g-260101-000000", started_at=100.0)
+    seed_cost("g-260201-000000", started_at=200.0)  # the more recent deploy
+    seed_cost("other-260101-000000", graph="other", started_at=50.0)
+    out = render(util.runs_table(cfg, {}))
+    assert out.index("g-260201-000000") < out.index("g-260101-000000")  # newest first
+    assert "other-260101-000000" in out  # spans every graph by default
+    filtered = render(util.runs_table(cfg, {}, graph="g"))
+    assert "g-260201-000000" in filtered and "other-260101-000000" not in filtered
+
+
+def test_runs_table_buckets_ad_hoc_submits(cfg, seed_cost, render):
+    seed_cost("", uid="adhoc-1")  # a standalone submit/sample probe has no deploy run-id
+    assert "(ad-hoc)" in render(util.runs_table(cfg, {}))
+
+
+def test_run_breakdown_rows_by_workload_layer_scoped_to_the_run(cfg, seed_cost, render):
+    seed_cost("g-1", workload="ingest", layer=2, uid="j1")
+    seed_cost("g-1", workload="meshing", layer=3, uid="j2")
+    seed_cost("g-2", workload="l2cache", layer=4, uid="j3")  # a different run
+    out = render(util.run_breakdown(cfg, {}, "g-1"))
+    assert "ingest" in out and "meshing" in out  # both workloads of this run
+    assert "l2cache" not in out  # scoped to run g-1, not g-2

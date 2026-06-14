@@ -221,7 +221,7 @@ Both are backend-agnostic SQLAlchemy, defaulting to a local SQLite file under `c
   **at read time** = requests × runtime × the (region, compute-class) rate from a maintained rate
   table, so a rate refresh re-prices history. `costs`/`status` scope to the active deploy's
   run-id, so re-running a graph never sums past runs into the figure; the durable db keeps every
-  run. Unwatched completions
+  run, surfaced by the `runs` / `run <run-id>` explorer. Unwatched completions
   are backfilled from the mean observed runtime; the cluster fee is charged once over the union
   of job wall-time. Records survive pod garbage collection — they are the only number that
   outlives a run.

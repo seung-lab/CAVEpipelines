@@ -476,6 +476,30 @@ def show_costs(cfg, layer):
     note(f"{manifest.job_name(cfg, layer)}: {costs.format_cost(per_layer[layer])}")
 
 
+@cli.command(help="every recorded run in the cost db (newest first); --graph to filter")
+@click.option("--graph", default=None, help="only this graph's runs (default: all)")
+@pass_cfg
+def runs(cfg, graph):
+    """List recorded runs from the durable cost db (survives undeploy)."""
+    table = util.runs_table(cfg, costs.load_table(), graph)
+    if not table.rows:
+        note("no recorded runs in the cost db")
+        return
+    Console().print(table)
+
+
+@cli.command(help="one run's recorded cost, broken down by workload and layer")
+@click.argument("run_id")
+@pass_cfg
+def run(cfg, run_id):
+    """Break one run's recorded cost down by (workload, layer) from the cost db."""
+    table = util.run_breakdown(cfg, costs.load_table(), run_id)
+    if not table.rows:
+        note(f"no recorded jobs for run '{run_id}'")
+        return
+    Console().print(table)
+
+
 def main(argv=None):
     try:
         cli.main(args=argv, prog_name="pipeline")

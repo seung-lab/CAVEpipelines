@@ -128,6 +128,25 @@ def test_run_id_scopes_cost_to_one_deploy_not_the_sum(cfg, monkeypatch):
     assert [j.job_uid for j in cost.jobs(cfg, "g-2")] == ["b"]  # only the second
 
 
+def test_runs_spans_graphs_and_run_jobs_spans_one_deploys_workloads(cfg, monkeypatch):
+    _patch_cluster(monkeypatch, [_job(uid="a", annotations={"run-id": "g-1"})], [])
+    cost.sample(cfg)
+    _patch_cluster(monkeypatch, [_job(uid="b", annotations={"run-id": "g-2"})], [])
+    cost.sample(cfg)
+    _patch_cluster(monkeypatch, [_job(uid="c", annotations={"run-id": "o-1"})], [])
+    cost.sample(dataclasses.replace(cfg, graph_id="other"))
+    # one run-id spans workloads: an ingest and a meshing job under g-1
+    _patch_cluster(monkeypatch, [_job(uid="m", annotations={"run-id": "g-1"})], [])
+    cost.sample(dataclasses.replace(cfg, workload="meshing"))
+    assert {j.run_id for j in cost.runs(cfg)} == {"g-1", "g-2", "o-1"}  # every graph
+    assert {j.run_id for j in cost.runs(cfg, graph="g")} == {"g-1", "g-2"}  # graph filter
+    assert {j.workload for j in cost.run_jobs(cfg, "g-1")} == {
+        "ingest",
+        "meshing",
+    }  # spans
+    assert {j.job_uid for j in cost.run_jobs(cfg, "g-1")} == {"a", "m"}  # only run g-1
+
+
 def test_started_at_keeps_first_seen(cfg, monkeypatch):
     _patch_cluster(monkeypatch, [_job(start=T0)], [_pod("p1", start=T0)])
     cost.sample(cfg)

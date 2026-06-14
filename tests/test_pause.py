@@ -20,8 +20,9 @@ def test_run_layer_stops_when_its_job_is_suspended(monkeypatch, cfg, make_job):
         ops.run_layer(cfg, 2)
 
 
-def test_pause_suspends_only_incomplete_jobs_and_marks_paused(monkeypatch, cfg, make_job):
-    state.start_run(cfg, {"ingest"}, parallel=True)
+def test_pause_suspends_only_incomplete_jobs_and_marks_paused(
+    monkeypatch, cfg, running_run, make_job
+):
     running = make_job(name="ingest-l2", conditions=[])
     done = make_job(name="ingest-l3", conditions=_COMPLETE)
     monkeypatch.setattr(ops.kube, "list_jobs", lambda ns: [running, done])
@@ -34,8 +35,9 @@ def test_pause_suspends_only_incomplete_jobs_and_marks_paused(monkeypatch, cfg, 
     assert state.get_run(cfg).status == state.PAUSED
 
 
-def test_resume_unsuspends_suspended_jobs_then_drives(monkeypatch, cfg, make_job):
-    state.start_run(cfg, {"ingest"}, parallel=True)
+def test_resume_unsuspends_suspended_jobs_then_drives(
+    monkeypatch, cfg, running_run, make_job
+):
     state.set_run_status(cfg, state.PAUSED)
     monkeypatch.setattr(
         ops.kube,
@@ -58,9 +60,7 @@ def test_resume_without_a_run_errors(cfg):
         ops.resume(cfg)
 
 
-def test_drive_self_pauses_on_failure(monkeypatch, cfg):
-    state.start_run(cfg, {"ingest"}, parallel=True)
-
+def test_drive_self_pauses_on_failure(monkeypatch, cfg, running_run):
     def boom(c, run_set, parallel):
         raise SystemExit("dead tasks")
 
@@ -72,17 +72,14 @@ def test_drive_self_pauses_on_failure(monkeypatch, cfg):
     assert paused == [True]  # a dying driver suspends the cluster
 
 
-def test_drive_marks_the_run_done_on_success(monkeypatch, cfg):
-    state.start_run(cfg, {"ingest"}, parallel=True)
+def test_drive_marks_the_run_done_on_success(monkeypatch, cfg, running_run):
     monkeypatch.setattr(ops, "orchestrate", lambda c, run_set, parallel: None)
     monkeypatch.setattr(ops, "pause", lambda c: pytest.fail("must not pause on success"))
     ops.drive(cfg)
     assert state.get_run(cfg).status == state.DONE
 
 
-def test_drive_exits_cleanly_when_paused(monkeypatch, cfg):
-    state.start_run(cfg, {"ingest"}, parallel=True)
-
+def test_drive_exits_cleanly_when_paused(monkeypatch, cfg, running_run):
     def paused(c, run_set, parallel):
         raise ops.Paused("suspended")
 
@@ -93,8 +90,7 @@ def test_drive_exits_cleanly_when_paused(monkeypatch, cfg):
     ops.drive(cfg)  # returns cleanly — no traceback, the operator's pause is not undone
 
 
-def test_resume_refuses_a_live_driver(monkeypatch, cfg):
-    state.start_run(cfg, {"ingest"}, parallel=True)  # status running
+def test_resume_refuses_a_live_driver(monkeypatch, cfg, running_run):
     state.set_run_pid(cfg, os.getpid())  # a healthy driver is recorded
     monkeypatch.setattr(
         ops, "drive", lambda c: pytest.fail("must not start a second driver")
@@ -103,16 +99,14 @@ def test_resume_refuses_a_live_driver(monkeypatch, cfg):
         ops.resume(cfg)
 
 
-def test_resume_refuses_a_completed_run(monkeypatch, cfg):
-    state.start_run(cfg, {"ingest"}, parallel=True)
+def test_resume_refuses_a_completed_run(monkeypatch, cfg, running_run):
     state.finish_run(cfg)  # status done
     monkeypatch.setattr(ops, "drive", lambda c: pytest.fail("nothing to resume"))
     with pytest.raises(SystemExit, match="complete"):
         ops.resume(cfg)
 
 
-def test_resume_cli_exits_cleanly_when_paused(monkeypatch, cfg):
-    state.start_run(cfg, {"ingest"}, parallel=True)
+def test_resume_cli_exits_cleanly_when_paused(monkeypatch, cfg, running_run):
     state.set_run_status(cfg, state.PAUSED)
     monkeypatch.setattr(ops.kube, "list_jobs", lambda ns: [])
 
@@ -125,8 +119,7 @@ def test_resume_cli_exits_cleanly_when_paused(monkeypatch, cfg):
     assert res.exit_code == 0
 
 
-def test_resume_drives_a_stalled_run(monkeypatch, cfg):
-    state.start_run(cfg, {"ingest"}, parallel=True)  # status running
+def test_resume_drives_a_stalled_run(monkeypatch, cfg, running_run):
     state.set_run_pid(cfg, 2**31 - 1)  # dead pid -> stalled, resumable
     monkeypatch.setattr(ops.kube, "list_jobs", lambda ns: [])
     driven = []

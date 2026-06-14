@@ -9,7 +9,7 @@ from rich.console import Console
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 from pipeline import config  # noqa: E402
-from pipeline.db import base  # noqa: E402
+from pipeline.db import base, state  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -103,3 +103,10 @@ def no_cluster():
     return SimpleNamespace(
         list_jobs=lambda ns, w=None: [], node_summary=lambda: (0, 0, {})
     )
+
+
+@pytest.fixture
+def running_run(cfg):
+    """Open a run for the default graph (status running, one ingest stage)."""
+    state.start_run(cfg, {"ingest"}, parallel=True)
+    return cfg

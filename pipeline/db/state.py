@@ -31,11 +31,14 @@ def _now() -> float:
 
 def start_run(cfg, run_set, parallel, overwrite=False, pid=None) -> None:
     """Open the run: one Run row (status running) + every stage seeded pending."""
-    now = _now()
+    started = datetime.now(timezone.utc)
+    now = started.timestamp()
+    run_id = f"{cfg.graph_id}-{started:%y%m%d-%H%M%S}"  # unique, sortable, graph-linked
     with _session(cfg) as s:
         s.merge(
             Run(
                 graph=cfg.graph_id,
+                run_id=run_id,
                 workloads=json.dumps(sorted(run_set)),
                 parallel=bool(parallel),
                 overwrite=bool(overwrite),

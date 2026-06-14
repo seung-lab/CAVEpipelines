@@ -136,6 +136,7 @@ def job_spec(
     *,
     batch_size=None,
     name=None,
+    run_id="",
 ) -> client.V1Job:
     command = command_for(cfg)
     if not command:
@@ -193,8 +194,13 @@ def job_spec(
                 "graph": cfg.graph_id,
                 "layer": str(layer),
             },
-            # total chunks (N) so `status` shows chunk progress without re-reading meta
-            annotations={"chunks": str(chunks), "batch_size": str(batch_size)},
+            # total chunks (N) so `status` shows chunk progress without re-reading meta;
+            # run-id tags this Job's cost rows with the deploy that created it
+            annotations={
+                "chunks": str(chunks),
+                "batch_size": str(batch_size),
+                "run-id": run_id,
+            },
         ),
         spec=client.V1JobSpec(
             completion_mode="Indexed",

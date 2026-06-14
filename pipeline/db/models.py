@@ -27,6 +27,7 @@ class Job(CostBase):
     job_uid: Mapped[str] = mapped_column(_ID, primary_key=True)
     graph: Mapped[str] = mapped_column(_ID, index=True)
     workload: Mapped[str] = mapped_column(_ID)
+    run_id: Mapped[str] = mapped_column(_ID, index=True, default="")
     name: Mapped[str] = mapped_column(_ID)
     layer: Mapped[int]
     compute_class: Mapped[str] = mapped_column(_ID, default="")
@@ -50,6 +51,7 @@ class Pod(CostBase):
     pod_uid: Mapped[str] = mapped_column(_ID, primary_key=True)
     graph: Mapped[str] = mapped_column(_ID, index=True)
     workload: Mapped[str] = mapped_column(_ID)
+    run_id: Mapped[str] = mapped_column(_ID, index=True, default="")
     job_uid: Mapped[str] = mapped_column(_ID, index=True)
     layer: Mapped[int]
     cpu_req: Mapped[float]
@@ -70,6 +72,7 @@ class Run(StateBase):
     __tablename__ = "run"
 
     graph: Mapped[str] = mapped_column(_ID, primary_key=True)
+    run_id: Mapped[str] = mapped_column(_ID, default="")  # unique per deploy invocation
     workloads: Mapped[str] = mapped_column(Text)  # JSON array of stage names
     parallel: Mapped[bool]
     overwrite: Mapped[bool]

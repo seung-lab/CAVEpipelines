@@ -110,7 +110,13 @@ def test_spot_scheduling(cfg):
 
 def test_status_annotations_and_optional_secret(cfg):
     job = _job(cfg)
-    assert job["metadata"]["annotations"] == {"chunks": "100", "batch_size": "1000"}
+    # run-id ("" with no active run) tags the Job for per-deploy cost attribution
+    assert job["metadata"]["annotations"] == {
+        "chunks": "100",
+        "batch_size": "1000",
+        "run-id": "",
+    }
+    assert _job(cfg, run_id="r1")["metadata"]["annotations"]["run-id"] == "r1"
     vol = job["spec"]["template"]["spec"]["volumes"][0]
     assert vol["secret"]["optional"] is True  # pods start even with no Secret (WI-only)
 

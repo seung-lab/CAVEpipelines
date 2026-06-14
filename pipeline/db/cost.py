@@ -43,10 +43,16 @@ def record(s, cfg, job, pods, now: float) -> None:
     req = (spec.containers[0].resources.requests or {}) if spec.containers else {}
     st = job.status
     layer = int((job.metadata.labels or {}).get("layer", 0))
+    run_id = (job.metadata.annotations or {}).get("run-id", "")
     cpu, mem = parse_cpu(req.get("cpu")), parse_mem(req.get("memory"))
     row = s.get(Job, job.metadata.uid)
     if row is None:
-        row = Job(job_uid=job.metadata.uid, graph=cfg.graph_id, workload=cfg.workload)
+        row = Job(
+            job_uid=job.metadata.uid,
+            graph=cfg.graph_id,
+            workload=cfg.workload,
+            run_id=run_id,
+        )
         s.add(row)
     if row.started_at is None:  # keep the first start ever seen
         row.started_at = _ts(st.start_time)
@@ -79,6 +85,7 @@ def record(s, cfg, job, pods, now: float) -> None:
                 pod_uid=pod.metadata.uid,
                 graph=cfg.graph_id,
                 workload=cfg.workload,
+                run_id=run_id,
                 job_uid=job.metadata.uid,
             )
             s.add(prow)

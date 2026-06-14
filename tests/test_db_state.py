@@ -19,6 +19,13 @@ def test_run_round_trip_and_stage_progress(cfg):
     assert state.get_run(cfg).status == state.DONE
 
 
+def test_start_run_mints_a_graph_linked_run_id(cfg):
+    state.start_run(cfg, {"ingest"}, parallel=True)
+    rid = state.get_run(cfg).run_id
+    assert rid.startswith(f"{cfg.graph_id}-")  # graph-linked: the run names its graph
+    assert rid[len(cfg.graph_id) + 1 :]  # non-empty timestamp suffix -> per-invocation
+
+
 def test_start_run_resets_to_the_new_stage_set(cfg):
     state.start_run(cfg, {"ingest", "meshing", "l2cache"}, parallel=True)
     state.set_state(cfg, "ingest", state.COMPLETE)

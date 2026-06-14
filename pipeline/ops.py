@@ -160,7 +160,10 @@ def submit(cfg, layer, force=False) -> None:
     completions = util.ceil_div(n, batch)
     pmax = min(cfg.job.ramp.max, completions)
     parallelism = min(cfg.job.ramp.start, pmax)
-    spec = manifest.job_spec(cfg, layer, n, completions, parallelism)
+    run = state.get_run(cfg)  # tag this Job's cost rows with the active deploy run
+    spec = manifest.job_spec(
+        cfg, layer, n, completions, parallelism, run_id=run.run_id if run else ""
+    )
     name = spec.metadata.name
     req = spec.spec.template.spec.containers[0].resources.requests
     vcpu = costs.parse_cpu(req["cpu"])  # millicores/bytes -> readable cores / GiB

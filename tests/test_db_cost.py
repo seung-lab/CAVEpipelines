@@ -18,9 +18,12 @@ def _job(
     start=T0,
     parallelism=4,
     conditions=None,
+    annotations=None,
 ):
     return SimpleNamespace(
-        metadata=SimpleNamespace(uid=uid, name="ingest-l3", labels={"layer": layer}),
+        metadata=SimpleNamespace(
+            uid=uid, name="ingest-l3", labels={"layer": layer}, annotations=annotations
+        ),
         spec=SimpleNamespace(
             completions=4,
             parallelism=parallelism,
@@ -107,6 +110,14 @@ def test_one_db_scopes_by_graph_and_workload(cfg, monkeypatch):
     assert [
         j.job_uid for j in cost.jobs(dataclasses.replace(cfg, workload="meshing"))
     ] == ["d"]
+
+
+def test_record_stamps_run_id_from_the_job_annotation(cfg, monkeypatch):
+    job = _job(annotations={"run-id": "g-260614-070000"})
+    _patch_cluster(monkeypatch, [job], [_pod("p1")])
+    cost.sample(cfg)
+    assert cost.jobs(cfg)[0].run_id == "g-260614-070000"  # from the Job annotation
+    assert cost.pods(cfg, "j1")[0].run_id == "g-260614-070000"  # propagated to its pods
 
 
 def test_started_at_keeps_first_seen(cfg, monkeypatch):

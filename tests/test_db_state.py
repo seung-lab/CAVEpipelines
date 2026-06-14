@@ -47,7 +47,9 @@ def test_clear_drops_only_this_graphs_run_and_stages(cfg):
 def test_progress_writes_are_best_effort_but_run_creation_surfaces(cfg, tmp_path):
     # a directory where the state db file should be: SQLite cannot open it
     os.makedirs(f"{tmp_path}/blocked/state.db")
-    bad = dataclasses.replace(cfg, database={"state": f"sqlite:///{tmp_path}/blocked/state.db"})
+    bad = dataclasses.replace(
+        cfg, database={"state": f"sqlite:///{tmp_path}/blocked/state.db"}
+    )
     state.set_state(bad, "ingest", state.RUNNING)  # best-effort: never raises
     with pytest.raises(Exception):  # noqa: B017 - the essential write surfaces the failure
         state.start_run(bad, {"ingest"}, parallel=True)

@@ -6,10 +6,12 @@ Indexed Jobs. Layers are operator-gated: submit one, watch it Complete, submit t
 next (a layer's writes are non-idempotent).
 """
 
+import dataclasses
 import functools
 import logging
 import os
 import time
+from datetime import datetime, timezone
 
 import click
 import urllib3
@@ -345,41 +347,69 @@ def top(cfg, layer, once, interval):
         pass
 
 
-@cli.command(help="live per-layer progress table")
+def _cost_note(cfg, workloads) -> None:
+    """Estimated spend so far across `workloads`: compute summed, cluster fee charged once."""
+    rate_table = costs.load_table()
+    if not (cfg.region and rate_table):
+        return
+    try:
+        now = datetime.now(timezone.utc).timestamp()
+        compute, jobs = 0.0, []
+        for w in workloads:
+            cfg_w = dataclasses.replace(cfg, workload=w)
+            per_layer, _ = util.recorded_costs(cfg_w, rate_table)
+            compute += sum(agg["total"] for agg in per_layer.values())
+            jobs += cost.jobs(cfg_w)
+        total = compute + costs.fee(rate_table, cfg.region, jobs, now)
+        note(f"estimated cost so far ~{costs.fmt_dollars(total)} (incl. cluster fee)")
+    except Exception as exc:  # noqa: BLE001 - cost is auxiliary, never fatal
+        note(f"cost unavailable: {exc}")
+
+
+@cli.command(help="live progress: the recorded run's stages, or the configured workload")
 @click.option("-o", "--once", is_flag=True, help="print one snapshot and exit")
 @click.option(
     "-i", "--interval", type=float, default=5.0, help="refresh seconds (default 5)"
 )
 @pass_cfg
 def status(cfg, once, interval):
-    """Live progress over all layers (a-priori chunk counts); runs until Ctrl-C."""
-    if not kube.list_jobs(cfg.namespace, cfg.workload):  # deployed Jobs are the only
-        note(f"no {cfg.workload} jobs in ns '{cfg.namespace}'")  # evidence of a live run
+    """Live progress. With a recorded run: each stage as a table while running, a one-line
+    summary once done. With no run: the configured workload's per-layer table. Until Ctrl-C."""
+    run = state.get_run(cfg)
+    if run is None and not kube.list_jobs(cfg.namespace, cfg.workload):
+        note(f"no recorded run and no {cfg.workload} jobs in ns '{cfg.namespace}'")
         return
     try:  # totals only enrich the table (fill pending-layer counts), so degrade gracefully
         layer_totals = util.read_layer_counts(cfg)
     except (SystemExit, Exception):  # noqa: BLE001
         layer_totals = None
+    if run is not None:
+        order = [w for level in ops.dag_levels(run.stage_set) for w in level]
+
+        def render():
+            current = state.states(cfg)
+            for w in order:
+                if current.get(w) == state.RUNNING:
+                    cost.sample(dataclasses.replace(cfg, workload=w))
+            return util.run_view(cfg, state.get_run(cfg), order, current, layer_totals)
+    else:
+        order = [cfg.workload]
+
+        def render():
+            cost.sample(cfg)
+            return util.status_table(cfg, layer_totals)
+
     if once:
-        cost.sample(cfg)
-        Console().print(util.status_table(cfg, layer_totals))
+        Console().print(render())
         return
     try:
         with Live(refresh_per_second=4) as live:
             while True:  # stays up across layers; Ctrl-C to stop
-                cost.sample(cfg)  # pod runtimes are durable once recorded
-                live.update(util.status_table(cfg, layer_totals))
+                live.update(render())
                 time.sleep(interval)
     except KeyboardInterrupt:
         pass
-    rate_table = costs.load_table()
-    if cfg.region and rate_table:
-        try:
-            per_layer, cluster_fee = util.recorded_costs(cfg, rate_table)
-            total = sum(agg["total"] for agg in per_layer.values()) + cluster_fee
-            note(f"estimated cost so far ~{costs.fmt_dollars(total)} (incl. cluster fee)")
-        except Exception as exc:  # noqa: BLE001 - cost is auxiliary, never fatal
-            note(f"cost unavailable: {exc}")
+    _cost_note(cfg, order)
 
 
 @cli.command("costs", help="the layer's recorded spot cost (sampled runtimes x rates)")

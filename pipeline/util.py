@@ -1,14 +1,16 @@
 """Helper functions for the pipeline CLI."""
 
+import dataclasses
 import json
 import os
 from datetime import datetime, timezone
 
 import yaml
+from rich.console import Group
 from rich.table import Table
 
 from . import cgcache, costs, kube, manifest, note
-from .db import cost
+from .db import cost, state
 
 # Cold ChunkedGraph init fits in 30s with headroom; the warm cg-cache server pays it
 # once at boot, so every later probe returns well within this.
@@ -328,3 +330,70 @@ def status_table(cfg, layer_totals=None) -> Table:
             cost_cell,
         )
     return table
+
+
+_GLYPH = {
+    state.PENDING: "·",
+    state.RUNNING: "⟳",
+    state.COMPLETE: "[green]✓[/]",
+    state.FAILED: "[red]✗[/]",
+}
+
+
+def pid_alive(pid) -> bool:
+    """True if a process with `pid` is running (driver liveness for a stalled run)."""
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists but owned by another user
+    return True
+
+
+def _fmt_span(start_ts: float, end_ts: float) -> str:
+    minutes = max(0, int(end_ts - start_ts)) // 60
+    hours, mins = divmod(minutes, 60)
+    return f"{hours}h{mins:02d}m" if hours else f"{mins}m"
+
+
+def stage_summary(cfg_w, rate_table) -> str:
+    """One line for a completed stage, from the durable cost record (survives undeploy)."""
+    jobs = cost.jobs(cfg_w)
+    if not jobs:
+        return f"  {cfg_w.workload}: complete"
+    layers = sorted({j.layer for j in jobs})
+    starts = [j.started_at for j in jobs if j.started_at is not None]
+    ends = [j.finished_at for j in jobs if j.finished_at is not None]
+    span = _fmt_span(min(starts), max(ends)) if starts and ends else "-"
+    spend = ""
+    if cfg_w.region and rate_table:
+        per_layer, fee = recorded_costs(cfg_w, rate_table)
+        total = sum(a["total"] for a in per_layer.values()) + fee
+        spend = f"  ~{costs.fmt_dollars(total)}" if per_layer else ""
+    return f"  {cfg_w.workload}: complete  layers {layers[0]}-{layers[-1]}  {span}{spend}"
+
+
+def run_view(cfg, run, order, stage_states, layer_totals=None) -> Group:
+    """A run as a DAG header plus per-stage detail: a full table while a stage runs, a
+    one-line summary once it's done, a single line while pending. `order` is DAG-ordered."""
+    glyphs = "  ".join(
+        f"{w} {_GLYPH.get(stage_states.get(w, state.PENDING), '·')}" for w in order
+    )
+    head = f"{cfg.graph_id}  {glyphs}  ({run.status})"
+    if run.status == state.RUNNING and not pid_alive(run.pid):
+        head += "  [red](driver not running — re-run deploy to resume)[/]"
+    rate_table = costs.load_table()
+    parts = [head]
+    for w in order:
+        st = stage_states.get(w, state.PENDING)
+        cfg_w = dataclasses.replace(cfg, workload=w)
+        if st == state.RUNNING:
+            parts.append(status_table(cfg_w, layer_totals))
+        elif st == state.COMPLETE:
+            parts.append(stage_summary(cfg_w, rate_table))
+        else:
+            parts.append(f"  {w}: {st}")
+    return Group(*parts)

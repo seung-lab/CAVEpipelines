@@ -62,7 +62,7 @@ account each appear once.
 | `pipeline submit <layer>` | submit (or re-submit) the layer's Indexed Job; ramp parallelism (refuses if the layer below is not 100% — `--force` to override) |
 | `pipeline scale <layer> <n>` | resize the running layer's workers (set Job parallelism) anytime |
 | `pipeline sample <layer> <n>` | run N scattered chunks (one per pod) to size CPU/memory before a full run |
-| `pipeline status` | live table of **all** layers (a-priori chunk counts; unsubmitted shown pending): done, total, %, active/ready, retries (transient attempts), failed (dead tasks), elapsed, cost (estimate) + nodes; stays up across layers until Ctrl-C |
+| `pipeline status` | live progress until Ctrl-C. For a recorded run (`deploy --oneshot`/`--all-layers`): the build DAG with each stage's state — a full per-layer table while a stage runs, a one-line summary once it's done, and a stalled warning if the driver died. Otherwise the configured workload's per-layer table: done, total, %, active/ready, retries (transient attempts), failed (dead tasks), elapsed, cost (estimate) + nodes |
 | `pipeline inspect <layer> [index]` | list a layer's failed indexes; with an index, that pod's log |
 | `pipeline pods <layer>` | the layer's pods: index, phase, node, scheduling reason |
 | `pipeline events <layer>` | the layer's Job + pod events (scheduling, scale-up, failures) |

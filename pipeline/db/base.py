@@ -30,6 +30,20 @@ def _resolve(url: str) -> str:
     return url
 
 
+def best_effort(fn):
+    """Run fn for its side effects, swallowing any Exception (SystemExit/KeyboardInterrupt
+    still propagate) and returning None — for auxiliary writes that must never abort a run."""
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except Exception:  # noqa: BLE001 - auxiliary, never fatal
+            return None
+
+    return wrapper
+
+
 def _sqlite_pragmas(dbapi_conn, _record) -> None:
     cur = dbapi_conn.cursor()
     cur.execute("PRAGMA journal_mode=WAL")  # readers don't block the writer

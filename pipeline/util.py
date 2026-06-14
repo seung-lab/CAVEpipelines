@@ -1,5 +1,6 @@
 """Helper functions for the pipeline CLI."""
 
+import contextlib
 import dataclasses
 import json
 import os
@@ -93,11 +94,9 @@ def _read_cache(cfg) -> dict:
 
 
 def _write_cache(cfg, cache) -> None:
-    try:
-        with open(_counts_cache(cfg), "w") as f:
-            json.dump(cache, f)
-    except OSError:
-        pass  # cache is best-effort
+    # cache writes are best-effort: a disk hiccup must never abort a submit
+    with contextlib.suppress(OSError), open(_counts_cache(cfg), "w") as f:
+        json.dump(cache, f)
 
 
 def invalidate_layer_counts(cfg) -> None:
@@ -301,10 +300,8 @@ def status_table(cfg, layer_totals=None, run_id="") -> Table:
     rate_table = costs.load_table()
     recorded = {}
     if cfg.region and rate_table:
-        try:
+        with contextlib.suppress(Exception):  # cost is auxiliary, never fatal
             recorded, _ = recorded_costs(cfg, rate_table, run_id)
-        except Exception:  # noqa: BLE001 - cost is auxiliary, never fatal
-            recorded = {}
     layers = sorted(layer_totals) if layer_totals else sorted(jobs_by_layer)
     for layer in layers:
         job = jobs_by_layer.get(layer)

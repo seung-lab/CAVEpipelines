@@ -9,6 +9,7 @@ block is kept verbatim (same yml the graph was always configured with) and passe
 through to `setup`.
 """
 
+import contextlib
 import os
 from dataclasses import dataclass, field
 
@@ -117,10 +118,8 @@ def stored() -> str:
 
 def forget() -> None:
     """Clear the session config (`pipeline reset`)."""
-    try:
+    with contextlib.suppress(OSError):
         os.remove(os.path.join(CONFIG_DIR, ".current"))
-    except OSError:
-        pass
 
 
 def resolve(name: str = None, workload: str = None) -> Config:

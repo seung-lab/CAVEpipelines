@@ -6,6 +6,7 @@ Indexed Jobs. Layers are operator-gated: submit one, watch it Complete, submit t
 next (a layer's writes are non-idempotent).
 """
 
+import contextlib
 import dataclasses
 import functools
 import logging
@@ -405,10 +406,9 @@ def status(cfg, once, interval):
     # yet submitted. Read them from the local cache *each render*, so a transient miss never
     # poisons the session: a running driver writes the cache and the view self-heals.
     if run is None:  # standalone status has no driver to fill the cache — warm it once
-        try:
+        # cluster may be cold; degrade gracefully
+        with contextlib.suppress(SystemExit, Exception):
             util.read_layer_counts(cfg)
-        except (SystemExit, Exception):  # noqa: BLE001 - cluster may be cold; degrade gracefully
-            pass
     if run is not None:
         order = [w for level in ops.dag_levels(run.stage_set) for w in level]
 

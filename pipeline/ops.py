@@ -5,6 +5,7 @@ functions with no click context, so `deploy --oneshot` composes them directly.
 """
 
 import concurrent.futures
+import contextlib
 import graphlib
 import os
 import subprocess
@@ -171,11 +172,9 @@ def submit(cfg, layer, force=False) -> None:
     spot_note = ""
     rate = costs.rate_for(costs.load_table(), cfg.region, cfg.job.compute_class)
     if rate:
-        try:  # cost is auxiliary, never fatal
+        with contextlib.suppress(Exception):  # cost is auxiliary, never fatal
             burn = vcpu * rate["cpu_spot"] + gib * rate["mem_spot"]
             spot_note = f" | ~${burn:.4f}/pod-hr spot"
-        except Exception:  # noqa: BLE001
-            pass
     note(
         f"{name}: {n} chunks, batch {batch}, {completions} tasks | "
         f"workers {parallelism}->{pmax} | {vcpu:g} cpu, {gib:g}Gi per pod{spot_note}"

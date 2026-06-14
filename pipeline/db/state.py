@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import delete, select
 
-from .base import session
+from .base import best_effort, session
 from .models import Run, Stage, StateBase
 
 DEFAULT_URL = "sqlite:///costs/state.db"
@@ -52,33 +52,29 @@ def start_run(cfg, run_set, parallel, overwrite=False, pid=None) -> None:
             s.add(Stage(graph=cfg.graph_id, workload=w, state=PENDING, updated_at=now))
 
 
+@best_effort
 def set_state(cfg, workload, state) -> None:
     """Record a stage's progress; best-effort, never aborts a running workload."""
-    try:
-        with _session(cfg) as s:
-            s.merge(
-                Stage(
-                    graph=cfg.graph_id,
-                    workload=workload,
-                    state=state,
-                    updated_at=_now(),
-                )
+    with _session(cfg) as s:
+        s.merge(
+            Stage(
+                graph=cfg.graph_id,
+                workload=workload,
+                state=state,
+                updated_at=_now(),
             )
-    except Exception:  # noqa: BLE001 - progress tracking is auxiliary
-        pass
+        )
 
 
+@best_effort
 def _set_run(cfg, **fields) -> None:
     """Update fields on this graph's Run row; best-effort."""
-    try:
-        with _session(cfg) as s:
-            run = s.get(Run, cfg.graph_id)
-            if run:
-                for key, value in fields.items():
-                    setattr(run, key, value)
-                run.updated_at = _now()
-    except Exception:  # noqa: BLE001 - progress tracking is auxiliary
-        pass
+    with _session(cfg) as s:
+        run = s.get(Run, cfg.graph_id)
+        if run:
+            for key, value in fields.items():
+                setattr(run, key, value)
+            run.updated_at = _now()
 
 
 def set_run_status(cfg, status) -> None:
@@ -107,21 +103,17 @@ def states(cfg) -> dict:
         return {st.workload: st.state for st in rows}
 
 
+@best_effort
 def clear(cfg) -> None:
     """Drop this graph's run + stage rows (undeploy); best-effort. Cost db is untouched."""
-    try:
-        with _session(cfg) as s:
-            s.execute(delete(Stage).where(Stage.graph == cfg.graph_id))
-            s.execute(delete(Run).where(Run.graph == cfg.graph_id))
-    except Exception:  # noqa: BLE001 - cleanup is best-effort
-        pass
+    with _session(cfg) as s:
+        s.execute(delete(Stage).where(Stage.graph == cfg.graph_id))
+        s.execute(delete(Run).where(Run.graph == cfg.graph_id))
 
 
+@best_effort
 def purge(cfg) -> None:
     """Delete every run + stage row (all graphs); best-effort. Cost db is untouched."""
-    try:
-        with _session(cfg) as s:
-            s.execute(delete(Stage))
-            s.execute(delete(Run))
-    except Exception:  # noqa: BLE001 - cleanup is best-effort
-        pass
+    with _session(cfg) as s:
+        s.execute(delete(Stage))
+        s.execute(delete(Run))

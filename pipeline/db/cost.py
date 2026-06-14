@@ -14,7 +14,7 @@ from sqlalchemy import select, update
 
 from .. import kube
 from ..costs import parse_cpu, parse_mem
-from .base import session
+from .base import best_effort, session
 from .models import CostBase, Job, Pod
 
 DEFAULT_URL = "sqlite:///costs/cost.db"
@@ -137,18 +137,16 @@ def _close_out_unlisted(s, cfg, listed) -> None:
     s.execute(update(Job).where(*job_where).values(finished_at=Job.last_seen, active=0))
 
 
+@best_effort
 def sample(cfg) -> None:
     """Record the workload's Jobs + pods right now; best-effort, never raises."""
-    try:
-        now = datetime.now(timezone.utc).timestamp()
-        with _session(cfg) as s:
-            listed = []
-            for job in kube.list_jobs(cfg.namespace, cfg.workload):
-                record(s, cfg, job, kube.pods_of(cfg.namespace, job.metadata.name), now)
-                listed.append(job.metadata.uid)
-            _close_out_unlisted(s, cfg, listed)
-    except Exception:  # noqa: BLE001 - cost is auxiliary, never fatal
-        pass
+    now = datetime.now(timezone.utc).timestamp()
+    with _session(cfg) as s:
+        listed = []
+        for job in kube.list_jobs(cfg.namespace, cfg.workload):
+            record(s, cfg, job, kube.pods_of(cfg.namespace, job.metadata.name), now)
+            listed.append(job.metadata.uid)
+        _close_out_unlisted(s, cfg, listed)
 
 
 def jobs(cfg, run_id, workload=None) -> list[Job]:

@@ -23,7 +23,10 @@ def cfg(tmp_path):
         dataset={"data_source": {"EDGES": "gs://b/e"}},
         job=config.Job(perm_seed=7, batch_size=1000, compute_class="Balanced"),
         config_dir=str(tmp_path),
-        database={"cost": f"sqlite:///{tmp_path}/cost.db"},
+        database={
+            "cost": f"sqlite:///{tmp_path}/cost.db",
+            "state": f"sqlite:///{tmp_path}/state.db",
+        },
     )
 
 

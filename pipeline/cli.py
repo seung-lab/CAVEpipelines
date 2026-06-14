@@ -8,6 +8,7 @@ next (a layer's writes are non-idempotent).
 
 import functools
 import logging
+import os
 import time
 
 import click
@@ -18,7 +19,7 @@ from rich.live import Live
 from rich.table import Table
 
 from . import NOTE, config, costs, kube, log, manifest, note, ops, util
-from .db import cost
+from .db import cost, state
 
 
 @click.group(help=__doc__, context_settings={"help_option_names": ["-h", "--help"]})
@@ -143,7 +144,8 @@ def deploy(
         )  # confirm before any cluster mutation
     ops.deploy_infra(cfg, secrets)
     if run_set is not None:
-        ops.orchestrate(cfg, run_set, parallel)
+        state.start_run(cfg, run_set, parallel, pid=os.getpid())
+        ops.drive(cfg)
     elif run_setup:
         ops.setup(cfg)
         if submit_l2:

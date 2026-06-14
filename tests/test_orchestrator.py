@@ -3,6 +3,7 @@ import dataclasses
 import pytest
 
 from pipeline import ops, stages
+from pipeline.db import state
 
 
 def test_dag_levels_orders_by_depth():
@@ -53,6 +54,23 @@ def test_orchestrate_parallel_partial_failure_reports_and_finishes_siblings(
     with pytest.raises(SystemExit, match="meshing"):
         ops.orchestrate(cfg, {"meshing", "l2cache"}, parallel=True)
     assert "l2cache" in ran  # a failing sibling never aborts the healthy one
+
+
+def test_run_workload_records_complete_then_failed(monkeypatch, cfg):
+    monkeypatch.setattr(ops, "setup", lambda c, exist_ok=False: None)
+    monkeypatch.setattr(ops.util, "read_layer_counts", lambda c: {2: 1})
+    monkeypatch.setattr(ops, "top_layer", lambda c, counts: 2)
+    monkeypatch.setattr(ops, "run_layer", lambda c, layer: None)
+    ops.run_workload(dataclasses.replace(cfg, workload="ingest"))
+    assert state.states(cfg)["ingest"] == state.COMPLETE
+
+    def boom(c, layer):
+        raise SystemExit("dead tasks")
+
+    monkeypatch.setattr(ops, "run_layer", boom)
+    with pytest.raises(SystemExit):
+        ops.run_workload(dataclasses.replace(cfg, workload="meshing"))
+    assert state.states(cfg)["meshing"] == state.FAILED
 
 
 def test_select_range_picks_depth_levels(cfg):

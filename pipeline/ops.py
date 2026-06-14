@@ -15,7 +15,7 @@ import yaml
 from kubernetes.client import ApiException
 
 from . import config, costs, kube, manifest, note, stages, util
-from .db import cost
+from .db import cost, state
 
 HELM_CHART = "helm"
 ONESHOT_POLL_SEC = 30
@@ -57,8 +57,8 @@ def deploy_infra(cfg, secrets_dir: str) -> None:
 
 def undeploy(cfg) -> None:
     """Tear down everything deploy/submit created: Jobs, dataset ConfigMaps, helm release,
-    and the local layer-counts cache. The cost db and terraform-managed infra (cluster,
-    identities, Bigtable) are untouched."""
+    the local layer-counts cache, and the run state. The cost db and terraform-managed infra
+    (cluster, identities, Bigtable) are untouched."""
     note("undeploy: deleting jobs, dataset configmaps + helm release")
     for job in kube.list_jobs(cfg.namespace):
         kube.delete_job(cfg.namespace, job.metadata.name)
@@ -74,9 +74,10 @@ def undeploy(cfg) -> None:
             f"helm uninstall failed (exit {res.returncode}):\n{res.stderr.strip()}"
         )
     note(res.stdout.strip() or res.stderr.strip() or "release removed")
-    # derived temp state; stale counts would otherwise phantom-fill `status`
+    # derived temp state; stale counts/run rows would otherwise phantom-fill `status`
     util.invalidate_layer_counts(cfg)
-    note("cleared local layer-counts cache")
+    state.clear(cfg)
+    note("cleared local layer-counts cache + run state")
 
 
 def setup(cfg, exist_ok=False) -> None:
@@ -256,6 +257,15 @@ def orchestrate(cfg, run_set, parallel=True) -> None:
     note("orchestrate: all workloads complete")
 
 
+def drive(cfg) -> None:
+    """Run the recorded run to completion, then mark it done."""
+    run = state.get_run(cfg)
+    if run is None:
+        raise SystemExit("no run recorded; deploy --oneshot or --all-layers first")
+    orchestrate(cfg, run.stage_set, run.parallel)
+    state.finish_run(cfg)
+
+
 def _run_ready(cfg, ready, parallel) -> None:
     """Run a batch of ready workloads — concurrently when parallel, else serially."""
     cfgs = {w: _phase_cfg(cfg, w) for w in ready}
@@ -290,11 +300,19 @@ def _run_ready(cfg, ready, parallel) -> None:
 
 
 def run_workload(cfg_w) -> None:
-    """Run every layer of one workload, with its setup."""
-    setup(cfg_w, exist_ok=True)  # forgiveness: a fresh graph creates, a resume skips
-    counts = util.read_layer_counts(cfg_w)
-    for layer in range(2, top_layer(cfg_w, counts) + 1):
-        run_layer(cfg_w, layer)
+    """Run every layer of one workload, with its setup; record its lifecycle state."""
+    state.set_state(cfg_w, cfg_w.workload, state.RUNNING)
+    try:
+        setup(cfg_w, exist_ok=True)  # forgiveness: a fresh graph creates, a resume skips
+        counts = util.read_layer_counts(cfg_w)
+        for layer in range(2, top_layer(cfg_w, counts) + 1):
+            run_layer(cfg_w, layer)
+    except KeyboardInterrupt:
+        raise  # Jobs keep running; leave the stage 'running' so a re-run resumes it
+    except BaseException:
+        state.set_state(cfg_w, cfg_w.workload, state.FAILED)
+        raise
+    state.set_state(cfg_w, cfg_w.workload, state.COMPLETE)
     note(f"all layers complete ({cfg_w.workload})")
 
 

@@ -1,6 +1,7 @@
 import io
 import pathlib
 import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -8,8 +9,8 @@ from rich.console import Console
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-from pipeline import config  # noqa: E402
-from pipeline.db import base, state  # noqa: E402
+from pipeline import config, util  # noqa: E402
+from pipeline.db import base, cost, state  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -110,3 +111,25 @@ def running_run(cfg):
     """Open a run for the default graph (status running, one ingest stage)."""
     state.start_run(cfg, {"ingest"}, parallel=True)
     return cfg
+
+
+@pytest.fixture
+def no_cost_sample(monkeypatch):
+    """Silence cost sampling (it would watch the live cluster)."""
+    monkeypatch.setattr(cost, "sample", lambda c: None)
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    """No real sleeps in ramp/poll loops."""
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+
+@pytest.fixture
+def stub_layer_counts(monkeypatch):
+    """Stub util.read_layer_counts to fixed counts, bypassing the cluster probe."""
+
+    def _stub(counts):
+        monkeypatch.setattr(util, "read_layer_counts", lambda c: counts)
+
+    return _stub

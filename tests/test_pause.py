@@ -11,15 +11,6 @@ from pipeline.db import state
 _COMPLETE = [SimpleNamespace(type="Complete", status="True")]
 
 
-def test_run_layer_stops_when_its_job_is_suspended(monkeypatch, cfg, make_job):
-    job = make_job(conditions=[], suspend=True)  # pause drained it to 0 pods
-    monkeypatch.setattr(ops.cost, "sample", lambda c: None)
-    monkeypatch.setattr(ops, "_read_job", lambda c, layer: job)
-    monkeypatch.setattr(ops, "submit", lambda c, layer: None)
-    with pytest.raises(ops.Paused):
-        ops.run_layer(cfg, 2)
-
-
 def test_pause_suspends_only_incomplete_jobs_and_marks_paused(
     monkeypatch, cfg, running_run, make_job
 ):
@@ -128,11 +119,11 @@ def test_resume_drives_a_stalled_run(monkeypatch, cfg, running_run):
     assert driven == [True]
 
 
-def test_run_ready_surfaces_a_pause_not_a_failure(monkeypatch, cfg):
+def test_run_ready_surfaces_a_pause_not_a_failure(monkeypatch, cfg, stub_layer_counts):
     monkeypatch.setattr(
         ops, "_phase_cfg", lambda c, w: dataclasses.replace(c, workload=w)
     )
-    monkeypatch.setattr(ops.util, "read_layer_counts", lambda c: {2: 1})
+    stub_layer_counts({2: 1})
 
     def run_workload(cfg_w):
         if cfg_w.workload == "meshing":

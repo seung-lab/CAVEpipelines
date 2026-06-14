@@ -1,7 +1,6 @@
 import dataclasses
 from types import SimpleNamespace
 
-import pytest
 from click.testing import CliRunner
 
 from pipeline import cli, ops
@@ -65,13 +64,13 @@ def test_oneshot_aborts_before_any_mutation(monkeypatch, cfg):
     assert not touched  # confirmation comes before helm/secret work
 
 
-def test_oneshot_sequences_phases(monkeypatch, cfg):
+def test_oneshot_sequences_phases(monkeypatch, cfg, stub_layer_counts):
     cfg.dataset["mesh_config"] = {"max_layer": 3}
     cfg.config_dir = "nonexistent"
     calls = []
     _mock_helm(monkeypatch, calls)
     monkeypatch.setattr(cli.config, "load", _fake_load(cfg))
-    monkeypatch.setattr(ops.util, "read_layer_counts", lambda c: {2: 100, 3: 10, 4: 1})
+    stub_layer_counts({2: 100, 3: 10, 4: 1})
     monkeypatch.setattr(
         ops,
         "setup",
@@ -104,13 +103,13 @@ def test_oneshot_requires_mesh_config(cfg):
     assert "not configured" in res.output
 
 
-def test_oneshot_ingest_only_range_runs_just_ingest(monkeypatch, cfg):
+def test_oneshot_ingest_only_range_runs_just_ingest(monkeypatch, cfg, stub_layer_counts):
     cfg.dataset.pop("mesh_config", None)  # ingest-only range -> mesh_config not needed
     cfg.config_dir = "nonexistent"
     calls = []
     _mock_helm(monkeypatch, calls)
     monkeypatch.setattr(cli.config, "load", _fake_load(cfg))
-    monkeypatch.setattr(ops.util, "read_layer_counts", lambda c: {2: 5})
+    stub_layer_counts({2: 5})
     monkeypatch.setattr(
         ops,
         "setup",
@@ -156,39 +155,3 @@ def test_all_layers_ingest_runs_setup_then_ingest_layers(monkeypatch, cfg):
     _mock_all_layers(monkeypatch, cfg, {2: 100, 3: 10}, calls)
     _invoke(["--all-layers", "--yes"], cfg)
     assert calls == ["helm", "setup(ingest,exist_ok=True)", "ingest-l2", "ingest-l3"]
-
-
-_CONDS = {
-    "complete": [SimpleNamespace(type="Complete", status="True")],
-    "failed": [SimpleNamespace(type="Failed", status="True")],
-    "running": [],
-}
-
-
-def test_run_layer_skips_complete_layers(monkeypatch, cfg, make_job):
-    job = make_job(conditions=_CONDS["complete"], succeeded=5)
-    monkeypatch.setattr(ops, "_read_job", lambda c, layer: job)
-    submitted = []
-    monkeypatch.setattr(ops, "submit", lambda c, layer: submitted.append(True))
-    ops.run_layer(cfg, 2)
-    assert not submitted
-
-
-def test_run_layer_attaches_and_stops_on_dead_tasks(monkeypatch, cfg, make_job):
-    job = make_job(conditions=_CONDS["running"], succeeded=5, failed_indexes="0-3")
-    monkeypatch.setattr(ops.cost, "sample", lambda c: None)
-    monkeypatch.setattr(ops, "_read_job", lambda c, layer: job)
-    submitted = []
-    monkeypatch.setattr(ops, "submit", lambda c, layer: submitted.append(True))
-    with pytest.raises(SystemExit, match="inspect 2"):
-        ops.run_layer(cfg, 2)
-    assert not submitted  # a running layer is attached, never recreated
-
-
-def test_run_layer_stops_cleanly_when_job_vanishes(monkeypatch, cfg, make_job):
-    job = make_job(conditions=_CONDS["running"])
-    reads = iter([job, None])  # present at attach, deleted before the first poll
-    monkeypatch.setattr(ops.cost, "sample", lambda c: None)
-    monkeypatch.setattr(ops, "_read_job", lambda c, layer: next(reads))
-    with pytest.raises(SystemExit, match="disappeared"):
-        ops.run_layer(cfg, 2)

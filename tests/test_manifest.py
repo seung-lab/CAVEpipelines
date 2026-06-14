@@ -178,3 +178,47 @@ def test_job_name_is_dns_safe_for_underscore_workloads(cfg):
     assert manifest.job_name(cfg, 2) == "migrate-cleanup-l2"
     job = _job(cfg)
     assert job["spec"]["template"]["spec"]["containers"][0]["name"] == "migrate-cleanup"
+
+
+def test_command_for_routes_per_workload(cfg):
+    cfg.workload = "ingest"
+    assert manifest.command_for(cfg) == manifest.INGEST_COMMAND  # built-in -> its command
+    cfg.workload = "migrate_cleanup"  # the cleanup pass is the migrate worker + --clean
+    assert manifest.command_for(cfg) == manifest.MIGRATE_COMMAND + ["--clean"]
+    # no built-in entrypoint -> cfg.commands (empty here) -> None
+    cfg.workload = "l2cache"
+    assert manifest.command_for(cfg) is None
+
+
+def test_env_injected_into_job_and_oneshot(cfg):
+    cfg.env = {"TASK_SIZE": "1", "PROCESS_MULTIPLIER": "5", "BIGTABLE_PROJECT": None}
+    job = manifest.job_spec(cfg, layer=2, chunks=100, completions=1, parallelism=1)
+    job_env = {e.name: e.value for e in job.spec.template.spec.containers[0].env}
+    assert job_env["TASK_SIZE"] == "1" and job_env["PROCESS_MULTIPLIER"] == "5"
+    assert job_env["PCG_GRAPH_ID"] == cfg.graph_id  # alongside the built-in PCG_* vars
+    # unset keys must be skipped, not injected as "None" (would override the ConfigMap)
+    assert "BIGTABLE_PROJECT" not in job_env
+    pod = manifest.oneshot_pod_spec(cfg, "u", ["python", "-c", "pass"])
+    pod_env = {e.name: e.value for e in pod.spec.containers[0].env}
+    assert pod_env["TASK_SIZE"] == "1"
+
+
+def test_helm_values_carry_secret(cfg):
+    vals = manifest.helm_values(cfg, {"google-secret.json": "YjY0"})
+    assert vals["secrets"] == [
+        {
+            "name": cfg.secret_name,
+            "namespace": cfg.namespace,
+            "data": {"google-secret.json": "YjY0"},
+        }
+    ]
+    assert manifest.helm_values(cfg)["secrets"] == []  # no files -> no Secret rendered
+
+
+def test_zone_pins_worker_pods(cfg):
+    cfg.zone = "us-east1-b"
+    ns = manifest.job_spec(cfg, 2, 100, 1, 1).spec.template.spec.node_selector
+    assert ns["topology.kubernetes.io/zone"] == "us-east1-b"
+    cfg.zone = ""
+    ns = manifest.job_spec(cfg, 2, 100, 1, 1).spec.template.spec.node_selector
+    assert "topology.kubernetes.io/zone" not in ns

@@ -40,11 +40,9 @@ def test_run_view_flags_a_stalled_run(cfg, monkeypatch, no_cluster, render):
 
 
 def test_status_once_with_a_run_renders_the_multi_stage_view(
-    cfg, monkeypatch, no_cluster
+    cfg, monkeypatch, no_cluster, no_cost_sample
 ):
     monkeypatch.setattr(util, "kube", no_cluster)
-    monkeypatch.setattr(cli.cost, "sample", lambda c: None)
-    monkeypatch.setattr(cli.util, "read_layer_counts", lambda c: {})
     cfg = dataclasses.replace(cfg, region="")
     state.start_run(cfg, {"ingest", "meshing"}, parallel=True)
     state.set_state(cfg, "ingest", state.COMPLETE)
@@ -55,12 +53,11 @@ def test_status_once_with_a_run_renders_the_multi_stage_view(
 
 
 def test_status_recorded_run_reads_cache_and_shows_unsubmitted_layers(
-    cfg, monkeypatch, no_cluster
+    cfg, monkeypatch, no_cluster, no_cost_sample
 ):
     # the driver cached the layer counts; status must read them (not probe a cold util pod)
     # so the table shows every layer, including those not yet submitted as a Job
     monkeypatch.setattr(util, "kube", no_cluster)
-    monkeypatch.setattr(cli.cost, "sample", lambda c: None)
     cfg = dataclasses.replace(cfg, region="")
     util._write_cache(cfg, {cfg.graph_id: {"2": 847, "3": 144, "4": 18}})
     state.start_run(cfg, {"ingest"}, parallel=True)
@@ -77,11 +74,12 @@ def test_status_recorded_run_reads_cache_and_shows_unsubmitted_layers(
     )  # every cached layer, no Job needed
 
 
-def test_status_exits_cleanly_when_run_cleared_mid_watch(cfg, monkeypatch, no_cluster):
+def test_status_exits_cleanly_when_run_cleared_mid_watch(
+    cfg, monkeypatch, no_cluster, no_cost_sample
+):
     # the run exists when status starts but is cleared (undeploy/purge) before the first
     # render: status must exit cleanly, not crash in run_view on a None run
     monkeypatch.setattr(util, "kube", no_cluster)
-    monkeypatch.setattr(cli.cost, "sample", lambda c: None)
     cfg = dataclasses.replace(cfg, region="")
     state.start_run(cfg, {"ingest"}, parallel=True)
     seq = iter(

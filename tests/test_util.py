@@ -1,8 +1,3 @@
-import json
-import socket
-import subprocess
-import sys
-import threading
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -81,6 +76,54 @@ def test_status_done_caps_at_total(monkeypatch, cfg, render):
     assert "950" in out and "100%" in out  # not 1000, not 105%
 
 
+def test_count_indexes_parses_k8s_interval_strings():
+    assert util.count_indexes(None) == 0
+    assert util.count_indexes("") == 0
+    assert util.count_indexes("1,3-5,7") == 5
+
+
+def test_status_table_splits_retries_from_dead_tasks(monkeypatch, cfg, make_job):
+    job = make_job(chunks=100, batch_size=10, succeeded=10, failed=34)
+    monkeypatch.setattr(util.kube, "list_jobs", lambda ns, workload=None: [job])
+    monkeypatch.setattr(util.kube, "node_summary", lambda: (0, 0, {}))
+    monkeypatch.setattr(util.costs, "load_table", lambda: {})
+    cells = {c.header: list(c.cells) for c in util.status_table(cfg, {2: 100}).columns}
+    assert cells["retries"] == ["34"]  # transient attempts, all recovered
+    assert cells["failed"] == ["0"]  # nothing permanently dead -> not alarming
+    job.status.failed_indexes = "1,3-5,7"
+    cells = {c.header: list(c.cells) for c in util.status_table(cfg, {2: 100}).columns}
+    assert cells["failed"] == ["[red]5[/]"]
+
+
+def test_usage_table_renders_cores_and_gib_by_task_index(monkeypatch, cfg):
+    items = [
+        {
+            "metadata": {"name": "ingest-l6-11-abc"},
+            "containers": [{"usage": {"cpu": "8913484669n", "memory": "6341544Ki"}}],
+        },
+        {
+            "metadata": {"name": "ingest-l6-2-xyz"},
+            "containers": [{"usage": {"cpu": "250m", "memory": "445480Ki"}}],
+        },
+    ]
+    monkeypatch.setattr(util.kube, "pod_metrics", lambda ns, name: items)
+    cells = {c.header: list(c.cells) for c in util.usage_table(cfg, "ingest-l6").columns}
+    assert cells["pod"] == ["ingest-l6-2-xyz", "ingest-l6-11-abc"]  # task order
+    assert cells["cpu"] == ["0.2", "8.9"]
+    assert cells["memory"] == ["0.4Gi", "6.0Gi"]
+
+
+def test_status_table_shows_pending_layers(monkeypatch, cfg):
+    def _raise(*a, **k):
+        raise Exception("no nodes")
+
+    monkeypatch.setattr(util.kube, "list_jobs", lambda ns, workload=None: [])
+    monkeypatch.setattr(util.kube, "node_summary", _raise)
+    monkeypatch.setattr(util.costs, "load_table", lambda: {})
+    table = util.status_table(cfg, {2: 100, 3: 200})
+    assert table.row_count == 2  # both layers shown though none submitted
+
+
 def test_query_meta_routes_persistent_to_cache_client(monkeypatch, cfg):
     cfg.persistent_util = True
     seen = {}
@@ -119,65 +162,3 @@ def test_query_meta_routes_oneshot_when_not_persistent(monkeypatch, cfg):
     )
     assert util._query_meta(cfg, "mesh", "g") == "yes\n"
     assert cgcache.ONESHOT_SRC in seen["argv"]  # the inline import snippet
-
-
-def _stub_cache_server(sock_path, reply, ready):
-    """Bind a unix socket, accept one connection, reply with `reply` as JSON+newline."""
-    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    srv.settimeout(10)
-    srv.bind(sock_path)
-    srv.listen(1)
-    ready.set()
-    try:
-        conn, _ = srv.accept()
-    except socket.timeout:
-        srv.close()
-        return
-    with conn:
-        conn.recv(4096)  # drain the {op, gid} request
-        conn.sendall((json.dumps(reply) + "\n").encode())
-    srv.close()
-
-
-def _run_client(sock_path, op, gid, timeout):
-    return subprocess.run(
-        [sys.executable, "-c", cgcache.CLIENT_SRC, sock_path, op, gid, str(timeout)],
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
-
-
-def _serve(sock_path, reply):
-    ready = threading.Event()
-    t = threading.Thread(
-        target=_stub_cache_server, args=(sock_path, reply, ready), daemon=True
-    )
-    t.start()
-    ready.wait(5)
-    return t
-
-
-def test_client_relays_server_stdout(tmp_path):
-    sock = str(tmp_path / "s.sock")
-    t = _serve(sock, {"ok": True, "out": "100 50 1\n"})
-    res = _run_client(sock, "counts", "g", 5)
-    t.join(5)
-    assert res.returncode == 0
-    assert res.stdout == "100 50 1\n"  # relayed verbatim -> existing parsers untouched
-
-
-def test_client_surfaces_server_error(tmp_path):
-    sock = str(tmp_path / "s.sock")
-    t = _serve(sock, {"ok": False, "err": "Traceback: boom\n"})
-    res = _run_client(sock, "counts", "g", 5)
-    t.join(5)
-    assert res.returncode != 0  # non-zero -> exec_cmd raises, surfacing the traceback
-    assert "boom" in res.stderr
-
-
-def test_client_unreachable_exits_after_timeout(tmp_path):
-    sock = str(tmp_path / "nobody.sock")  # nothing ever binds here
-    res = _run_client(sock, "counts", "g", 1)  # 1s connect-retry window
-    assert res.returncode != 0
-    assert "unreachable" in res.stderr

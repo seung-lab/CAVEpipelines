@@ -36,13 +36,13 @@ def test_orchestrate_solo_stage_runs_without_a_completion_gate(monkeypatch, cfg)
 
 
 def test_orchestrate_parallel_partial_failure_reports_and_finishes_siblings(
-    monkeypatch, cfg
+    monkeypatch, cfg, stub_layer_counts
 ):
     cfg.persistent_util = False
     monkeypatch.setattr(
         ops, "_phase_cfg", lambda c, w: dataclasses.replace(c, workload=w)
     )
-    monkeypatch.setattr(ops.util, "read_layer_counts", lambda c: {2: 1})
+    stub_layer_counts({2: 1})
     ran = []
 
     def fake_run_workload(cfg_w):
@@ -56,9 +56,9 @@ def test_orchestrate_parallel_partial_failure_reports_and_finishes_siblings(
     assert "l2cache" in ran  # a failing sibling never aborts the healthy one
 
 
-def test_run_workload_records_complete_then_failed(monkeypatch, cfg):
+def test_run_workload_records_complete_then_failed(monkeypatch, cfg, stub_layer_counts):
     monkeypatch.setattr(ops, "setup", lambda c, exist_ok=False: None)
-    monkeypatch.setattr(ops.util, "read_layer_counts", lambda c: {2: 1})
+    stub_layer_counts({2: 1})
     monkeypatch.setattr(ops, "top_layer", lambda c, counts: 2)
     monkeypatch.setattr(ops, "run_layer", lambda c, layer: None)
     ops.run_workload(dataclasses.replace(cfg, workload="ingest"))

@@ -22,18 +22,16 @@ def _core_returning(batches):
     )
 
 
-def test_util_pod_waits_through_pending(monkeypatch):
+def test_util_pod_waits_through_pending(monkeypatch, no_sleep):
     fake = _core_returning([[_pod("Pending")], [_pod("Pending")], [_pod("Running")]])
     monkeypatch.setattr(kube, "core", lambda: fake)
-    monkeypatch.setattr(kube.time, "sleep", lambda s: None)
     assert kube.util_pod("ns") == "pipeline-util-abc"
 
 
-def test_util_pod_skips_terminating_pod(monkeypatch):
+def test_util_pod_skips_terminating_pod(monkeypatch, no_sleep):
     # a Running pod with deletion_timestamp is dying (helm rollout) — wait for its successor
     fake = _core_returning([[_pod("Running", deleting=True)], [_pod("Running")]])
     monkeypatch.setattr(kube, "core", lambda: fake)
-    monkeypatch.setattr(kube.time, "sleep", lambda s: None)
     assert kube.util_pod("ns") == "pipeline-util-abc"
 
 
@@ -84,7 +82,7 @@ def test_secret_data_missing_file_raises(tmp_path):
         "847 144 18 4 1\n",  # a client variant that already decodes
     ],
 )
-def test_run_oneshot_returns_decoded_text(monkeypatch, log_return):
+def test_run_oneshot_returns_decoded_text(monkeypatch, log_return, no_sleep):
     # the log must come back as text regardless of client return shape — never a
     # str(bytes) "b'...'" repr, which silently breaks every consumer
     def absent_delete(name, ns, **kw):
@@ -99,6 +97,5 @@ def test_run_oneshot_returns_decoded_text(monkeypatch, log_return):
         read_namespaced_pod_log=lambda name, ns, **kw: log_return,
     )
     monkeypatch.setattr(kube, "core", lambda: fake)
-    monkeypatch.setattr(kube.time, "sleep", lambda s: None)
     spec = SimpleNamespace(metadata=SimpleNamespace(name="layer-counts-xyz"))
     assert kube.run_oneshot("ns", spec) == "847 144 18 4 1\n"

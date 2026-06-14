@@ -164,6 +164,18 @@ def undeploy(cfg):
     ops.undeploy(cfg)
 
 
+@cli.command(help="suspend every pipeline Job (0 resources; deletes nothing)")
+@pass_cfg
+def pause(cfg):
+    ops.pause(cfg)
+
+
+@cli.command(help="unsuspend the run's Jobs and continue driving where it paused")
+@pass_cfg
+def resume(cfg):
+    ops.resume(cfg)
+
+
 @cli.command(help="create the graph table + meta (one-shot pod with the dataset)")
 @click.option(
     "--exists", is_flag=True, help="skip (don't error) if the graph already exists"

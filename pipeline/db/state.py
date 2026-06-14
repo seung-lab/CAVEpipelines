@@ -65,15 +65,26 @@ def set_state(cfg, workload, state) -> None:
         pass
 
 
-def set_run_status(cfg, status) -> None:
-    """Update the run's status; best-effort."""
+def _set_run(cfg, **fields) -> None:
+    """Update fields on this graph's Run row; best-effort."""
     try:
         with _session(cfg) as s:
             run = s.get(Run, cfg.graph_id)
             if run:
-                run.status, run.updated_at = status, _now()
+                for key, value in fields.items():
+                    setattr(run, key, value)
+                run.updated_at = _now()
     except Exception:  # noqa: BLE001 - progress tracking is auxiliary
         pass
+
+
+def set_run_status(cfg, status) -> None:
+    _set_run(cfg, status=status)
+
+
+def set_run_pid(cfg, pid) -> None:
+    """Record the driver process so a stalled run (running + dead pid) is detectable."""
+    _set_run(cfg, pid=pid)
 
 
 def finish_run(cfg) -> None:

@@ -48,6 +48,7 @@ def make_job():
         ready=0,
         failed=0,
         failed_indexes=None,
+        suspend=None,
     ):
         ann = {"chunks": str(chunks), "batch_size": str(batch_size)}
         ann.update(annotations or {})
@@ -55,6 +56,7 @@ def make_job():
             metadata=SimpleNamespace(
                 name=name, labels={"graph": graph, "layer": str(layer)}, annotations=ann
             ),
+            spec=SimpleNamespace(suspend=suspend),
             status=SimpleNamespace(
                 conditions=conditions or [],
                 succeeded=succeeded,

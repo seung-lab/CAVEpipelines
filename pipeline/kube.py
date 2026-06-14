@@ -315,3 +315,8 @@ def run_oneshot(namespace: str, pod_spec) -> str:
 def set_parallelism(namespace: str, name: str, parallelism: int):
     # merge patch of one field (a full V1JobSpec would require `template`)
     batch().patch_namespaced_job(name, namespace, {"spec": {"parallelism": parallelism}})
+
+
+def set_suspend(namespace: str, name: str, suspend: bool):
+    # suspend=True drains a Job to 0 pods (SIGTERM) without deleting it; False resumes
+    batch().patch_namespaced_job(name, namespace, {"spec": {"suspend": suspend}})

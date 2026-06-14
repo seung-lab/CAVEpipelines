@@ -70,6 +70,8 @@ account each appear once.
 | `pipeline costs <layer>` | the layer's recorded Spot spend so far (from the local cost db; estimate) |
 | `pipeline delete <layer>` | delete the layer's Job and pods |
 | `pipeline reset` | forget the session config (the next `-c` selects a new one) |
+| `pipeline pause` | suspend every pipeline Job — pods get SIGTERM, Autopilot scales to 0, **nothing is deleted** (finished indexes are kept); the driver stops on its next poll |
+| `pipeline resume` | unsuspend the run's Jobs and continue driving from where it paused (finished layers skip; the suspended layer resumes its incomplete indexes) |
 | `pipeline undeploy` | delete all pipeline Jobs + the helm release (KSA, ConfigMaps, util pod, secret) + the local layer-counts cache + run state |
 
 **One graph, one workload at a time** — both `graph_id` and `workload`

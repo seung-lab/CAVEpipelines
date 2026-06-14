@@ -399,10 +399,14 @@ def status(cfg, once, interval):
     if run is None and not kube.list_jobs(cfg.namespace, cfg.workload):
         note(f"no recorded run and no {cfg.workload} jobs in ns '{cfg.namespace}'")
         return
-    try:  # totals only enrich the table (fill pending-layer counts), so degrade gracefully
-        layer_totals = util.read_layer_counts(cfg)
-    except (SystemExit, Exception):  # noqa: BLE001
-        layer_totals = None
+    # Totals (per-layer chunk counts) only enrich the table — they fill in the layers not
+    # yet submitted. Read them from the local cache *each render*, so a transient miss never
+    # poisons the session: a running driver writes the cache and the view self-heals.
+    if run is None:  # standalone status has no driver to fill the cache — warm it once
+        try:
+            util.read_layer_counts(cfg)
+        except (SystemExit, Exception):  # noqa: BLE001 - cluster may be cold; degrade gracefully
+            pass
     if run is not None:
         order = [w for level in ops.dag_levels(run.stage_set) for w in level]
 
@@ -411,13 +415,15 @@ def status(cfg, once, interval):
             for w in order:
                 if current.get(w) == state.RUNNING:
                     cost.sample(dataclasses.replace(cfg, workload=w))
-            return util.run_view(cfg, state.get_run(cfg), order, current, layer_totals)
+            return util.run_view(
+                cfg, state.get_run(cfg), order, current, util.cached_layer_counts(cfg)
+            )
     else:
         order = [cfg.workload]
 
         def render():
             cost.sample(cfg)
-            return util.status_table(cfg, layer_totals)
+            return util.status_table(cfg, util.cached_layer_counts(cfg))
 
     if once:
         Console().print(render())

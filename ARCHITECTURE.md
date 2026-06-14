@@ -187,6 +187,14 @@ env, and the database URLs. `dataset.yml` is the graph definition (`data_source`
 `graph_config`, `mesh_config`, `l2cache_config`), read **only** by `setup`; workers read graph
 meta from Bigtable at run time. Field-by-field docs are in [config/README.md](config/README.md).
 
+**Setup vs the util pod.** `setup` and `mesh-meta` run as **fresh one-shot pods** that mount the
+graph's `dataset.yml` (delivered as a per-graph ConfigMap). They must be fresh pods, not the
+long-lived util pod: a running pod's ConfigMap mount lags the kubelet sync by up to ~90s, so a
+just-applied dataset would be read stale. The optional **util pod** is the opposite — a
+persistent, graph-agnostic, dataset-free server holding a warm graph handle for sub-second meta
+reads (layer counts) between layers. They can't merge: `setup` is a per-graph one-time write that
+must see the current dataset; the util pod is a shared warm reader of an already-built graph.
+
 **Session config.** The first `-c <pipeline.yml>` becomes the session config (persisted in
 `config/.current`); later commands omit `-c` and a different one is refused until `pipeline
 reset` — so a long terminal session can't silently target the wrong graph. `-g` overrides

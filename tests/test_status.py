@@ -84,3 +84,18 @@ def test_status_recorded_run_reads_cache_and_shows_unsubmitted_layers(cfg, monke
     assert all(
         t in res.output for t in ("847", "144", "18")
     )  # every cached layer, no Job needed
+
+
+def test_status_exits_cleanly_when_run_cleared_mid_watch(cfg, monkeypatch):
+    # the run exists when status starts but is cleared (undeploy/purge) before the first
+    # render: status must exit cleanly, not crash in run_view on a None run
+    monkeypatch.setattr(util, "kube", _NO_CLUSTER)
+    monkeypatch.setattr(cli.cost, "sample", lambda c: None)
+    cfg = dataclasses.replace(cfg, region="")
+    state.start_run(cfg, {"ingest"}, parallel=True)
+    seq = iter(
+        [state.get_run(cfg), None]
+    )  # start sees the run; the render sees it cleared
+    monkeypatch.setattr(state, "get_run", lambda c: next(seq, None))
+    res = CliRunner().invoke(cli.status, ["--once"], obj=cfg, catch_exceptions=False)
+    assert res.exit_code == 0

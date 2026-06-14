@@ -411,12 +411,17 @@ def status(cfg, once, interval):
         order = [w for level in ops.dag_levels(run.stage_set) for w in level]
 
         def render():
+            run_now = state.get_run(cfg)
+            if (
+                run_now is None
+            ):  # run cleared (undeploy/purge) mid-watch — stop gracefully
+                return None
             current = state.states(cfg)
             for w in order:
                 if current.get(w) == state.RUNNING:
                     cost.sample(dataclasses.replace(cfg, workload=w))
             return util.run_view(
-                cfg, state.get_run(cfg), order, current, util.cached_layer_counts(cfg)
+                cfg, run_now, order, current, util.cached_layer_counts(cfg)
             )
     else:
         order = [cfg.workload]
@@ -426,12 +431,17 @@ def status(cfg, once, interval):
             return util.status_table(cfg, util.cached_layer_counts(cfg))
 
     if once:
-        Console().print(render())
+        view = render()
+        if view is not None:
+            Console().print(view)
         return
     try:
         with Live(refresh_per_second=4) as live:
             while True:  # stays up across layers; Ctrl-C to stop
-                live.update(render())
+                view = render()
+                if view is None:  # the watched run was cleared (undeploy/purge)
+                    break
+                live.update(view)
                 time.sleep(interval)
     except KeyboardInterrupt:
         pass

@@ -32,8 +32,8 @@ pods absorb preemption; a cold Bigtable is ramped into gradually.
    `pipeline status`, next layer ([§4 ingest](#4-ingest), [§5 meshing](#5-meshing),
    [§6 l2cache](#6-l2cache), [§7 migration](#7-migration)) — or let
    `pipeline deploy --oneshot` run the whole build DAG (ingest, then meshing/l2cache).
-4. **Spend** — every watch tick records pod runtimes locally;
-   `pipeline costs <layer>` prices them ([Cost-effective compute](#cost-effective-compute)).
+4. **Spend** — every watch tick records pod runtimes into the cost db; `pipeline costs <layer>`
+   prices them ([Cost-effective compute](#cost-effective-compute)).
 5. **Teardown** — `pipeline undeploy`, then `terraform destroy` ([Teardown](#teardown)).
 
 ## Layout
@@ -46,33 +46,30 @@ pods absorb preemption; a cold Bigtable is ramped into gradually.
 | [terraform/](terraform/) | the GKE Autopilot cluster + Workload-Identity service account |
 | [helm/](helm/) | the helm chart for static infra (service account, ConfigMaps, an optional spot util pod); the `pipeline` CLI renders its values and runs helm |
 
-**Single-source config.** `pipeline.yml` holds everything except the graph
-definition (`dataset.yml` — the same yaml the graph was always configured with,
-read only by `setup`; workers read graph meta from Bigtable). The `pipeline` CLI
-feeds both to helm and the Jobs; the Bigtable project/instance, image, and service
-account each appear once.
+**Single-source config.** `pipeline.yml` holds everything except the graph definition,
+which lives in `dataset.yml` (read only by `setup`; workers read graph meta from Bigtable).
 
 ## The CLI
 
 | command | does |
 |---|---|
-| `pipeline deploy` | `helm upgrade --install` the static infra + create the Secret from `secrets/` (`--setup` also runs `setup`; `--submit-l2` also submits layer 2; `--oneshot` = build DAG, prompts for a start/end depth (or `--from`/`--to`), same-depth stages in parallel; `--all-layers` = the configured workload's layers; `--sequential` serializes parallel stages; `--yes` skips the prompt + confirmation) |
-| `pipeline setup` | create the graph table + meta — a one-shot pod mounting the graph's own dataset ConfigMap; raw agglomeration input enabled automatically when the dataset has `ingest_config.AGGLOMERATION` |
+| `pipeline deploy` | install the static infra + credentials Secret. `--setup`/`--submit-l2` chain setup + layer 2; `--oneshot` runs the build DAG (`--from`/`--to` depth, `--sequential`, `--yes`); `--all-layers` runs the configured workload — see [§3](#3-config--deploy) |
+| `pipeline setup` | create the graph table + meta (one-shot pod; raw agglomeration auto-enabled from `ingest_config.AGGLOMERATION`; `--exists` skips if the graph already exists) |
 | `pipeline mesh-meta` | write the graph's mesh metadata once (meshing only, after ingest reaches root) |
 | `pipeline submit <layer>` | submit (or re-submit) the layer's Indexed Job; ramp parallelism (refuses if the layer below is not 100% — `--force` to override) |
 | `pipeline scale <layer> <n>` | resize the running layer's workers (set Job parallelism) anytime |
 | `pipeline sample <layer> <n>` | run N scattered chunks (one per pod) to size CPU/memory before a full run |
-| `pipeline status` | live progress until Ctrl-C. For a recorded run (`deploy --oneshot`/`--all-layers`): the build DAG with each stage's state — a full per-layer table while a stage runs, a one-line summary once it's done, and a stalled warning if the driver died. Otherwise the configured workload's per-layer table: done, total, %, active/ready, retries (transient attempts), failed (dead tasks), elapsed, cost (estimate) + nodes |
+| `pipeline status` | live progress until Ctrl-C (`-o` one snapshot, `-i` interval). A recorded `--oneshot`/`--all-layers` run shows a per-stage DAG view (running stage → full table, done → one-line summary, dead driver → red warning); otherwise the configured workload's per-layer table: done, %, active, retries, failed, elapsed, cost, nodes |
 | `pipeline inspect <layer> [index]` | list a layer's failed indexes; with an index, that pod's log |
 | `pipeline pods <layer>` | the layer's pods: index, phase, node, scheduling reason |
 | `pipeline events <layer>` | the layer's Job + pod events (scheduling, scale-up, failures) |
-| `pipeline top <layer>` | live per-pod usage in cores/GiB vs the request, by task index (needs metrics-server) |
+| `pipeline top <layer>` | live per-pod usage in cores/GiB vs the request, by task index (needs metrics-server; `-o`/`--once` for one snapshot, `-i`/`--interval` refresh seconds) |
 | `pipeline costs <layer>` | the layer's recorded Spot spend so far (from the local cost db; estimate) |
 | `pipeline delete <layer>` | delete the layer's Job and pods |
 | `pipeline reset` | forget the session config (the next `-c` selects a new one) |
 | `pipeline pause` | suspend every pipeline Job — pods get SIGTERM, Autopilot scales to 0, **nothing is deleted** (finished indexes are kept); the driver stops on its next poll |
 | `pipeline resume` | unsuspend the run's Jobs and continue driving from where it paused (finished layers skip; the suspended layer resumes its incomplete indexes) |
-| `pipeline purge` | purge all run/stage tracking, every graph (e.g. a stuck run after a crash); the durable cost db and the running Jobs are untouched |
+| `pipeline purge` | purge all run/stage tracking, every graph (e.g. a stuck run after a crash); prompts for confirmation (`--yes` to skip); the durable cost db and the running Jobs are untouched |
 | `pipeline undeploy` | delete all pipeline Jobs + the helm release (KSA, ConfigMaps, util pod, secret) + the local layer-counts cache + run state |
 
 **One graph, one workload at a time** — both `graph_id` and `workload`
@@ -96,12 +93,8 @@ pip install -e .
 
 ## 1. Cluster — `terraform`
 
-Creates a **GKE Autopilot** cluster (Google manages nodes; spot VMs and machine
-class are chosen per Job via nodeSelectors) and one Workload-Identity service
-account. No node pools, no Redis, default network. The cluster starts at zero nodes and
-scales back to zero when idle (Autopilot's autoscaler is the aggressive
-`OPTIMIZE_UTILIZATION` profile); a persistent util pod, if enabled, holds one small spot
-node between layers, running the warm cg-cache server.
+Creates a **GKE Autopilot** cluster (Google manages nodes) and one Workload-Identity
+service account. It scales to zero nodes when idle, so it costs nothing between runs.
 
 Required roles: Kubernetes Engine Admin, Service Account Admin, Project IAM Admin.
 
@@ -150,58 +143,34 @@ cp config/pipeline-example.yml config/pipeline.yml
 cp config/dataset-example.yml config/dataset.yml
 
 # fill in pipeline.yml (graph_id, bigtable, images, gsa_email) and dataset.yml (data_source, graph_config)
-# secret_files: provides google-secret.json — all Google clients authenticate with it
+# secret_files must include google-secret.json — every Google client (Bigtable, CloudVolume) authenticates with it
 
-pipeline deploy --setup --submit-l2   # deploy + setup + submit layer 2, in one step
+pipeline deploy --setup --submit-l2   # deploy infra + setup + submit layer 2, in one step
 ```
 
-**Authentication.** All Google clients — Bigtable and bucket access (CloudVolume) —
-authenticate with the service-account key from `secret_files`:
-`GOOGLE_APPLICATION_CREDENTIALS` points at the mounted `google-secret.json`.
+`deploy` installs the static infra (helm) and the credentials Secret built from
+`secrets/`, mounted read-only in every pod. It is idempotent — re-run it after
+editing `pipeline.yml`.
 
-**Secrets.** `secret_files` maps `{container_filename: local_path}` under `secrets/`;
-`deploy` bundles the files into one helm-managed Secret mounted read-only at
-`/root/.cloudvolume/secrets/` in every pod. Container names may differ from local
-ones, so one `secrets/` directory serves multiple projects.
+Point `-c` at a pipeline yaml (default `config/pipeline.yml`); the first `-c` becomes
+the session config so later commands omit it (`pipeline reset` to switch). `-g`
+overrides `graph_id` for one command. See [config/README.md](config/README.md) for
+every field.
 
-**Setup pods.** `setup`/`mesh-meta` run as one-shot pods mounting the graph's
-dataset ConfigMap (`pcg-dataset-<graph>`); per-graph maps coexist, and a fresh
-mount avoids kubelet ConfigMap sync lag. `submit` reads graph meta through a small
-spot util pod that holds a warm cg-cache server, kept alive between layers
-(`persistent_util: true`), or a one-shot pod per probe (`false`), letting the cluster
-idle at zero nodes.
+**Run a whole build** with one of two mutually-exclusive flags:
 
-Keep any number of projects side by side (e.g. `config/my_project.yml` paired to
-its dataset via the `dataset:` key); `-c` is the path to one (relative or absolute,
-tab-completion friendly), defaulting to `config/pipeline.yml`. The first `-c`
-selects the **session config**: every later command uses it without `-c` and logs
-it, a different `-c` is refused, and `pipeline reset` clears the selection. `-g`
-overrides `graph_id` per invocation
-(test iterations without editing files).
+- **`pipeline deploy --oneshot`** — the build DAG (ingest → meshing/l2cache; l2cache
+  only if the dataset has `l2cache_config`). Prints the DAG, prompts for a start/end
+  depth (`--from N`/`--to N` to skip the prompt), and runs same-depth stages in
+  parallel (`--sequential` to serialize). Deps only **order** the run — a stage
+  outside the chosen range is assumed already built. Not for `migrate`.
+- **`pipeline deploy --all-layers`** — the configured `workload:` only (its setup +
+  every layer, L2→root).
 
-Two whole-pipeline flags, mutually exclusive:
-
-- **`pipeline deploy --oneshot`** — runs the build DAG (ingest → meshing/l2cache). The build
-  always includes **ingest** and **meshing** (every build meshes); **l2cache** joins only when
-  the dataset declares `l2cache_config`. It
-  **displays the DAG and prompts for a start/end depth** (default full, top→bottom);
-  `--from N`/`--to N` set the depths non-interactively. Stages at the same depth run **in
-  parallel** (`--sequential` to serialize). The DAG only **orders** the selected stages —
-  upstream deps outside the selection are assumed already satisfied (by any means), so e.g.
-  `--from 1` runs meshing ∥ l2cache when ingest is already built. Refused only for
-  `workload: migrate`/`migrate_cleanup`. Per-stage sizing comes from `job.workloads`.
-- **`pipeline deploy --all-layers`** — runs **the configured `workload:`** (its setup +
-  every layer) and nothing else. E.g. `workload: meshing` → `mesh-meta` + meshing
-  L2→max_layer; its upstream (ingest) is the operator's responsibility, not verified.
-
-Both print the plan (the DAG batches, per-stage layer requests) and ask for confirmation
-(`--yes` to skip); re-running resumes — an existing graph skips setup, finished layers skip; a layer
-with dead tasks stops the run. Every command also logs the active workload at start.
-
-(`deploy`/`setup`/`submit` remain separate commands; the flags chain them for a
-first run. `--submit-l2` requires `--setup`.)
-
-`deploy` is idempotent — re-run it after editing `pipeline.yml`.
+Either drives the run **in the foreground** — keep the terminal open (or use
+`tmux`/`screen`). `pipeline pause` from a second terminal suspends the Jobs and the
+driver exits cleanly; `pipeline resume` continues where it left off. Re-running also
+resumes: finished layers skip, a layer with dead tasks stops the run.
 
 ## 4. Ingest
 
@@ -211,16 +180,10 @@ pipeline status       # watch; the layer reaches 100% when done
 pipeline submit 3     # next layer, and so on up to the root
 ```
 
-Each `submit` (identical flow for every workload):
-
-- **Sizes the Job** — reads N (chunks in the layer) from `cg.meta`, sets
-  `completions = ceil(N / batch_size)`, applies the Indexed Job. Each chunk is built under a
-  per-chunk lock (one writer per chunk).
-- **Ramps parallelism** — geometric: `job.ramp.start` → ×`factor` every `period`s → up to
-  `job.ramp.max`, so a cold Bigtable autoscales/splits before full load.
-- **Tune per layer** in `pipeline.yml` — `job.memory`, `compute_class`, `batch_size`, the ramp.
-  To size CPU/memory first: `pipeline sample <layer> <n>` runs n chunks one-per-pod, then
-  `pipeline top <layer>` shows per-pod usage.
+Each `submit` sizes the layer's Indexed Job from its chunk count and **ramps parallelism**
+up gradually (`job.ramp.*`) so a cold Bigtable can split before full load. **Tune per layer**
+in `pipeline.yml` — `job.memory`, `compute_class`, `batch_size`, the ramp; size CPU/memory
+first with `pipeline sample <layer> <n>` then `pipeline top <layer>`.
 
 ## 5. Meshing
 
@@ -240,21 +203,13 @@ Or run the whole meshing pass in one command: `pipeline deploy --all-layers` (wi
 `workload: meshing`) does `mesh-meta` then meshing L2→`max_layer`. Submitting a meshing
 layer without mesh metadata is refused — run `mesh-meta` (or `--all-layers`) first.
 
-`mesh-meta` writes the graph's mesh metadata (mesh dir, sharded spec, draco grid, and the
-bigtable mesh block). It derives `initial_ts` from a root sampled before any edit, so mesh
-**before editing the graph** (it picks a pre-edit timestamp automatically). Meshing is
-idempotent (re-meshing overwrites shards) and needs no per-chunk lock.
+`mesh-meta` writes the graph's mesh metadata once. Mesh **before editing the graph** — it
+pins a pre-edit timestamp automatically. Re-meshing is idempotent (overwrites shards).
 
-Choosing `mesh_config` values:
-- **`mip` / `chunk_size`** — mesh at the `mip` the segmentation is downsampled to. `chunk_size` is
-  the ChunkedGraph `CHUNK_SIZE` divided **per axis** by that mip's downsample factor
-  (`resolution(mip) / resolution(0)` from the watershed scales) — for anisotropic EM that is
-  usually X and Y, with Z unchanged; it is not one fixed axis.
-- **`max_error`** — marching-cubes simplification error, typically the largest dimension of the
-  resolution at the chosen mip.
-- **`max_layer`** — highest layer to stitch to. Stitching memory grows ~8× per layer (a single
-  L7 chunk can need 30–50 GB), so stop around L6–L7 and give the high layers a large
-  `job.memory` / `compute_class` (tune per layer with `sample` + `top`).
+Set `mesh_config` per [config/README.md](config/README.md#mesh_config-meshing-only). One
+operational caveat: stitching memory grows ~8× per layer (a single L7 chunk can need 30–50 GB),
+so cap `max_layer` around L6–L7 and give the upper layers a large `job.memory` / `compute_class`
+(tune with `sample` + `top`).
 
 ## 6. L2cache
 
@@ -311,10 +266,8 @@ pipeline submit 3
 pipeline submit <root>
 ```
 
-`migrate_cleanup` is the same worker as `migrate`, run with `--clean`. Upgrade tuning comes from the
-`env:` block in `pipeline.yml` (`TASK_SIZE`, `PROCESS_MULTIPLIER`, `PARENT_CACHE_LIMIT`,
-`MAX_CHEBYSHEV_DISTANCE` — any env the upgrade code reads). `setup` caches `earliest_ts` into graph
-meta so workers read it once instead of hammering a single Bigtable row.
+Upgrade tuning comes from the `env:` block in `pipeline.yml` (`TASK_SIZE`, `PROCESS_MULTIPLIER`,
+`PARENT_CACHE_LIMIT`, `MAX_CHEBYSHEV_DISTANCE`).
 
 ## How a layer behaves
 
@@ -358,18 +311,11 @@ capture the main levers — operators mainly right-size requests and keep the de
   one Autopilot/zonal cluster **per billing account** (not per project) — if another cluster under
   the same billing account already consumes it, this cluster's fee applies in full.
 
-Costs are **recorded, not derived**: whenever the CLI watches the cluster (each `pipeline status`
-tick, `submit`'s ramp, `pipeline costs`), it samples every pod's runtime into the cost database —
-a SQLAlchemy URL (`database.cost`, default a local SQLite file under `costs/`), so the same record
-lives on a shared server by changing one config line. Rows are scoped by graph and workload, and
-priced at read time from [rates.csv](pipeline/rates.csv). Kubernetes
-deletes finished pods (their runtimes with them), so the recorded history is the only number that
-survives a run; completions that finished unwatched are backfilled from the mean observed runtime
-(flagged in the printed `basis`), and the $0.10/hr cluster fee is charged once over the union of
-job wall-time — never per layer. Jobs and pods that vanish between samples (deleted, replaced,
-GC'd) are closed out at their last sighting — nothing accrues after termination, nothing is
-billed twice. Keep `pipeline status` running during a layer for exact per-pod accounting;
-`pipeline costs <layer>` reports the layer's recorded Spot spend.
+Costs are **recorded** as the CLI watches the cluster (each `pipeline status` tick, `submit`'s
+ramp, `pipeline costs`): it samples pod runtimes into the cost database (`database.cost`, default a
+local SQLite under `costs/`; point it at a server to share), priced at read time from
+[rates.csv](pipeline/rates.csv). It is an estimate — keep `pipeline status` running during a layer
+for exact accounting; `pipeline costs <layer>` reports the recorded Spot spend.
 
 ## Debugging failures
 
@@ -415,40 +361,6 @@ After fixing the cause, re-submit the layer — already-done chunks are skipped:
 pipeline submit 3
 ```
 
-## How chunks are distributed (toy example)
-
-An **8×6×3 grid = 144 chunks**, `batch_size 15` → **10 batches**, run at
-**parallelism 10** (one worker per batch). Each worker's batch is a contiguous
-slice of a fixed-seed permutation, so its chunks scatter across the whole volume
-rather than a solid block — concurrent workers hit different Bigtable row-key ranges,
-not one hot tablet.
-
-Worker 0's 15 chunks span the grid (not a corner):
-
-```
-(0,5,1) (0,3,1) (5,2,0) (1,0,2) (2,0,0) (1,1,1) (2,3,1) (7,3,0)
-(7,1,0) (5,0,0) (5,4,1) (6,3,2) (2,2,1) (3,2,1) (3,0,1)
-```
-
-Which worker (`w0`–`w9`) owns each chunk, z=0 plane — neighbours go to different
-workers:
-
-```
-        x=0 x=1 x=2 x=3 x=4 x=5 x=6 x=7
- y=0     w9  w4  w0  w4  w6  w0  w3  w6
- y=1     w7  w1  w2  w7  w4  w5  w7  w0
- y=2     w2  w8  w6  w5  w2  w0  w3  w4
- y=3     w9  w6  w1  w3  w1  w7  w2  w0
- y=4     w9  w4  w1  w5  w1  w3  w3  w4
- y=5     w6  w4  w6  w3  w5  w2  w9  w1
-```
-
-Row-major order would instead hand worker 0 a solid corner
-(`(0,0,0),(0,0,1),(0,0,2),(0,1,0)…`), clustering all 10 workers at the low end of the
-key space at once. The permutation is a bijection (every chunk in exactly one batch),
-deterministic per seed (a retried index re-runs the same chunks), and invertible (a
-failed index maps back to its coords).
-
 ## Teardown
 
 `pipeline undeploy` removes what the CLI created in-cluster — all pipeline Jobs, the
@@ -464,3 +376,103 @@ they are left intact.
 ## Reference
 
 - [config/README.md](config/README.md) — the dataset / `mesh_config` field reference.
+
+## How chunks are distributed (toy example)
+
+A layer's chunks form an `X·Y·Z` grid of `N` chunks. The pipeline builds them as one
+**indexed job** of `ceil(N / batch_size)` **batches**: Kubernetes starts one worker (a
+short-lived pod) per batch and stamps each with a unique number `0 … batches−1` — its
+`JOB_COMPLETION_INDEX`. So 144 chunks at `batch_size 15` is 10 batches → **10 workers**,
+numbered 0–9.
+
+- **how many run at once** ramps up (`job.ramp.*`, toward `ramp.max`) but never exceeds
+  the batch count — there are only that many workers.
+- **each worker gets its own cpu/memory**, never shared (the layer's
+  [request](config/README.md#how-per-layer-resources-scale)), so the cluster's peak draw
+  is about `workers-running-at-once × per-worker request`. Upper-layer chunks are heavier
+  — a parent spans ~8× the volume of its children — so `batch_size` **halves each layer
+  above 2** (`batch_size // 2^(layer−2)`): fewer chunks per worker where each is heavier.
+
+**No work-list — each worker computes its own chunks.** The job ships no coordinates. The
+`seed` fixes **one shuffled ordering of all `N` chunks** — identical on every worker,
+computed on demand, never materialized or queued — and worker `i` runs the `i`-th
+contiguous slice of it. Reading the grid shape `(X, Y, Z)` from the graph metadata:
+
+```
+# the one global shuffle of all N = X·Y·Z chunks — position p -> the p-th chunk,
+# defined for every p in [0, N), identical on every worker:
+nth_chunk(p) = unravel( permute(p, N, seed), (X, Y, Z) )
+
+# worker i runs only its own window of that one global order:
+for p in [i·batch_size, (i+1)·batch_size):
+    process( nth_chunk(p) )
+```
+
+Because the shuffle spans all `N`, consecutive positions land grid-wide — so worker `i`'s
+window, and the windows of every worker running at once, scatter across the whole volume,
+**not just within a batch**. The order depends only on the `seed`, so a retried worker
+rebuilds the *same* window and no two workers overlap — no queue, no shared cursor, no
+coordination.
+
+**How the shuffle works without an array.** A 10M-entry shuffle is normally a *materialized*
+permutation array (e.g. `numpy.random.permutation(N)`) that one process builds and feeds to
+the workers — the job a Redis/SQS queue did. We want no array, just `permute(p)` for a single
+`p`. The tool is a **format-preserving permutation**: a tiny keyed cipher that bijectively
+scrambles a number *within a fixed bit-width*, so a position maps to a pseudo-random position
+in the same range — by arithmetic alone, nothing stored.
+
+It is a **balanced Feistel network** (the structure inside block ciphers): split the value
+into two halves and, for a few rounds, fold one half into the other with a seed-keyed hash —
+
+```
+permute_pow2(v):                       # a bijection on [0, 2^b), b even, 2^b >= N
+    L, R = high_half(v), low_half(v)
+    for key in round_keys(seed):       # 4 rounds, keys derived from the seed
+        L, R = R, (L XOR hash(R, key))
+    return join(L, R)
+```
+
+Every round is reversible, so the whole map is a bijection — and running the rounds backwards
+inverts it, mapping a chunk coordinate back to the batch that owns it (for inspecting a
+specific failed chunk).
+
+That cipher permutes a **power-of-two** range `[0, 2^b)`, but a layer has exactly `N` chunks.
+So it **cycle-walks**: if a result lands `≥ N`, re-apply until it falls inside `[0, N)`.
+Because `2^b` is the *smallest* power of two `≥ N`, the range is under `4·N`, so each lookup
+retries only a few times on average (under 4). The net `permute(p, N, seed)` is a handful of
+hashes with no state — `O(1)` time and memory, scaling to billions of chunks, and a pure
+function of `(p, N, seed)`.
+
+So this yields the **same global scatter** as materializing `numpy.random.permutation(N)` and
+dealing out windows of it — every chunk in exactly one batch, spread grid-wide — but computed
+index-by-index, so each worker does `O(batch_size)` work and the cluster runs no broker at all.
+
+**Why scatter at all.** Neighbouring chunks have neighbouring Bigtable row keys, so walking
+the grid in plain order points the whole active fleet at one key range at a time — a write
+hotspot. Spreading every window across the volume keeps concurrent writes on distinct row
+ranges.
+
+Concretely, an **8×6×3 grid = 144 chunks**, `batch_size 15`, `seed 42` → **10 batches**
+(the last holds 9). Worker 0's 15 chunks span the grid:
+
+```
+(0,5,1) (0,3,1) (5,2,0) (1,0,2) (2,0,0) (1,1,1) (2,3,1) (7,3,0)
+(7,1,0) (5,0,0) (5,4,1) (6,3,2) (2,2,1) (3,2,1) (3,0,1)
+```
+
+Which worker (`w0`–`w9`) each chunk goes to, z=0 plane — neighbours land on different
+workers:
+
+```
+        x=0 x=1 x=2 x=3 x=4 x=5 x=6 x=7
+ y=0     w9  w4  w0  w4  w6  w0  w3  w6
+ y=1     w7  w1  w2  w7  w4  w5  w7  w0
+ y=2     w2  w8  w6  w5  w2  w0  w3  w4
+ y=3     w9  w6  w1  w3  w1  w7  w2  w0
+ y=4     w9  w4  w1  w5  w1  w3  w3  w4
+ y=5     w6  w4  w6  w3  w5  w2  w9  w1
+```
+
+Plain row-major order would instead hand worker 0 a solid corner
+(`(0,0,0),(0,0,1),(0,0,2),(0,1,0)…`), marching the whole fleet through neighbouring keys in
+lockstep — exactly what the shuffle exists to prevent.

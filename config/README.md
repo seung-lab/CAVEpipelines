@@ -1,6 +1,6 @@
 # Pipeline config
 
-**Index:** [pipeline.yml](#pipelineyml) — [env](#env) · [cost](#cost) · [tuning](#tuning-per-dataset) ·
+**Index:** [pipeline.yml](#pipelineyml) — [env](#env) · [cost](#cost) · [state](#state) · [tuning](#tuning-per-dataset) ·
 [resource curves](#how-per-layer-resources-scale) | [dataset.yml](#datasetyml) —
 [data_source](#data_source) · [graph_config](#graph_config) · [ingest_config](#ingest_config-optional) ·
 [backend_client](#backend_client) · [mesh_config](#mesh_config-meshing-only) ·
@@ -55,7 +55,7 @@ from `pipeline.yml`'s `bigtable:`.
 | `job.ramp.*` | parallelism ramp: `start`, `factor`, `period` (s), `max` |
 | `env` | extra env on every worker + setup pod (below) |
 | `commands` | container command for non-built-in workloads (only `l2cache` today); whether l2cache runs is driven by the dataset's `l2cache_config`, not by this entry |
-| `database` | `{cost, state}` SQLAlchemy URLs for the cost and state databases; each defaults to a local SQLite file under `costs/`. Point at a server (e.g. `postgresql://…`) to share/persist centrally |
+| `database` | `{cost, state}` SQLAlchemy URLs for the cost and state databases; each defaults to a local SQLite file under `costs/` (`cost.db` and `state.db`). Point at a server (e.g. `postgresql://…`) to share/persist centrally |
 
 ### `env`
 
@@ -83,6 +83,14 @@ time by the backfill. It is an estimate,
 never the invoice, and never fatal. Needs `region:` set; node-based compute classes
 (`Performance` / GPU) bill per VM and are not priced. Leave `pipeline status` running while a
 layer runs for exact accounting.
+
+### State
+
+A `--oneshot`/`--all-layers` deploy records its run here (`database.state`; default a gitignored
+`costs/state.db`) — one row per graph for the run status plus one per stage — so `pipeline status`
+can render the DAG view and `pause`/`resume` can flip the status. Ephemeral progress only:
+`undeploy` clears this graph's rows, `purge` clears every graph's, and the durable cost db is
+untouched.
 
 ### Tuning per dataset
 

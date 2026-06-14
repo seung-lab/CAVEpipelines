@@ -1,31 +1,45 @@
 [project]
 name = "cave-pipeline"
-version = "0.1.0"
-description = "Operator CLI to run PyChunkedGraph ingest / l2cache / meshing as GKE Autopilot Indexed Jobs"
+dynamic = ["version"]
+description = "Operator CLI + shared chunk-distribution core for PyChunkedGraph ingest / l2cache / meshing as GKE Autopilot Indexed Jobs"
 requires-python = ">=3.12"
-dependencies = [
+dependencies = []
+
+[project.optional-dependencies]
+# workers (PyChunkedGraph, PCGL2Cache) need only the chunk-distribution core
+distribution = ["numpy>=2", "kvdbclient>=0.7"]
+# the operator CLI adds the cluster/control-plane stack
+operator = [
     "click>=8.1",
     "kubernetes>=29",
     "PyYAML>=6.0",
     "rich>=13",
     "SQLAlchemy>=2.0",
 ]
-
-[project.optional-dependencies]
-dev = ["pre-commit", "pytest", "pytest-cov", "ruff"]
+dev = [
+    "cave-pipeline[operator,distribution]",
+    "pre-commit",
+    "pytest",
+    "pytest-cov",
+    "ruff",
+    "build",
+]
 
 [project.scripts]
 pipeline = "pipeline.cli:main"
 
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=64", "setuptools_scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["pipeline", "pipeline.db"]
+packages = ["pipeline", "pipeline.db", "pipeline.distribution"]
 
 [tool.setuptools.package-data]
 pipeline = ["rates.csv"]
+
+[tool.setuptools_scm]
+fallback_version = "0.0.0.dev0"
 
 [tool.ruff]
 line-length = 90

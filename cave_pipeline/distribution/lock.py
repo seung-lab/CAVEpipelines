@@ -14,6 +14,8 @@ import hashlib
 import numpy as np
 from kvdbclient import attributes, serializers
 
+__all__ = ["ACQUIRED", "DONE", "HELD", "acquire", "mark_done", "renew", "release"]
+
 ACQUIRED = "acquired"
 DONE = "done"
 HELD = "held"

@@ -33,6 +33,8 @@ from typing import List, Sequence, Tuple
 
 import numpy as np
 
+__all__ = ["batch_coords", "coord_to_batch_index", "num_batches", "permute", "unpermute"]
+
 _ROUNDS = 4
 _U64 = 0xFFFFFFFFFFFFFFFF
 

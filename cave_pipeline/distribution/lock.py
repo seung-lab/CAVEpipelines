@@ -19,10 +19,12 @@ DONE = "done"
 HELD = "held"
 
 # Local "done" marker on the lock row; family "0" matches kvdbclient's Lock cell.
+# Only its presence is read (the value is never compared), so a 1-byte flag suffices.
 # Constructing the _Attribute self-registers it so _read_byte_row can deserialize.
 _DONE = attributes._Attribute(
-    key=b"chunk_done", family_id="0", serializer=serializers.UInt64String()
+    key=b"chunk_done", family_id="0", serializer=serializers.String()
 )
+_MARK = "1"  # presence is the signal; the value itself is never read
 
 
 def _row_key(chunk_id: int) -> bytes:
@@ -54,7 +56,7 @@ def mark_done(client, chunk_id: int, token: int) -> bool:
     row_key = _row_key(chunk_id)
     if not client.renew_lock_by_row_key(row_key, _op(token)):
         return False  # claim lost -> someone else owns the chunk; don't mark
-    client.write([client.mutate_row(row_key, {_DONE: int(token)})])
+    client.write([client.mutate_row(row_key, {_DONE: _MARK})])
     client.unlock_by_row_key(row_key, _op(token))
     return True
 

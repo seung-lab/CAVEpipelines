@@ -3,7 +3,7 @@
 Shared by every worker (PyChunkedGraph, PCGL2Cache, ...) and the operator CLI, so
 the grid scatter (a bijection the operator and workers must compute identically)
 and the Job exit-code contract have a single source. Light by design: importing
-``pipeline.distribution`` pulls only stdlib + the exit codes — ``grid`` (numpy),
+``cave_pipeline.distribution`` pulls only stdlib + the exit codes — ``grid`` (numpy),
 ``harness`` (numpy), and ``lock`` (kvdbclient) are imported explicitly when needed.
 """
 

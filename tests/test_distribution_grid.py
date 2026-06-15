@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from pipeline.distribution import grid
+from cave_pipeline.distribution import grid
 
 
 def _all_coords(bounds, seed, batch_size):

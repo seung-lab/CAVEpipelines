@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from pipeline.db import state
+from cave_pipeline.db import state
 
 
 def test_run_round_trip_and_stage_progress(cfg):

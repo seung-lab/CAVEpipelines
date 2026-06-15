@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from pipeline import costs, rates
+from cave_pipeline import costs, rates
 
 REGION = "us-east1"
 GP = {

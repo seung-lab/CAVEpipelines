@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from pipeline import cgcache, util
+from cave_pipeline import cgcache, util
 
 
 def test_ceil_div_completions():

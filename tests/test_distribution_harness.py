@@ -2,8 +2,8 @@
 
 import pytest
 
-from pipeline.distribution import FATAL, SUCCESS, TRANSIENT
-from pipeline.distribution.harness import run
+from cave_pipeline.distribution import FATAL, SUCCESS, TRANSIENT
+from cave_pipeline.distribution.harness import run
 
 
 @pytest.fixture

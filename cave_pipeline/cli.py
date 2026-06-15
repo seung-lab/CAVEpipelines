@@ -459,7 +459,7 @@ def show_costs(cfg, layer):
     if not cfg.region or not rate_table:
         note(
             f"no cost rates (region '{cfg.region}'); set `region:` in config/pipeline.yml "
-            f"or run `python -m pipeline.rates`"
+            f"or run `python -m cave_pipeline.rates`"
         )
         return
     cost.sample(cfg)

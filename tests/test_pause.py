@@ -5,8 +5,8 @@ from types import SimpleNamespace
 import pytest
 from click.testing import CliRunner
 
-from pipeline import cli, ops
-from pipeline.db import state
+from cave_pipeline import cli, ops
+from cave_pipeline.db import state
 
 _COMPLETE = [SimpleNamespace(type="Complete", status="True")]
 

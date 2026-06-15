@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 from kubernetes.client import ApiException
 
-from pipeline import cli, ops
+from cave_pipeline import cli, ops
 
 
 def test_meshing_submit_requires_mesh_meta(monkeypatch, cfg):

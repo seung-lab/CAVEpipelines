@@ -2,8 +2,23 @@
 name = "cave-pipeline"
 dynamic = ["version"]
 description = "Operator CLI + shared chunk-distribution core for PyChunkedGraph ingest / l2cache / meshing as GKE Autopilot Indexed Jobs"
+readme = "README.md"
+license = "MPL-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "CAVEconnectome" }]
 requires-python = ">=3.12"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/seung-lab/CAVEpipelines"
+Repository = "https://github.com/seung-lab/CAVEpipelines"
 
 [project.optional-dependencies]
 # workers (PyChunkedGraph, PCGL2Cache) need only the chunk-distribution core
@@ -12,6 +27,7 @@ distribution = ["numpy>=2", "kvdbclient>=0.7"]
 operator = [
     "click>=8.1",
     "kubernetes>=29",
+    "urllib3>=2",
     "PyYAML>=6.0",
     "rich>=13",
     "SQLAlchemy>=2.0",
@@ -26,17 +42,17 @@ dev = [
 ]
 
 [project.scripts]
-pipeline = "pipeline.cli:main"
+pipeline = "cave_pipeline.cli:main"
 
 [build-system]
-requires = ["setuptools>=64", "setuptools_scm>=8"]
+requires = ["setuptools>=77", "setuptools_scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["pipeline", "pipeline.db", "pipeline.distribution"]
+packages = ["cave_pipeline", "cave_pipeline.db", "cave_pipeline.distribution"]
 
 [tool.setuptools.package-data]
-pipeline = ["rates.csv"]
+cave_pipeline = ["rates.csv"]
 
 [tool.setuptools_scm]
 fallback_version = "0.0.0.dev0"

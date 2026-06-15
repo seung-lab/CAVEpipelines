@@ -4,8 +4,8 @@ import os
 import pytest
 from click.testing import CliRunner
 
-from pipeline import cli, util
-from pipeline.db import state
+from cave_pipeline import cli, util
+from cave_pipeline.db import state
 
 
 def test_pid_alive_distinguishes_live_and_dead_pids():

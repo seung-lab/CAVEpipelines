@@ -18,13 +18,13 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e .
-      - run: python -m pipeline.rates
+      - run: python -m cave_pipeline.rates
         env:
           GCP_BILLING_API_KEY: ${{ secrets.GCP_BILLING_API_KEY }}
       - uses: peter-evans/create-pull-request@v8
         with:
           commit-message: "chore(rates): refresh GKE Autopilot rates from Catalog API"
           title: "chore(rates): refresh GKE Autopilot rates"
-          body: Automated refresh of pipeline/rates.csv from the Cloud Billing Catalog API.
+          body: Automated refresh of cave_pipeline/rates.csv from the Cloud Billing Catalog API.
           branch: update-rates
-          add-paths: pipeline/rates.csv
+          add-paths: cave_pipeline/rates.csv

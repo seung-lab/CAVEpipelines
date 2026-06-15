@@ -1,7 +1,12 @@
-# coverage is collected for the pipeline package only (pytest --cov=pipeline);
-# keep everything non-python out of codecov's view
+# coverage is collected for the cave_pipeline package only (pytest --cov=cave_pipeline);
+# keep non-python infra and low-value glue out of codecov's view so the number
+# reflects the testable core (distribution, ops, manifest, config, costs, db).
 ignore:
   - "helm"
   - "terraform"
   - "config"
   - "tests"
+  - "cave_pipeline/rates.csv"    # generated data table, not source
+  - "cave_pipeline/__main__.py"  # entrypoint, no logic
+  - "cave_pipeline/cli.py"       # click command wiring, exercised end-to-end
+  - "cave_pipeline/kube.py"      # live kubernetes client I/O, not unit-coverable

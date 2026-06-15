@@ -1,7 +1,7 @@
 import pytest
 import yaml
 
-from pipeline import config
+from cave_pipeline import config
 
 BASE = {"graph_id": "g", "images": {"pcg": "repo/pcg:t"}}
 

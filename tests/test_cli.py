@@ -4,7 +4,7 @@ import pytest
 from click.testing import CliRunner
 from kubernetes.client import ApiException
 
-from pipeline import cli, ops
+from cave_pipeline import cli, ops
 
 
 def run_cmd(command, argv, cfg):

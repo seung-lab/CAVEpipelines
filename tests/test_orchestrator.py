@@ -2,8 +2,8 @@ import dataclasses
 
 import pytest
 
-from pipeline import ops, stages
-from pipeline.db import state
+from cave_pipeline import ops, stages
+from cave_pipeline.db import state
 
 
 def test_dag_levels_orders_by_depth():

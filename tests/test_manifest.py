@@ -1,7 +1,7 @@
 import pytest
 from kubernetes import client
 
-from pipeline import cgcache, config, manifest
+from cave_pipeline import cgcache, config, manifest
 
 
 def _job(cfg, **kw):

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from click.testing import CliRunner
 
-from pipeline import cli, ops
+from cave_pipeline import cli, ops
 
 
 def _invoke(args, cfg, **kw):

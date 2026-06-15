@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from pipeline import kube
+from cave_pipeline import kube
 
 
 def _pod(phase, deleting=False):

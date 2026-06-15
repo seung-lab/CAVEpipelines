@@ -4,7 +4,7 @@ import subprocess
 import sys
 import threading
 
-from pipeline import cgcache
+from cave_pipeline import cgcache
 
 
 def _stub_cache_server(sock_path, reply, ready):

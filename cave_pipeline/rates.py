@@ -1,7 +1,7 @@
 """GKE Autopilot per-(region, compute-class) rate table, read offline from rates.csv.
 
 rates.csv is the source of truth, generated from the public Cloud Billing Catalog API —
-refreshed by CI (.github/workflows/update-rates.yml) or `python -m pipeline.rates`
+refreshed by CI (.github/workflows/update-rates.yml) or `python -m cave_pipeline.rates`
 (needs GCP_BILLING_API_KEY). Pod-based classes (general-purpose / Balanced / Scale-Out)
 each have their own rate; node-based classes (Performance / GPU) bill per VM and are absent here.
 """

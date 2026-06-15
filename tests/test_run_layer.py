@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from pipeline import ops
+from cave_pipeline import ops
 
 _CONDS = {
     "complete": [SimpleNamespace(type="Complete", status="True")],

@@ -14,7 +14,7 @@ publishing (no API token). Version is derived from the tag by `setuptools_scm`.
    uploads to PyPI). The published version equals the tag without the `v`.
 
 ## Versioning discipline (it's a public dependency)
-PyChunkedGraph and PCGL2Cache pin `cave-pipeline[distribution]`, so `pipeline.distribution`
+PyChunkedGraph and PCGL2Cache pin `cave-pipeline[distribution]`, so `cave_pipeline.distribution`
 is a public API: the `grid` functions, the `harness.run` signature, `exit_codes`, and
 `run_and_exit`. Treat changes to it under SemVer — a breaking change is a **major** bump,
 removals get a deprecation cycle. The operator-only modules (`cli`, `manifest`, `cost`, ...)

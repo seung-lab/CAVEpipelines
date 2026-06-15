@@ -4,7 +4,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from pipeline.db import base, cost, models
+from cave_pipeline.db import base, cost, models
 
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 

@@ -22,9 +22,9 @@ def ceil_div(a, b):
     return -(-a // b)
 
 
-def run_pcg(cfg, name, argv, timeout=300):
-    """Run a command in the PCG image: util pod (logs streamed live) or one-shot
-    pod (log returned on completion)."""
+def run_workload(cfg, name, argv, timeout=300):
+    """Run the active workload's command in its image (cfg.image()): the warm util pod
+    if one is deployed (logs streamed live), else a one-shot pod (log on completion)."""
     if cfg.persistent_util:
         pod = kube.util_pod(cfg.namespace)
         note(f"{name}: in util pod")
@@ -59,7 +59,10 @@ def _query_meta(cfg, op, gid) -> str:
         )
     note(f"{name}: in one-shot pod")
     argv = ["python", "-u", "-c", cgcache.ONESHOT_SRC, op, gid]
-    return kube.run_oneshot(cfg.namespace, manifest.oneshot_pod_spec(cfg, name, argv))
+    # the probe reads the ChunkedGraph, so it runs in the PCG image whatever workload we're in
+    return kube.run_oneshot(
+        cfg.namespace, manifest.oneshot_pod_spec(cfg, name, argv, image=cfg.images.pcg)
+    )
 
 
 def run_with_dataset(cfg, name, argv):

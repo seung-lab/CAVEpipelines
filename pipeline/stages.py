@@ -13,6 +13,7 @@ from . import note, util
 INGEST_SETUP = ["python", "-m", "pychunkedgraph.pipeline.ingest.setup"]
 MESHING_SETUP = ["python", "-m", "pychunkedgraph.pipeline.meshing.setup"]
 MIGRATE_SETUP = ["python", "-m", "pychunkedgraph.pipeline.migrate.setup"]
+L2CACHE_SETUP = ["python", "-m", "pcgl2cache.pipeline.l2cache.setup"]
 
 
 @runtime_checkable
@@ -98,7 +99,26 @@ class L2Cache(BaseStage):
         return "l2cache_config" in cfg.dataset
 
     def setup(self, cfg, exist_ok: bool = False) -> None:
-        note("l2cache: no graph setup needed (graph already ingested)")
+        lc = cfg.dataset.get("l2cache_config") or {}
+        table, cv = lc.get("table_id"), lc.get("cv_path")
+        if not (table and cv):
+            raise SystemExit("l2cache_config needs `table_id` and `cv_path`")
+        argv = L2CACHE_SETUP + [table, cfg.graph_id, cv]
+        cave = (lc.get("cave_host"), lc.get("cave_dataset"), lc.get("cave_service"))
+        if any(cave) and not all(cave):
+            raise SystemExit(
+                "l2cache_config cave_host/cave_dataset/cave_service go together"
+            )
+        if all(cave):  # register the graph with CAVE auth so its graphene CV is readable
+            argv += [
+                "--cave-host",
+                cave[0],
+                "--cave-dataset",
+                cave[1],
+                "--cave-service",
+                cave[2],
+            ]
+        note(util.run_workload(cfg, "setup", argv) or "l2cache setup done")
 
     def top_layer(self, cfg, counts) -> int:
         return 2
@@ -111,7 +131,7 @@ class Migrate(BaseStage):
     def setup(self, cfg, exist_ok: bool = False) -> None:
         note(f"setup ({self.name})")  # migrate reads everything from Bigtable
         argv = MIGRATE_SETUP + [cfg.graph_id]
-        note(util.run_pcg(cfg, "setup", argv) or "setup done")
+        note(util.run_workload(cfg, "setup", argv) or "setup done")
         util.invalidate_layer_counts(cfg)
 
 

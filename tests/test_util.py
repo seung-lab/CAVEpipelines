@@ -145,13 +145,16 @@ def test_query_meta_routes_persistent_to_cache_client(monkeypatch, cfg):
 
 def test_query_meta_routes_oneshot_when_not_persistent(monkeypatch, cfg):
     cfg.persistent_util = False
+    cfg.workload = "l2cache"  # the cg-meta probe still reads the graph in the PCG image
     seen = {}
     monkeypatch.setattr(
-        util.manifest, "oneshot_pod_spec", lambda c, name, argv: ("spec", argv)
+        util.manifest,
+        "oneshot_pod_spec",
+        lambda c, name, argv, image=None: ("spec", argv, image),
     )
 
     def _oneshot(ns, spec):
-        seen["argv"] = spec[1]
+        seen["argv"], seen["image"] = spec[1], spec[2]
         return "yes\n"
 
     monkeypatch.setattr(util.kube, "run_oneshot", _oneshot)
@@ -162,6 +165,7 @@ def test_query_meta_routes_oneshot_when_not_persistent(monkeypatch, cfg):
     )
     assert util._query_meta(cfg, "mesh", "g") == "yes\n"
     assert cgcache.ONESHOT_SRC in seen["argv"]  # the inline import snippet
+    assert seen["image"] == cfg.images.pcg  # graph read pins PCG, not the l2cache image
 
 
 def test_runs_table_lists_newest_first_and_filters_by_graph(cfg, seed_cost, render):

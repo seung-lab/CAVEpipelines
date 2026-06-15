@@ -176,6 +176,9 @@ Its presence adds the optional l2cache stage to the build DAG and configures the
 - `cv_path` — the graph's graphene CloudVolume (`graphene://…/table/<graph_id>`); the L2 chunk grid
   and per-chunk features are read from it.
 - `table_id` — the cache's Bigtable table (created by the l2cache stage's setup, one row per L2 id).
+- `cave_host`, `cave_dataset`, `cave_service` — *(optional, set together)* register the graph with
+  CAVE auth at setup so its graphene CV is readable; required when the CV is behind auth (else the
+  worker's CV auth-crashes, notably right after ingest). Omit all three for a public CV.
 
 The container command is built in (`python -m pcgl2cache.pipeline.l2cache`); the snapshot timestamp
 is taken once at setup and shared by the whole worker fleet (not configured here).

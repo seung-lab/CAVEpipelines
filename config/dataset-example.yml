@@ -40,6 +40,10 @@ mesh_config:
 # l2cache_config:
 #   cv_path: graphene://https://server/segmentation/table/my_graph
 #   table_id: l2cache_my_graph
+#   # register with CAVE auth (set all three) when the graphene CV is behind auth:
+#   cave_host: https://proofreading.example.com
+#   cave_dataset: my_dataset
+#   cave_service: pychunkedgraph
 
 # raw agglomeration input; its presence enables the raw ingest path automatically
 # ingest_config:

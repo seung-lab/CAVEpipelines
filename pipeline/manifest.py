@@ -250,9 +250,13 @@ def job_spec(
     )
 
 
-def oneshot_pod_spec(cfg, name: str, argv: list, dataset_configmap=None) -> client.V1Pod:
-    """A transient PCG-image pod (setup / meta read) on a spot node; the CLI deletes it
-    after. The dataset mount is opt-in — only setup/mesh-meta read the file."""
+def oneshot_pod_spec(
+    cfg, name: str, argv: list, dataset_configmap=None, image=None
+) -> client.V1Pod:
+    """A transient pod (setup / meta read) on a spot node; the CLI deletes it after.
+    Runs the active workload's image by default; `image` overrides it for a cross-workload
+    op (the cg-meta probe always reads the graph in the PCG image). The dataset mount is
+    opt-in — only setup/mesh-meta read the file."""
     mounts = [_secrets_mount()]
     volumes = [_secrets_volume(cfg)]
     if dataset_configmap:
@@ -268,7 +272,7 @@ def oneshot_pod_spec(cfg, name: str, argv: list, dataset_configmap=None) -> clie
         )
     container = client.V1Container(
         name="util",
-        image=cfg.images.pcg,
+        image=image or cfg.image(),
         command=argv,
         env=_extra_env(cfg),
         env_from=_env_from(),

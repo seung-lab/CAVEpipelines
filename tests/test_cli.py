@@ -12,11 +12,11 @@ def run_cmd(command, argv, cfg):
     return CliRunner().invoke(command, argv, obj=cfg, catch_exceptions=False)
 
 
-def _capture_run_pcg(monkeypatch):
+def _capture_run_workload(monkeypatch):
     seen = {}
     monkeypatch.setattr(
         cli.util,
-        "run_pcg",
+        "run_workload",
         lambda c, name, argv, **kw: seen.update(name=name, argv=argv) or "",
     )
     return seen
@@ -61,7 +61,7 @@ def test_setup_exists_flag_passes_exist_ok(monkeypatch, cfg):
 
 def test_setup_runs_migrate_setup_for_migrate_workload(monkeypatch, cfg):
     cfg.workload = "migrate"
-    seen = _capture_run_pcg(monkeypatch)
+    seen = _capture_run_workload(monkeypatch)
     run_cmd(cli.setup, [], cfg)
     assert seen["argv"] == [
         "python",
@@ -69,6 +69,44 @@ def test_setup_runs_migrate_setup_for_migrate_workload(monkeypatch, cfg):
         "pychunkedgraph.pipeline.migrate.setup",
         cfg.graph_id,
     ]
+
+
+def test_setup_l2cache_creates_table_and_registers_cave(monkeypatch, cfg):
+    cfg.workload = "l2cache"
+    cfg.dataset["l2cache_config"] = {
+        "table_id": "l2cache_g",
+        "cv_path": "graphene://h/seg/table/g",
+        "cave_host": "https://cave.example",
+        "cave_dataset": "ds",
+        "cave_service": "pychunkedgraph",
+    }
+    seen = _capture_run_workload(monkeypatch)
+    run_cmd(cli.setup, [], cfg)
+    assert seen["argv"] == [
+        "python",
+        "-m",
+        "pcgl2cache.pipeline.l2cache.setup",
+        "l2cache_g",
+        cfg.graph_id,
+        "graphene://h/seg/table/g",
+        "--cave-host",
+        "https://cave.example",
+        "--cave-dataset",
+        "ds",
+        "--cave-service",
+        "pychunkedgraph",
+    ]
+
+
+def test_setup_l2cache_skips_cave_when_unconfigured(monkeypatch, cfg):
+    cfg.workload = "l2cache"  # public CV needs no CAVE registration
+    cfg.dataset["l2cache_config"] = {
+        "table_id": "g",
+        "cv_path": "graphene://h/seg/table/g",
+    }
+    seen = _capture_run_workload(monkeypatch)
+    run_cmd(cli.setup, [], cfg)
+    assert "--cave-host" not in seen["argv"]
 
 
 def test_setup_dispatches_meshing_to_mesh_meta(monkeypatch, cfg):

@@ -320,3 +320,18 @@ def set_parallelism(namespace: str, name: str, parallelism: int):
 def set_suspend(namespace: str, name: str, suspend: bool):
     # suspend=True drains a Job to 0 pods (SIGTERM) without deleting it; False resumes
     batch().patch_namespaced_job(name, namespace, {"spec": {"suspend": suspend}})
+
+
+def resize_pod(namespace: str, name: str, container: str, requests: dict):
+    """In-place bump a Running pod's container requests via the /resize subresource — no
+    restart. 404 = pod already gone; 422 = resize unsupported (cluster < 1.34.0-gke.2201000)."""
+    body = {"spec": {"containers": [{"name": container, "resources": {"requests": requests}}]}}
+    try:
+        core().patch_namespaced_pod_resize(name, namespace, body)
+    except ApiException as exc:
+        if exc.status == 404:
+            return
+        if exc.status == 422:
+            note(f"resize unsupported here (needs GKE >= 1.34.0-gke.2201000); {name} kept at old size")
+            return
+        raise

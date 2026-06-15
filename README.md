@@ -61,6 +61,7 @@ which lives in `dataset.yml` (read only by `setup`; workers read graph meta from
 | `pipeline mesh-meta` | write the graph's mesh metadata once (meshing only, after ingest reaches root) |
 | `pipeline submit <layer>` | submit (or re-submit) the layer's Indexed Job; ramp parallelism (refuses if the layer below is not 100% — `--force` to override) |
 | `pipeline scale <layer> <n>` | resize the running layer's workers (set Job parallelism) anytime |
+| `pipeline apply` | reconcile running layers to the edited `pipeline.yml` in place — resize pods (cpu/memory) + set parallelism (from `ramp.max`), no restart or progress loss; any other field change is refused (resubmit to apply it) |
 | `pipeline sample <layer> <n>` | run N scattered chunks (one per pod) to size CPU/memory before a full run |
 | `pipeline status` | live progress until Ctrl-C (`-o` one snapshot, `-i` interval). A recorded `--oneshot`/`--all-layers` run shows a per-stage DAG view (running stage → full table, done → one-line summary, dead driver → red warning); otherwise the configured workload's per-layer table: done, %, active, retries, failed, elapsed, cost, nodes |
 | `pipeline inspect <layer> [index]` | list a layer's failed indexes; with an index, that pod's log |

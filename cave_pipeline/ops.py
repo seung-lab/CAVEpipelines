@@ -159,7 +159,7 @@ def submit(cfg, layer, force=False) -> None:
     n = util.read_n(cfg, layer)
     batch = manifest.batch_for(cfg.job, layer)
     completions = util.ceil_div(n, batch)
-    pmax = min(cfg.job.ramp.max, completions)
+    pmax = manifest.max_parallelism(cfg.job.ramp.max, completions)
     parallelism = min(cfg.job.ramp.start, pmax)
     run = state.get_run(cfg)  # tag this Job's cost rows with the active deploy run
     spec = manifest.job_spec(
@@ -201,6 +201,54 @@ def scale(cfg, layer, parallelism) -> None:
         raise SystemExit(f"no job '{name}' in ns '{cfg.namespace}'")
     kube.set_parallelism(cfg.namespace, name, parallelism)
     note(f"{name}: parallelism -> {parallelism}")
+
+
+def _requests_differ(pod, container: str, desired: dict) -> bool:
+    """True if the pod's container requests don't match `desired` — numeric, so the
+    canonical '2'/'8Gi' a pod stores compares equal to layer_requests' '2000m'/'8192Mi'."""
+    spec = next((c for c in pod.spec.containers if c.name == container), None)
+    current = (spec.resources.requests if spec and spec.resources else None) or {}
+    return costs.parse_cpu(current.get("cpu")) != costs.parse_cpu(desired["cpu"]) or costs.parse_mem(
+        current.get("memory")
+    ) != costs.parse_mem(desired["memory"])
+
+
+def reconcile(cfg) -> None:
+    """Apply pipeline.yml edits to running layers: resources (in-place pod resize) and
+    ramp.max (parallelism). Strict — any other immutable field that drifts from a running
+    Job skips that layer untouched; revert the yml or resubmit to change it."""
+    for job in kube.list_jobs(cfg.namespace):
+        if util.job_state(job) == "complete" or _is_sample(job) or job.spec.suspend:
+            continue
+        check_graph_owner(cfg, job)
+        layer = int(job.metadata.labels["layer"])
+        drift = manifest.immutable_drift(cfg, layer, job)
+        if drift:
+            field, running, desired = drift[0]
+            note(
+                f"L{layer}: immutable {field} differs (running={running}, yml={desired}); "
+                f"skipping — revert the yml or resubmit"
+            )
+            continue
+        try:  # an out-of-Autopilot-range edit invalidates the whole layer, not just resize
+            desired_req = manifest.layer_requests(cfg.job, layer)
+        except SystemExit as exc:
+            note(f"L{layer}: {exc}; skipping")
+            continue
+        name = job.metadata.name
+        pmax = manifest.max_parallelism(cfg.job.ramp.max, job.spec.completions)
+        if job.spec.parallelism != pmax:
+            kube.set_parallelism(cfg.namespace, name, pmax)
+            note(f"{name}: parallelism -> {pmax}")
+        container = cfg.workload.replace("_", "-")
+        running_pods = [p for p in kube.pods_of(cfg.namespace, name) if p.status.phase == "Running"]
+        resized = 0
+        for pod in running_pods:
+            if _requests_differ(pod, container, desired_req):
+                kube.resize_pod(cfg.namespace, pod.metadata.name, container, desired_req)
+                resized += 1
+        if running_pods:
+            note(f"L{layer}: resized {resized}/{len(running_pods)} Running pods")
 
 
 def sample(cfg, layer, count) -> None:

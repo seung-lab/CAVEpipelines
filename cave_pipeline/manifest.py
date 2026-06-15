@@ -250,6 +250,36 @@ def job_spec(
     )
 
 
+def max_parallelism(ramp_max: int, completions: int) -> int:
+    """A Job's parallelism ceiling — never more concurrent pods than there are tasks."""
+    return min(ramp_max, completions)
+
+
+def immutable_drift(cfg, layer: int, job) -> list:
+    """``(field, running, desired)`` for every immutable Job field whose yml value differs
+    from the running Job — mirrors ``job_spec``. The live ``apply`` fields (resources,
+    parallelism) and the per-deploy ``run-id`` are excluded; graph ownership is guarded
+    separately by ``check_graph_owner``."""
+    spec = job.spec
+    container = spec.template.spec.containers[0]
+    env = {e.name: e.value for e in (container.env or [])}
+    selector = spec.template.spec.node_selector or {}
+    annotations = job.metadata.annotations or {}
+    checks = [
+        ("perm_seed", env.get("PCG_PERM_SEED"), str(cfg.job.perm_seed)),
+        ("batch_size", annotations.get("batch_size"), str(batch_for(cfg.job, layer))),
+        ("parallel", env.get("PCG_N_THREADS"), "2" if cfg.job.parallel else "1"),
+        ("compute_class", selector.get("cloud.google.com/compute-class", ""), cfg.job.compute_class),
+        ("zone", selector.get("topology.kubernetes.io/zone", ""), cfg.zone),
+        ("image", container.image, cfg.image()),
+        ("task_retries", spec.backoff_limit_per_index, cfg.job.task_retries),
+        ("max_failed_tasks", spec.max_failed_indexes, min(cfg.job.max_failed_tasks, spec.completions)),
+    ]
+    for var in _l2cache_env(cfg) + _extra_env(cfg):  # workload + operator env vars
+        checks.append((f"env:{var.name}", env.get(var.name), var.value))
+    return [(field, run, want) for field, run, want in checks if str(run) != str(want)]
+
+
 def oneshot_pod_spec(
     cfg, name: str, argv: list, dataset_configmap=None, image=None
 ) -> client.V1Pod:

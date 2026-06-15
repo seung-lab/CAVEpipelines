@@ -223,6 +223,12 @@ def scale(cfg, layer, parallelism):
     ops.scale(cfg, layer, parallelism)
 
 
+@cli.command(help="apply pipeline.yml edits to running layers (resize pods, set parallelism)")
+@pass_cfg
+def apply(cfg):
+    ops.reconcile(cfg)
+
+
 @cli.command(help="run N scattered chunks of a layer to size CPU/memory")
 @_LAYER
 @click.argument("count", type=int)

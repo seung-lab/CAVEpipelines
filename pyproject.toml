@@ -26,7 +26,7 @@ distribution = ["numpy>=2", "kvdbclient>=0.7"]
 # the operator CLI adds the cluster/control-plane stack
 operator = [
     "click>=8.1",
-    "kubernetes>=29",
+    "kubernetes>=33",
     "urllib3>=2",
     "PyYAML>=6.0",
     "rich>=13",

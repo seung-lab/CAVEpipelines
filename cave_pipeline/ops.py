@@ -27,6 +27,10 @@ class Paused(Exception):
     """The run was suspended (`pipeline pause`); the driver stops without failing a stage."""
 
 
+class Undeployed(Exception):
+    """The run's state was cleared (`undeploy`/`purge`) under a live driver; stop, don't fail."""
+
+
 def deploy_infra(cfg, secrets_dir: str) -> None:
     """helm upgrade --install the static infra, incl. the Secret from secrets_dir."""
     data = kube.secret_data(secrets_dir, cfg.secret_files)
@@ -324,6 +328,9 @@ def drive(cfg) -> None:
     except Paused:
         note("paused; `pipeline resume` to continue")  # already suspended; don't re-pause
         return
+    except Undeployed:
+        note("run undeployed; exiting")  # state + jobs already gone; nothing to suspend
+        return
     except BaseException:
         pause(cfg)  # error, crash, or Ctrl-C -> suspend the cluster, status paused
         raise
@@ -367,7 +374,7 @@ def _run_ready(cfg, ready, parallel) -> None:
             run_workload(cfgs[w])
         return
     util.read_layer_counts(cfgs[ready[0]])  # warm the shared cache before threads read it
-    errors, paused = {}, False
+    errors, paused, undeployed = {}, False, False
     ex = concurrent.futures.ThreadPoolExecutor(max_workers=len(ready))
     try:
         futs = {ex.submit(run_workload, cfgs[w]): w for w in ready}
@@ -378,6 +385,8 @@ def _run_ready(cfg, ready, parallel) -> None:
                 raise
             except Paused:
                 paused = True  # pause suspends every Job; siblings stop the same way
+            except Undeployed:
+                undeployed = True  # undeploy tore down the run; siblings stop the same way
             except SystemExit as exc:
                 errors[futs[fut]] = str(exc)
             except Exception as exc:  # noqa: BLE001 - report every failure, not the first
@@ -389,6 +398,8 @@ def _run_ready(cfg, ready, parallel) -> None:
         raise
     finally:
         ex.shutdown(wait=False)
+    if undeployed:  # a teardown supersedes pause/failure reporting — the run is gone
+        raise Undeployed()
     if paused:
         if errors:  # don't let the pause hide a real failure that re-runs on resume
             note(f"paused; also failed (re-run on resume): {', '.join(sorted(errors))}")
@@ -406,8 +417,8 @@ def run_workload(cfg_w) -> None:
         counts = util.read_layer_counts(cfg_w)
         for layer in range(2, top_layer(cfg_w, counts) + 1):
             run_layer(cfg_w, layer)
-    except (KeyboardInterrupt, Paused):
-        raise  # interrupted or paused: leave the stage 'running' so a re-run resumes it
+    except (KeyboardInterrupt, Paused, Undeployed):
+        raise  # don't fail the stage: a re-run resumes a pause; undeploy already cleared state
     except BaseException:
         state.set_state(cfg_w, cfg_w.workload, state.FAILED)
         raise
@@ -483,6 +494,8 @@ def run_layer(cfg, layer) -> None:
     else:  # absent, failed, or a leftover sample run -> (re)submit replaces it
         submit(cfg, layer)
     while True:
+        if state.get_run(cfg) is None:  # undeploy/purge cleared the run out from under us
+            raise Undeployed(f"L{layer} ({cfg.workload}) run undeployed; stopping")
         cost.sample(cfg)  # pod runtimes are durable once recorded
         job = _read_job(cfg, layer)
         if job is None:

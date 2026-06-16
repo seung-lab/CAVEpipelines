@@ -81,6 +81,17 @@ def test_drive_exits_cleanly_when_paused(monkeypatch, cfg, running_run):
     ops.drive(cfg)  # returns cleanly — no traceback, the operator's pause is not undone
 
 
+def test_drive_exits_cleanly_when_undeployed(monkeypatch, cfg, running_run):
+    def undeployed(c, run_set, parallel):
+        raise ops.Undeployed("run undeployed")
+
+    monkeypatch.setattr(ops, "orchestrate", undeployed)
+    monkeypatch.setattr(
+        ops, "pause", lambda c: pytest.fail("must not suspend a torn-down run")
+    )
+    ops.drive(cfg)  # returns cleanly — state + jobs already gone, no traceback
+
+
 def test_resume_refuses_a_live_driver(monkeypatch, cfg, running_run):
     state.set_run_pid(cfg, os.getpid())  # a healthy driver is recorded
     monkeypatch.setattr(
@@ -131,4 +142,22 @@ def test_run_ready_surfaces_a_pause_not_a_failure(monkeypatch, cfg, stub_layer_c
 
     monkeypatch.setattr(ops, "run_workload", run_workload)
     with pytest.raises(ops.Paused):  # a paused sibling is not aggregated as a failure
+        ops._run_ready(cfg, ["meshing", "l2cache"], parallel=True)
+
+
+def test_run_ready_surfaces_undeploy_over_a_sibling_failure(
+    monkeypatch, cfg, stub_layer_counts
+):
+    monkeypatch.setattr(
+        ops, "_phase_cfg", lambda c, w: dataclasses.replace(c, workload=w)
+    )
+    stub_layer_counts({2: 1})
+
+    def run_workload(cfg_w):
+        if cfg_w.workload == "meshing":
+            raise ops.Undeployed("run undeployed")
+        raise SystemExit("boom in l2cache")
+
+    monkeypatch.setattr(ops, "run_workload", run_workload)
+    with pytest.raises(ops.Undeployed):  # a teardown supersedes a sibling failure
         ops._run_ready(cfg, ["meshing", "l2cache"], parallel=True)

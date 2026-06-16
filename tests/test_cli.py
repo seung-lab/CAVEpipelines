@@ -185,7 +185,7 @@ def test_undeploy_deletes_jobs_then_uninstalls_release(monkeypatch, cfg):
             SimpleNamespace(returncode=0, stdout="released", stderr=""),
         )[1],
     )
-    run_cmd(cli.undeploy, [], cfg)
+    run_cmd(cli.undeploy, ["--yes"], cfg)
     assert deleted == ["ingest-l2", "pcg-dataset-g"]  # jobs, then dataset configmaps
     assert ran["argv"][:2] == ["helm", "uninstall"]
 
@@ -201,8 +201,32 @@ def test_undeploy_clears_layer_counts_cache(monkeypatch, cfg, tmp_path):
         "run",
         lambda argv, **kw: SimpleNamespace(returncode=0, stdout="released", stderr=""),
     )
-    run_cmd(cli.undeploy, [], cfg)
+    run_cmd(cli.undeploy, ["--yes"], cfg)
     assert cli.util.cached_layer_counts(cfg) is None
+
+
+def test_undeploy_requires_confirmation(monkeypatch, cfg):
+    # a destructive teardown must not run unprompted
+    monkeypatch.setattr(cli.kube, "list_jobs", lambda ns, workload=None: [])
+    ran = []
+    monkeypatch.setattr(
+        ops.subprocess,
+        "run",
+        lambda argv, **kw: ran.append(argv)
+        or SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    res = CliRunner().invoke(cli.undeploy, [], obj=cfg, input="n\n")
+    assert res.exit_code != 0  # aborted at the prompt
+    assert not ran  # helm uninstall never runs
+
+
+def test_delete_requires_confirmation_then_deletes_with_yes(monkeypatch, cfg):
+    deleted = []
+    monkeypatch.setattr(cli.kube, "delete_job", lambda ns, name: deleted.append(name))
+    res = CliRunner().invoke(cli.delete, ["2"], obj=cfg, input="n\n")
+    assert res.exit_code != 0 and not deleted  # aborts before any deletion
+    run_cmd(cli.delete, ["2", "--yes"], cfg)
+    assert deleted == [cli.manifest.job_name(cfg, 2)]  # --yes deletes the layer's Job
 
 
 def test_layer_counts_cache_round_trip(monkeypatch, cfg, tmp_path):

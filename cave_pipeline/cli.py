@@ -160,6 +160,9 @@ def deploy(
 @cli.command(
     help="delete all pipeline Jobs, the helm release (incl. secret) + layer-counts cache"
 )
+@click.confirmation_option(
+    prompt="undeploy: delete all pipeline Jobs, dataset configmaps + the helm release?"
+)
 @pass_cfg
 def undeploy(cfg):
     ops.undeploy(cfg)
@@ -239,6 +242,7 @@ def sample(cfg, layer, count):
 
 @cli.command(help="delete the layer's Job and pods")
 @_LAYER
+@click.confirmation_option(prompt="delete this layer's Job and pods?")
 @pass_cfg
 def delete(cfg, layer):
     ops.delete(cfg, layer)

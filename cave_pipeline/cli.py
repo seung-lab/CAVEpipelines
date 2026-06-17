@@ -146,6 +146,7 @@ def deploy(
             cfg, run_set, parallel, yes
         )  # confirm before any cluster mutation
     ops.deploy_infra(cfg, secrets)
+    ops.register_cave(cfg, secrets)  # one-shot CAVE registration when cave_config is set
     if run_set is not None:
         state.start_run(cfg, run_set, parallel, pid=os.getpid())
         ops.drive(cfg)

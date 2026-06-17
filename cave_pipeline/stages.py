@@ -6,6 +6,10 @@ inheriting it. Rendering (container command, job labels) stays in `manifest`; th
 imports only `util`/`note`, so `manifest` stays free of a `manifest -> stages` import cycle.
 """
 
+import json
+import urllib.error
+import urllib.request
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from . import note, util
@@ -122,6 +126,44 @@ class L2Cache(BaseStage):
 
     def top_layer(self, cfg, counts) -> int:
         return 2
+
+
+class CaveRegister(BaseStage):
+    name = "cave_register"
+    deps = frozenset({"ingest", "meshing"})
+    optional = True  # joins a build only when the dataset declares cave_config
+
+    def applies(self, cfg) -> bool:
+        return "cave_config" in cfg.dataset
+
+    def setup(self, cfg, secrets_dir, exist_ok: bool = False) -> None:
+        cc = cfg.dataset.get("cave_config") or {}
+        host, dataset = cc.get("host"), cc.get("dataset")
+        service = cc.get("service", "pychunkedgraph")  # the default service; rarely differs
+        if not (host and dataset):
+            note("cave-register: cave_config needs host, dataset; skipping")
+            return
+        url = (
+            f"{host.rstrip('/')}/sticky_auth/api/v1/service/{service}"
+            f"/table/{cfg.graph_id}/dataset/{dataset}"
+        )
+        # best-effort: post and log the response; never block the deploy (on failure,
+        # register manually). token from the deploy secrets dir (the cave-secret file).
+        try:
+            secret = Path(secrets_dir) / cfg.secret_files["cave-secret.json"]
+            token = json.loads(secret.read_text())["token"]
+            req = urllib.request.Request(
+                url, method="POST", headers={"Authorization": f"Bearer {token}"}
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                note(f"cave-register: {resp.status} {resp.read().decode(errors='replace')}")
+        except urllib.error.HTTPError as exc:
+            note(f"cave-register: {exc.code} {exc.read().decode(errors='replace')}")
+        except Exception as exc:  # noqa: BLE001 - best-effort, never block the deploy
+            note(f"cave-register: {exc}")
+
+    def top_layer(self, cfg, counts) -> int:
+        return 1  # not a build-DAG stage; register_cave() invokes setup() directly
 
 
 class Migrate(BaseStage):

@@ -65,6 +65,14 @@ def deploy_infra(cfg, secrets_dir: str) -> None:
     )
 
 
+def register_cave(cfg, secrets_dir) -> None:
+    """Register the graph with CAVE sticky_auth when cave_config is set — a one-shot
+    POST on deploy, not a build-DAG stage; token comes from the deploy secrets dir."""
+    stage = stages.CaveRegister()
+    if stage.applies(cfg):
+        stage.setup(cfg, secrets_dir)
+
+
 def undeploy(cfg) -> None:
     """Tear down everything deploy/submit created: Jobs, dataset ConfigMaps, helm release,
     the local layer-counts cache, and the run state. The cost db and terraform-managed infra

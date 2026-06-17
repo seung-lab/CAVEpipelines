@@ -32,6 +32,14 @@ mesh_config:
     8: 18
     9: 18
 
+# register the graph with CAVE auth (sticky_auth) so its CV is readable (optional);
+# its presence posts the service->table->dataset mapping on deploy. best-effort:
+# a failure is logged, not fatal — register manually if it fails.
+# cave_config:
+#   host: https://proofreading.example.com
+#   dataset: my_dataset
+#   # service: pychunkedgraph   # optional; defaults to pychunkedgraph
+
 # l2 feature cache; its presence adds the optional l2cache stage to the build
 # l2cache_config:
 #   cv_path: graphene://https://server/segmentation/table/my_graph

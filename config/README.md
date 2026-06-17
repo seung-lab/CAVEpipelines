@@ -4,7 +4,7 @@
 [resource curves](#how-per-layer-resources-scale) | [dataset.yml](#datasetyml) —
 [data_source](#data_source) · [graph_config](#graph_config) · [ingest_config](#ingest_config-optional) ·
 [backend_client](#backend_client) · [mesh_config](#mesh_config-meshing-only) ·
-[l2cache_config](#l2cache_config-l2cache-optional)
+[l2cache_config](#l2cache_config-l2cache-optional) · [cave_config](#cave_config-cave-registration-optional)
 
 `config/` is the conventional home for run configs — two files per project:
 
@@ -181,3 +181,16 @@ Its presence adds the optional l2cache stage to the build DAG and configures the
 
 The container command is built in (`python -m pcgl2cache.pipeline.l2cache`); the snapshot timestamp
 is taken once at setup and shared by the whole worker fleet (not configured here).
+
+### `cave_config` (CAVE registration, optional)
+Its presence posts the graph's `service → table → dataset` mapping to CAVE `sticky_auth` once on
+deploy (a bearer-token POST), so the graphene CV is readable behind auth. It is **not** a build-DAG
+stage — it runs on every `deploy` when set. Best-effort: the response is logged and a failure never
+blocks the deploy; register manually if it fails.
+
+- `host` — the CAVE auth/global server, e.g. `https://proofreading.example.com`.
+- `dataset` — the CAVE dataset (datastack) the table belongs to.
+- `service` — *(optional)* the CAVE service; defaults to `pychunkedgraph`.
+
+The bearer token is read from the deploy secrets dir — the `cave-secret.json` entry of
+`secret_files` (every secret the pipeline needs lives in `secrets/`).

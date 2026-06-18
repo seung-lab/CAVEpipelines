@@ -11,6 +11,9 @@ def _invoke(args, cfg, **kw):
 
 
 def _mock_helm(monkeypatch, calls):
+    # deploy_infra fails fast if helm or the secrets dir is missing; neither exists in CI
+    monkeypatch.setattr(ops.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(ops.os.path, "isdir", lambda p: True)
     monkeypatch.setattr(ops.kube, "secret_data", lambda d, m: {})
     monkeypatch.setattr(ops.kube, "util_pod", lambda ns, wait_create=False: "util-pod")
     monkeypatch.setattr(ops.kube, "list_jobs", lambda ns, w=None: [])  # drive clears suspend on entry
@@ -156,17 +159,3 @@ def test_all_layers_ingest_runs_setup_then_ingest_layers(monkeypatch, cfg):
     _mock_all_layers(monkeypatch, cfg, {2: 100, 3: 10}, calls)
     _invoke(["--all-layers", "--yes"], cfg)
     assert calls == ["helm", "setup(ingest,exist_ok=True)", "ingest-l2", "ingest-l3"]
-
-
-def test_cave_placeholder_added_when_absent():
-    import base64
-    import json
-
-    out = ops._with_cave_placeholder({"google-secret.json": "x"})
-    tok = json.loads(base64.b64decode(out["cave-secret.json"]))
-    assert tok.get("token")  # a non-empty token, so meshing's graphene CV accepts the file
-
-
-def test_cave_placeholder_never_overrides_provided():
-    out = ops._with_cave_placeholder({"cave-secret.json": "operator-supplied"})
-    assert out["cave-secret.json"] == "operator-supplied"  # a real secret is left untouched

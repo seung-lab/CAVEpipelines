@@ -40,10 +40,11 @@ def test_per_layer_resource_curves(cfg):
     assert manifest.requests_for(cfg.job, 9) == (30, 110)  # override wins
 
 
-def test_flat_fallback_without_resources_block(cfg):
-    # no resources block -> job.cpu/job.memory verbatim, every layer
-    assert manifest.requests_for(cfg.job, 2) == (1.0, 2.0)
-    assert manifest.requests_for(cfg.job, 9) == (1.0, 2.0)
+def test_requests_require_a_curve(cfg):
+    # no resources block -> fail fast with a clear message, never a silent default
+    cfg.job.resources = None
+    with pytest.raises(SystemExit, match="resources.cpu is required"):
+        manifest.requests_for(cfg.job, 2)
 
 
 def test_job_spec_renders_layer_requests(cfg):
@@ -61,11 +62,14 @@ def test_job_spec_renders_layer_requests(cfg):
     assert req == {"cpu": "8000m", "memory": "9216Mi"}  # layer 5 scales up
 
 
-def test_gp_ceiling_refuses_job(cfg):
+def test_gp_ceiling_clamps_not_aborts(cfg):
+    # a curve over the ceiling clamps to the GP max (with a warning), never aborts the run
     cfg.job.compute_class = ""
-    cfg.job.resources = config.Resources(cpu=config.Curve(base=40))
-    with pytest.raises(SystemExit, match="compute_class"):
-        manifest.job_spec(cfg, 2, 100, 5, 3)
+    cfg.job.resources = config.Resources(
+        cpu=config.Curve(base=40), memory=config.Curve(base=2)
+    )
+    req = _job(cfg)["spec"]["template"]["spec"]["containers"][0]["resources"]["requests"]
+    assert req["cpu"] == "30000m"  # 40 vCPU clamped to the 30-vCPU ceiling, not refused
 
 
 def test_pod_failure_policy_spot_vs_fatal(cfg):

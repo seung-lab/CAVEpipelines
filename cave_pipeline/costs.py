@@ -51,12 +51,12 @@ def normalize_requests(cpu: float, mem: float, compute_class: str = "") -> tuple
     """Snap requests to the cheapest valid Autopilot point >= the ask.
 
     Autopilot silently rounds invalid requests up and bills the result; doing it
-    explicitly keeps cost estimates true. Returns (cpu, mem, warnings, errors);
-    errors mean the pod cannot run on the class at all. Only the default class's
-    grid is modeled — other classes pass through untouched."""
-    warnings, errors = [], []
+    explicitly keeps cost estimates true. Returns (cpu, mem, warnings); over-ceiling
+    requests are clamped (with a warning), not rejected. Only the default class's grid
+    is modeled — other classes pass through untouched."""
+    warnings = []
     if compute_class:
-        return cpu, mem, warnings, errors
+        return cpu, mem, warnings
     if cpu < GP_MIN[0]:
         warnings.append(
             f"cpu {cpu:g} below the Autopilot minimum; billed as {GP_MIN[0]:g}"
@@ -83,13 +83,19 @@ def normalize_requests(cpu: float, mem: float, compute_class: str = "") -> tuple
             f"cpu {cpu:g} off the {CPU_STEP:g}-vCPU billing step; "
             f"non-bursting clusters round it up"
         )
-    if cpu > GP_MAX[0] or mem > GP_MAX[1]:
-        errors.append(
-            f"{cpu:g} cpu / {mem:g}Gi exceeds the general-purpose ceiling "
-            f"({GP_MAX[0]:g} vCPU / {GP_MAX[1]:g}Gi) — set job.compute_class or a "
-            f"per-layer resources override"
+    if cpu > GP_MAX[0]:
+        warnings.append(
+            f"cpu {cpu:g} clamped to the {GP_MAX[0]:g}-vCPU general-purpose ceiling; "
+            f"set job.compute_class for more"
         )
-    return cpu, mem, warnings, errors
+        cpu = GP_MAX[0]
+    if mem > GP_MAX[1]:
+        warnings.append(
+            f"memory {mem:g}Gi clamped to the {GP_MAX[1]:g}Gi general-purpose ceiling; "
+            f"set job.compute_class for more"
+        )
+        mem = GP_MAX[1]
+    return cpu, mem, warnings
 
 
 def load_table() -> dict:

@@ -176,12 +176,19 @@ heartbeat stops and its claim expires, after which retry is safe; the lock TTL s
 - Per-pod **resources are requests only**, computed per layer (below), so peak cluster draw is
   `parallelism × per-pod request`.
 
+**Progress granularity.** `status` reports `done = succeeded_indexes × batch_size` — whole
+*completed batches*, since an Indexed Job only surfaces per-index success, never sub-batch
+progress. When `completions ≈ parallelism` (every batch running at once) `done` therefore sits
+at 0% until the first batch finishes its `batch_size` chunks, then jumps. For finer, sooner
+progress on a layer, lower `job.batch_size` (e.g. 10) so `completions ≫ parallelism` and indexes
+complete in waves — at the cost of more pod starts; the work itself is unaffected either way.
+
 **Resource curves.** Upper layers do heavier per-chunk work, so requests are declared as a
 curve: per dimension, `value(L) = min(base · factor^(L−2) + add, max)`, with per-layer
-`overrides` and a flat `job.cpu`/`job.memory` fallback. Each layer is then **snapped to the
+`overrides`; the curve is required — there is no flat fallback. Each layer is then **snapped to the
 cheapest valid Autopilot point** (≥ the 1 GiB/vCPU floor, within the 6.5 GiB/vCPU ratio
-ceiling, on the 0.25-vCPU grid) and **refused past the general-purpose ceiling** (30 vCPU /
-110 GiB) rather than silently billed on a pricier class. Declaring requests explicitly keeps
+ceiling, on the 0.25-vCPU grid) and **clamped to the general-purpose ceiling** (30 vCPU /
+110 GiB) with a warning rather than silently billed on a pricier class. Declaring requests explicitly keeps
 the recorded cost honest, since Autopilot would otherwise round up and bill the result.
 
 **Spot + ramp.** Every Job runs on Spot (60–91% off) with the matching toleration; an optional

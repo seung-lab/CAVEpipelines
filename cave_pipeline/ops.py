@@ -4,12 +4,15 @@ cli.py stays lean (argument parsing + read-only presentation); these are plain
 functions with no click context, so `deploy --oneshot` composes them directly.
 """
 
+import base64
 import concurrent.futures
 import contextlib
 import graphlib
 import os
+import shutil
 import subprocess
 import tempfile
+import threading
 import time
 
 import click
@@ -21,6 +24,7 @@ from .db import cost, state
 
 HELM_CHART = "helm"
 ONESHOT_POLL_SEC = 30
+OOM_POLL_SEC = 30
 
 
 class Paused(Exception):
@@ -31,10 +35,35 @@ class Undeployed(Exception):
     """The run's state was cleared (`undeploy`/`purge`) under a live driver; stop, don't fail."""
 
 
+# meshing's graphene CloudVolume demands a cave-secret.json at construction but never calls
+# the graph server, so a placeholder token satisfies it when the operator provides no real one.
+_CAVE_SECRET = "cave-secret.json"
+_PLACEHOLDER_CAVE_SECRET = b'{"token": "placeholder"}'
+
+
+def _with_cave_placeholder(data: dict) -> dict:
+    """Add a placeholder cave-secret.json when none is provided; meshing needs the file
+    present, not a real token (it reads/writes only the bucket, never the graph server)."""
+    if _CAVE_SECRET in data:
+        return data
+    note(
+        f"no {_CAVE_SECRET} provided; mounting a placeholder "
+        f"(meshing needs the file, not a real token)"
+    )
+    return {**data, _CAVE_SECRET: base64.b64encode(_PLACEHOLDER_CAVE_SECRET).decode()}
+
+
 def deploy_infra(cfg, secrets_dir: str) -> None:
     """helm upgrade --install the static infra, incl. the Secret from secrets_dir."""
-    data = kube.secret_data(secrets_dir, cfg.secret_files)
-    note(f"deploy: helm release 'pcg' (secrets: {list(data) or 'none'})")
+    if not shutil.which("helm"):
+        raise SystemExit("helm not found on PATH; install helm to deploy")
+    if not os.path.isdir(secrets_dir):
+        raise SystemExit(f"secrets dir not found: {secrets_dir}")
+    data = _with_cave_placeholder(kube.secret_data(secrets_dir, cfg.secret_files))
+    mounted = (
+        ", ".join(f"{src} -> {mnt}" for mnt, src in cfg.secret_files.items()) or "none"
+    )
+    note(f"deploy: helm release 'pcg' (secrets from {secrets_dir}: {mounted})")
     with tempfile.NamedTemporaryFile("w", suffix=".yaml") as f:
         yaml.safe_dump(manifest.helm_values(cfg, data), f)
         f.flush()
@@ -59,7 +88,7 @@ def deploy_infra(cfg, secrets_dir: str) -> None:
                 f"helm upgrade failed (exit {res.returncode}):\n{res.stderr.strip()}"
             )
     note(
-        f"deployed; secret '{cfg.secret_name}' <- {list(data)}"
+        f"deployed; secret '{cfg.secret_name}' <- {mounted}"
         if data
         else "deployed (no secret)"
     )
@@ -220,9 +249,9 @@ def _requests_differ(pod, container: str, desired: dict) -> bool:
     canonical '2'/'8Gi' a pod stores compares equal to layer_requests' '2000m'/'8192Mi'."""
     spec = next((c for c in pod.spec.containers if c.name == container), None)
     current = (spec.resources.requests if spec and spec.resources else None) or {}
-    return costs.parse_cpu(current.get("cpu")) != costs.parse_cpu(desired["cpu"]) or costs.parse_mem(
-        current.get("memory")
-    ) != costs.parse_mem(desired["memory"])
+    return costs.parse_cpu(current.get("cpu")) != costs.parse_cpu(
+        desired["cpu"]
+    ) or costs.parse_mem(current.get("memory")) != costs.parse_mem(desired["memory"])
 
 
 def reconcile(cfg) -> None:
@@ -253,7 +282,9 @@ def reconcile(cfg) -> None:
             kube.set_parallelism(cfg.namespace, name, pmax)
             note(f"{name}: parallelism -> {pmax}")
         container = cfg.workload.replace("_", "-")
-        running_pods = [p for p in kube.pods_of(cfg.namespace, name) if p.status.phase == "Running"]
+        running_pods = [
+            p for p in kube.pods_of(cfg.namespace, name) if p.status.phase == "Running"
+        ]
         resized = 0
         for pod in running_pods:
             if _requests_differ(pod, container, desired_req):
@@ -324,24 +355,84 @@ def orchestrate(cfg, run_set, parallel=True) -> None:
     note("orchestrate: all workloads complete")
 
 
-def drive(cfg) -> None:
-    """Run the recorded run to completion. A pause exits cleanly (the cluster is already
-    suspended); any other abnormal exit self-pauses so a dead driver never leaves Jobs burning."""
+def _watch_oom(cfg, stop) -> None:
+    """Background heads-up: on a fresh OOMKilling event, warn once per active Job of the
+    current run that its layer is out of memory. Node-level events carry no run, so we
+    scope via the Job's run-id annotation. Best-effort — never disrupts the driver."""
+    warned, seen = set(), set()
+    with contextlib.suppress(Exception, SystemExit):  # OOMs already on-cluster aren't ours
+        seen = {e.metadata.uid for e in kube.oom_events(cfg.namespace)}
+    while not stop.wait(OOM_POLL_SEC):
+        with contextlib.suppress(Exception, SystemExit):  # a hiccup never kills the watcher
+            fresh = [e for e in kube.oom_events(cfg.namespace) if e.metadata.uid not in seen]
+            seen.update(e.metadata.uid for e in fresh)
+            if not fresh:
+                continue
+            run = state.get_run(cfg)
+            run_id = run.run_id if run else ""
+            for job in kube.list_jobs(cfg.namespace):
+                anns = job.metadata.annotations or {}
+                if (job.status.active or 0) == 0 or anns.get("run-id") != run_id:
+                    continue
+                if job.metadata.uid not in warned:
+                    warned.add(job.metadata.uid)
+                    layer = (job.metadata.labels or {}).get("layer", "?")
+                    note(f"layer {layer}: OOMKilling — raise its job.resources.memory, re-submit")
+
+
+def _clear_suspend(cfg) -> None:
+    """Unsuspend every suspended Job of the run and mark it running. The driver converges
+    from any prior pause, so deploy and resume are one 'make progress' action."""
+    cleared = 0
+    for job in kube.list_jobs(cfg.namespace):
+        if job.spec.suspend:
+            kube.set_suspend(cfg.namespace, job.metadata.name, False)
+            cleared += 1
+    state.set_run_status(cfg, state.RUNNING)
+    if cleared:
+        note(f"resumed: {cleared} suspended job(s) unsuspended")
+
+
+def _confirm_resume(exc) -> bool:
+    """After a self-pause, let an attended operator fix the cause and continue in place,
+    instead of exiting and re-running by hand."""
+    note(f"suspended after failure: {exc}")
+    return click.confirm("fix the cause, then resume now?", default=False)
+
+
+def drive(cfg, interactive=False) -> None:
+    """Drive the recorded run to completion, converging from any prior state: a leftover
+    suspend is cleared on entry (so deploy and resume both just continue), done layers
+    skip, failed layers re-submit. An external pause or undeploy exits cleanly; a failure
+    self-suspends so no Jobs burn, then — when attended — offers to resume in place."""
     run = state.get_run(cfg)
     if run is None:
         raise SystemExit("no run recorded; deploy --oneshot or --all-layers first")
     state.set_run_pid(cfg, os.getpid())
+    _clear_suspend(cfg)  # heal any prior pause; the operator never picks deploy vs resume
+    stop = threading.Event()
+    threading.Thread(target=_watch_oom, args=(cfg, stop), daemon=True).start()
     try:
-        orchestrate(cfg, run.stage_set, run.parallel)
-    except Paused:
-        note("paused; `pipeline resume` to continue")  # already suspended; don't re-pause
-        return
-    except Undeployed:
-        note("run undeployed; exiting")  # state + jobs already gone; nothing to suspend
-        return
-    except BaseException:
-        pause(cfg)  # error, crash, or Ctrl-C -> suspend the cluster, status paused
-        raise
+        while True:
+            try:
+                orchestrate(cfg, run.stage_set, run.parallel)
+                break
+            except Paused:
+                note("paused; `pipeline resume` to continue")  # external pause: respect it
+                return
+            except Undeployed:
+                note("run undeployed; exiting")  # state + jobs already gone
+                return
+            except KeyboardInterrupt:
+                pause(cfg)  # Ctrl-C: stop the burn, don't nag to resume
+                raise
+            except BaseException as exc:  # noqa: BLE001 - any failure self-pauses
+                pause(cfg)  # suspend so no Jobs burn while the operator looks
+                if not (interactive and _confirm_resume(exc)):
+                    raise
+                _clear_suspend(cfg)  # fixed in place; converge and drive on
+    finally:
+        stop.set()
     state.finish_run(cfg)
 
 
@@ -356,7 +447,8 @@ def pause(cfg) -> None:
 
 
 def resume(cfg) -> None:
-    """Unsuspend a paused (or stalled) run's Jobs and continue driving from where it paused."""
+    """Unsuspend a paused (or stalled) run and continue driving where it paused — the same
+    'make progress' action as deploy; drive clears the suspend and converges from any state."""
     run = state.get_run(cfg)
     if run is None:
         raise SystemExit("no run to resume; `pipeline deploy` first")
@@ -366,12 +458,7 @@ def resume(cfg) -> None:
         raise SystemExit(
             f"a driver (pid {run.pid}) is already running; `pipeline pause` first"
         )
-    for job in kube.list_jobs(cfg.namespace):
-        if job.spec.suspend:
-            kube.set_suspend(cfg.namespace, job.metadata.name, False)
-    state.set_run_status(cfg, state.RUNNING)
-    note("resumed: jobs unsuspended; driving")
-    drive(cfg)
+    drive(cfg, interactive=True)
 
 
 def _run_ready(cfg, ready, parallel) -> None:
@@ -394,7 +481,9 @@ def _run_ready(cfg, ready, parallel) -> None:
             except Paused:
                 paused = True  # pause suspends every Job; siblings stop the same way
             except Undeployed:
-                undeployed = True  # undeploy tore down the run; siblings stop the same way
+                undeployed = (
+                    True  # undeploy tore down the run; siblings stop the same way
+                )
             except SystemExit as exc:
                 errors[futs[fut]] = str(exc)
             except Exception as exc:  # noqa: BLE001 - report every failure, not the first
@@ -423,7 +512,9 @@ def run_workload(cfg_w) -> None:
     try:
         setup(cfg_w, exist_ok=True)  # forgiveness: a fresh graph creates, a resume skips
         counts = util.read_layer_counts(cfg_w)
-        for layer in range(2, top_layer(cfg_w, counts) + 1):
+        top = top_layer(cfg_w, counts)
+        _layer_plan(cfg_w, counts, top)  # every layer's requests + clamps up front, not at L7
+        for layer in range(2, top + 1):
             run_layer(cfg_w, layer)
     except (KeyboardInterrupt, Paused, Undeployed):
         raise  # don't fail the stage: a re-run resumes a pause; undeploy already cleared state

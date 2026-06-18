@@ -6,7 +6,6 @@ Indexed Jobs. Layers are operator-gated: submit one, watch it Complete, submit t
 next (a layer's writes are non-idempotent).
 """
 
-import contextlib
 import dataclasses
 import functools
 import logging
@@ -23,6 +22,7 @@ from rich.table import Table
 
 from . import NOTE, config, costs, kube, log, manifest, note, ops, util
 from .db import cost, state
+from .distribution import run_and_exit
 
 
 @click.group(help=__doc__, context_settings={"help_option_names": ["-h", "--help"]})
@@ -51,6 +51,9 @@ def cli(ctx, config_name, graph_id, verbose):
     # Root stays at NOTE so -v doesn't unleash urllib3/kubernetes HTTP body dumps
     # (unreadable multi-KB single lines); -v only deepens our own logger.
     logging.basicConfig(level=NOTE, format="%(message)s")
+    # kubernetes' urllib3 logs transient connection retries (RemoteDisconnected) at
+    # WARNING; they recover, so drop them — a real failure still raises ApiException.
+    logging.getLogger("urllib3").setLevel(logging.ERROR)
     if verbose:
         log.setLevel(logging.DEBUG)
     ctx.obj = (config_name, graph_id)  # loaded lazily by pass_cfg: --help needs no config
@@ -70,7 +73,10 @@ def pass_cfg(fn):
             cfg = config.resolve(name)
             if graph_id:
                 cfg.graph_id = graph_id
-            ctx_id = f"graph: {cfg.graph_id}, workload: {cfg.workload}"
+            ctx_id = (
+                f"graph: {cfg.graph_id}, workload: {cfg.workload}, "
+                f"dataset: {cfg.dataset_path or 'none'}"
+            )
             if newly_selected:  # announce the session lock loudly
                 note(
                     f"config: {cfg.source} ({ctx_id}) — session config; "
@@ -149,7 +155,7 @@ def deploy(
     ops.register_cave(cfg, secrets)  # one-shot CAVE registration when cave_config is set
     if run_set is not None:
         state.start_run(cfg, run_set, parallel, pid=os.getpid())
-        ops.drive(cfg)
+        ops.drive(cfg, interactive=not yes)
     elif run_setup:
         ops.setup(cfg)
         if submit_l2:
@@ -227,7 +233,9 @@ def scale(cfg, layer, parallelism):
     ops.scale(cfg, layer, parallelism)
 
 
-@cli.command(help="apply pipeline.yml edits to running layers (resize pods, set parallelism)")
+@cli.command(
+    help="apply pipeline.yml edits to running layers (resize pods, set parallelism)"
+)
 @pass_cfg
 def apply(cfg):
     ops.reconcile(cfg)
@@ -357,6 +365,38 @@ def events(cfg, layer):
         )
 
 
+@cli.command(help="describe a layer's Job: status, conditions, and the pods holding it back")
+@_LAYER
+@pass_cfg
+def describe(cfg, layer):
+    """Why a layer isn't progressing: Job counts + conditions, each not-yet-done pod's
+    state/reason, and recent Warning events (scheduling, image pulls, OOM)."""
+    name = manifest.job_name(cfg, layer)
+    try:
+        job = kube.batch().read_namespaced_job(name, cfg.namespace)
+    except ApiException as exc:
+        if exc.status == 404:
+            note(f"no job '{name}' in ns '{cfg.namespace}'")
+            return
+        raise
+    s = job.status
+    note(
+        f"{name}: {s.succeeded or 0} succeeded, {s.active or 0} active, {s.failed or 0} "
+        f"failed | completions {job.spec.completions}, parallelism {job.spec.parallelism}"
+        + (" | SUSPENDED" if job.spec.suspend else "")
+    )
+    for c in s.conditions or []:
+        note(f"  {c.type}={c.status} {c.reason or ''}: {c.message or ''}".rstrip(": "))
+    for pod in kube.unfinished_pods(cfg.namespace, name):
+        idx = (pod.metadata.annotations or {}).get(
+            "batch.kubernetes.io/job-completion-index", "?"
+        )
+        node = pod.spec.node_name or "-"
+        note(f"  task {idx} [{pod.status.phase}] on {node}: {util.pod_reason(pod) or '-'}")
+    for e in [e for e in kube.job_events(cfg.namespace, name) if e.type == "Warning"][-10:]:
+        note(f"  ! {e.reason}: {e.message}")
+
+
 @cli.command(help="live per-pod CPU/memory usage in cores/GiB (needs metrics-server)")
 @_LAYER
 @click.option("-o", "--once", is_flag=True, help="print one snapshot and exit")
@@ -417,9 +457,7 @@ def status(cfg, once, interval):
     # yet submitted. Read them from the local cache *each render*, so a transient miss never
     # poisons the session: a running driver writes the cache and the view self-heals.
     if run is None:  # standalone status has no driver to fill the cache — warm it once
-        # cluster may be cold; degrade gracefully
-        with contextlib.suppress(SystemExit, Exception):
-            util.read_layer_counts(cfg)
+        util.try_layer_counts(cfg)  # one clean line on failure, never a remote traceback
     if run is not None:
         order = [w for level in ops.dag_levels(run.stage_set) for w in level]
 
@@ -511,7 +549,7 @@ def run(cfg, run_id):
     Console().print(table)
 
 
-def main(argv=None):
+def _dispatch(argv):
     try:
         cli.main(args=argv, prog_name="pipeline")
     except ApiException as exc:
@@ -526,3 +564,9 @@ def main(argv=None):
             f"cannot reach the cluster: {exc} — check kubeconfig "
             f"(terraform output kubernetes_cluster_context), rerun with -v"
         )
+
+
+def main(argv=None):
+    # os._exit after flushing, like the workers: the kubernetes + websocket + urllib3
+    # C/SSL extensions can segfault or hang during interpreter teardown (notably 3.14).
+    run_and_exit(lambda: _dispatch(argv))

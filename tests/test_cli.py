@@ -151,7 +151,7 @@ def test_api_errors_exit_cleanly(monkeypatch, cfg, stub_layer_counts):
 
     monkeypatch.setattr(cli.kube, "list_jobs", boom)
     with pytest.raises(SystemExit, match="403"):
-        cli.main(["status"])
+        cli._dispatch(["status"])  # main() wraps this in os._exit; _dispatch is the testable unit
 
 
 def test_status_quiet_when_no_jobs(monkeypatch, cfg, stub_layer_counts):
@@ -235,7 +235,7 @@ def test_layer_counts_cache_round_trip(monkeypatch, cfg, tmp_path):
     monkeypatch.setattr(
         cli.util,
         "_query_meta",
-        lambda c, op, gid: calls.append(op) or "import noise\n100 50 1\n",
+        lambda c, op, gid, quiet=False: calls.append(op) or "import noise\n100 50 1\n",
     )
     assert cli.util.read_layer_counts(cfg) == {2: 100, 3: 50, 4: 1}
     assert cli.util.read_layer_counts(cfg) == {2: 100, 3: 50, 4: 1}  # served from cache
@@ -249,7 +249,7 @@ def test_layer_counts_cache_round_trip(monkeypatch, cfg, tmp_path):
 def test_layer_counts_failure_is_loud(monkeypatch, cfg):
     # unparseable pod output must never be read as empty/zero counts
     monkeypatch.setattr(
-        cli.util, "_query_meta", lambda c, op, gid: "WARNING: only noise\n"
+        cli.util, "_query_meta", lambda c, op, gid, quiet=False: "WARNING: only noise\n"
     )
     with pytest.raises(SystemExit, match="could not read layer counts"):
         cli.util.read_layer_counts(cfg)

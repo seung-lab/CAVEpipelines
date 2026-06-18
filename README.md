@@ -150,6 +150,7 @@ cp config/dataset-example.yml config/dataset.yml
 
 # fill in pipeline.yml (graph_id, bigtable, images, gsa_email) and dataset.yml (data_source, graph_config)
 # secret_files must include google-secret.json — every Google client (Bigtable, CloudVolume) authenticates with it
+# cave-secret.json is optional — meshing needs the file but never the token, so a placeholder is mounted if you omit it (provide a real one only for CAVE registration)
 
 pipeline deploy --setup --submit-l2   # deploy infra + setup + submit layer 2, in one step
 ```
@@ -188,7 +189,7 @@ pipeline submit 3     # next layer, and so on up to the root
 
 Each `submit` sizes the layer's Indexed Job from its chunk count and **ramps parallelism**
 up gradually (`job.ramp.*`) so a cold Bigtable can split before full load. **Tune per layer**
-in `pipeline.yml` — `job.memory`, `compute_class`, `batch_size`, the ramp; size CPU/memory
+in `pipeline.yml` — `job.resources` (cpu/memory curve), `compute_class`, `batch_size`, the ramp; size CPU/memory
 first with `pipeline sample <layer> <n>` then `pipeline top <layer>`.
 
 ## 5. Meshing
@@ -214,7 +215,7 @@ pins a pre-edit timestamp automatically. Re-meshing is idempotent (overwrites sh
 
 Set `mesh_config` per [config/README.md](config/README.md#mesh_config-meshing-only). One
 operational caveat: stitching memory grows ~8× per layer (a single L7 chunk can need 30–50 GB),
-so cap `max_layer` around L6–L7 and give the upper layers a large `job.memory` / `compute_class`
+so cap `max_layer` around L6–L7 and give the upper layers a large `job.resources.memory` / `compute_class`
 (tune with `sample` + `top`).
 
 ## 6. L2cache
@@ -287,7 +288,7 @@ Upgrade tuning comes from the `env:` block in `pipeline.yml` (`TASK_SIZE`, `PROC
   `pipeline inspect <layer> <index>` prints that pod's log (chunk coords + traceback).
 - Re-running a layer (`pipeline submit` again) skips already-done chunks.
 - **Resizing mid-layer**: worker *count* is live — `pipeline scale <layer> <n>` patches the Job's
-  `parallelism` (the ramp does this automatically). Per-pod **resources** (`job.cpu`/`job.memory`)
+  `parallelism` (the ramp does this automatically). Per-pod **resources** (`job.resources`)
   are baked into the Job's pod template and immutable once it runs; to change them, edit
   `pipeline.yml` and re-`submit` the layer (recreates the Job) — done chunks are skipped (ingest
   markers; migrate/meshing/l2cache idempotent), so it resumes rather than restarts.
@@ -302,11 +303,11 @@ capture the main levers — operators mainly right-size requests and keep the de
   45% more and `Scale-Out` about 26% more per vCPU/GiB. Leave `compute_class: ""` unless a layer
   needs the extra capacity or higher per-pod limits.
 - **Right-size requests per layer** — billing follows requests. Measure with
-  `pipeline sample <layer> <n>` then `pipeline top <layer>`, and either set flat
-  `job.cpu`/`job.memory` or declare a per-layer curve (`job.resources`) so upper layers scale
+  `pipeline sample <layer> <n>` then `pipeline top <layer>`, then declare the per-pod request
+  curve (`job.resources`, cpu/memory base+factor) so upper layers scale
   automatically. The CLI snaps every layer to the cheapest valid Autopilot request (≥ 250m/512Mi,
-  1:1–1:6.5 cpu:mem) and refuses past the general-purpose ceiling instead of silently billing a
-  pricier class — see [config/README.md](config/README.md).
+  1:1–1:6.5 cpu:mem) and clamps to the general-purpose ceiling (with a warning) instead of silently
+  billing a pricier class — see [config/README.md](config/README.md).
 - **Scale to zero between layers** — `persistent_util: false` runs setup/meta in a one-shot pod (no
   warm server), so the cluster idles at zero nodes when no Job is running (no pods = no compute cost).
 - **System logs only** — the cluster ships only system logs to Cloud Logging (terraform
@@ -322,7 +323,7 @@ ramp, `pipeline costs`): it samples pod runtimes into the cost database (`databa
 local SQLite under `costs/`; point it at a server to share), priced at read time from
 [rates.csv](pipeline/rates.csv). It is an estimate — keep `pipeline status` running during a layer
 for exact accounting. Each deploy is tagged with a run-id, so `pipeline costs <layer>` and the
-`status` cost column report **this run's** spend — re-running the same graph starts a fresh tally
+`status` compute_cost column report **this run's** spend — re-running the same graph starts a fresh tally
 rather than summing past runs. The cost db keeps every run: `pipeline runs` lists them (newest
 first), `pipeline run <run-id>` breaks one down by workload and layer.
 

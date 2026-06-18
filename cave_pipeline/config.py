@@ -67,13 +67,11 @@ class Job:
     perm_seed: int = 0
     batch_size: int = 1000
     parallel: bool = True  # parent-chunk builds fan out over every core (process pool)
-    cpu: str = "1"
-    memory: str = "2Gi"
     compute_class: str = ""
     task_retries: int = 3  # per-task retry budget before the task is dead
     max_failed_tasks: int = 50  # dead tasks tolerated before the layer aborts
     ramp: Ramp = field(default_factory=Ramp)
-    resources: Resources = None  # per-layer curves; None = flat cpu/memory everywhere
+    resources: Resources = None  # per-pod requests (cpu/memory curves); None = default base
 
 
 @dataclass
@@ -102,6 +100,7 @@ class Config:
         "config"  # where pipeline.yml lives; also holds the local counts cache
     )
     source: str = "pipeline.yml"  # config file name this was loaded from
+    dataset_path: str = ""  # resolved dataset yaml path ("" when graph-less)
 
     def image(self) -> str:
         return self.images.l2cache if self.workload == "l2cache" else self.images.pcg
@@ -145,13 +144,22 @@ def load(name: str = None, workload: str = None) -> Config:
     `workload` overrides the file's — the per-workload job merge follows it."""
     path = name or os.path.join(CONFIG_DIR, "pipeline.yml")
     config_dir = os.path.dirname(path) or "."
-    with open(path) as stream:
-        raw = yaml.safe_load(stream) or {}
+    try:
+        with open(path) as stream:
+            raw = yaml.safe_load(stream) or {}
+    except FileNotFoundError:
+        raise SystemExit(f"config not found: {path}; `pipeline reset` to pick a new one")
+    except yaml.YAMLError as exc:
+        raise SystemExit(f"invalid yaml in {path}: {exc}")
+    for key in ("graph_id", "images"):
+        if key not in raw:
+            raise SystemExit(f"{path}: missing required key '{key}'")
+    if not (raw.get("images") or {}).get("pcg"):
+        raise SystemExit(f"{path}: images.pcg is required")
     # a present-but-empty yaml key parses to None; treat every block like {}
     bt = Bigtable(**(raw.get("bigtable") or {}))
-    dataset = _with_bigtable(
-        _read_dataset(config_dir, raw.get("dataset") or "dataset.yml"), bt
-    )
+    dataset, dataset_path = _read_dataset(config_dir, raw.get("dataset"))
+    dataset = _with_bigtable(dataset, bt)
     raw_job = dict(raw.get("job") or {})
     workload = workload or raw.get("workload", "ingest")
     raw_job = _merge(raw_job, (raw_job.pop("workloads", None) or {}).get(workload) or {})
@@ -159,6 +167,11 @@ def load(name: str = None, workload: str = None) -> Config:
     if ramp.start < 1 or ramp.factor <= 1:  # else submit's ramp loop never terminates
         raise SystemExit("job.ramp: start must be >= 1 and factor > 1")
     resources = _resources(raw_job.pop("resources", None))
+    for dead in ("cpu", "memory"):
+        if dead in raw_job:
+            raise SystemExit(
+                f"job.{dead} was removed; declare job.resources.{dead} (base/factor) instead"
+            )
     return Config(
         namespace=raw.get("namespace", "default"),
         graph_id=raw["graph_id"],
@@ -178,6 +191,7 @@ def load(name: str = None, workload: str = None) -> Config:
         zone=raw.get("zone", ""),
         config_dir=config_dir,
         source=path,
+        dataset_path=dataset_path,
     )
 
 
@@ -202,14 +216,17 @@ def _resources(raw) -> Resources:
     )
 
 
-def _read_dataset(config_dir: str, rel_path: str) -> dict:
-    """The graph definition yaml, relative to the pipeline yaml's directory
-    (empty for graph-less workloads)."""
-    path = os.path.join(config_dir, rel_path)
-    if not os.path.exists(path):
-        return {}
-    with open(path) as stream:
-        return yaml.safe_load(stream) or {}
+def _read_dataset(config_dir: str, rel_path) -> tuple[dict, str]:
+    """The dataset yaml and its resolved path, relative to the pipeline yaml's
+    directory. A named-but-absent file fails loudly; an unconfigured dataset
+    (graph-less workload) yields ({}, "")."""
+    path = os.path.join(config_dir, rel_path or "dataset.yml")
+    if os.path.exists(path):
+        with open(path) as stream:
+            return yaml.safe_load(stream) or {}, path
+    if rel_path is not None:  # named in the pipeline yaml but not on disk
+        raise SystemExit(f"dataset file not found: {path}")
+    return {}, ""  # no dataset configured (graph-less workload)
 
 
 def _with_bigtable(dataset: dict, bt: Bigtable) -> dict:

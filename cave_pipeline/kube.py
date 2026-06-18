@@ -17,7 +17,13 @@ def _load():
     try:
         kube_config.load_kube_config()
     except Exception:
-        kube_config.load_incluster_config()
+        try:
+            kube_config.load_incluster_config()
+        except Exception:
+            raise SystemExit(
+                "cannot load kube config; set KUBECONFIG or run "
+                "`gcloud container clusters get-credentials <cluster>`"
+            )
 
 
 # cached: a fresh ApiClient per call would re-read kubeconfig and re-handshake
@@ -88,6 +94,26 @@ def list_jobs(namespace: str, workload: str = None):
     return batch().list_namespaced_job(namespace, label_selector=selector).items
 
 
+def oom_events(namespace: str):
+    """Cluster OOMKilling events (kubelet emits them node-level) in the namespace."""
+    return core().list_namespaced_event(
+        namespace, field_selector="reason=OOMKilling"
+    ).items
+
+
+def unfinished_pods(namespace: str, job_name: str):
+    """A job's not-yet-Succeeded pods (active/pending/failed) — cheap, field-selected."""
+    return (
+        core()
+        .list_namespaced_pod(
+            namespace,
+            label_selector=f"batch.kubernetes.io/job-name={job_name}",
+            field_selector="status.phase!=Succeeded",
+        )
+        .items
+    )
+
+
 def node_summary():
     """(total, spot, {instance_type: count}) for the cluster — Autopilot capacity."""
     labels = [n.metadata.labels or {} for n in core().list_node().items]
@@ -96,8 +122,15 @@ def node_summary():
     return len(labels), spot, dict(by_type)
 
 
-# In-pod shutdown noise dropped from streamed logs (we os._exit, so it's spurious).
-_NOISE = ("resource_tracker:", "leaked semaphore")
+# Pod-log noise the operator never needs, dropped from both streamed and saved logs:
+# Python interpreter-shutdown chatter (we os._exit, so it's spurious) and the C++ auth
+# provider's startup banner.
+LOG_NOISE = (
+    "resource_tracker:",
+    "leaked semaphore",
+    "google_auth_provider.cc",
+    "Using ServiceAccount AuthProvider",
+)
 
 
 def exec_cmd(
@@ -123,21 +156,22 @@ def exec_cmd(
             f"exec into pod '{pod}' failed ({exc.status} {exc.reason}); "
             f"the pod may have just restarted — retry"
         )
-    out_buf, partial = [], {1: "", 2: ""}
+    out_buf, err_buf, partial = [], [], {1: "", 2: ""}
+
+    def emit(line):  # echo a whole line unless it's pod-log noise
+        if line and on_line and not any(n in line for n in LOG_NOISE):
+            on_line(line)
 
     def drain():
         # emit only whole lines as they complete; keep the trailing fragment buffered
         for chan, text in ((1, ws.read_stdout()), (2, ws.read_stderr())):
-            if chan == 1:
-                out_buf.append(text)
+            (out_buf if chan == 1 else err_buf).append(text)
             if not text:
                 continue
             partial[chan] += text
             *lines, partial[chan] = partial[chan].split("\n")
-            if on_line:
-                for line in lines:
-                    if not any(n in line for n in _NOISE):
-                        on_line(line)
+            for line in lines:
+                emit(line)
 
     deadline = time.monotonic() + timeout
     while ws.is_open():
@@ -149,14 +183,14 @@ def exec_cmd(
             )
         ws.update(timeout=1)
         drain()
-    if on_line:  # flush any unterminated trailing line
-        for chan in (1, 2):
-            if partial[chan]:
-                on_line(partial[chan])
+    for chan in (1, 2):  # flush any unterminated trailing line
+        emit(partial[chan])
     if ws.returncode:
         shown = " ".join(a if len(a) <= 60 else a[:57] + "..." for a in argv)
+        reason = ([ln for ln in "".join(err_buf).splitlines() if ln.strip()] or [""])[-1]
         raise SystemExit(
-            f"in-pod command exited {ws.returncode} (traceback above): {shown}"
+            f"in-pod command exited {ws.returncode}: {shown}"
+            + (f"\n  {reason.strip()}" if reason else "")
         )
     return "".join(out_buf).strip()
 

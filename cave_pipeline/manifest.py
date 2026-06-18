@@ -7,7 +7,7 @@ import re
 from kubernetes import client
 
 from . import cgcache, config as cfgmod, note
-from .costs import normalize_requests, parse_cpu, parse_mem
+from .costs import normalize_requests
 
 INGEST_COMMAND = ["python", "-m", "pychunkedgraph.pipeline.ingest"]
 MESHING_COMMAND = ["python", "-m", "pychunkedgraph.pipeline.meshing"]
@@ -34,7 +34,7 @@ def _curve_value(curve, layer: int) -> float:
 
 
 def requests_for(job, layer: int) -> tuple:
-    """(vCPU, GiB) for a layer: override > curve > flat cpu/memory, per dimension."""
+    """(vCPU, GiB) for a layer: per-layer override > resources curve > default base."""
     res = job.resources
     over = res.overrides.get(layer, {}) if res else {}
     if "cpu" in over:
@@ -42,13 +42,17 @@ def requests_for(job, layer: int) -> tuple:
     elif res and res.cpu:
         cpu = _curve_value(res.cpu, layer)
     else:
-        cpu = parse_cpu(job.cpu)
+        raise SystemExit(
+            "job.resources.cpu is required — a base/factor curve or a per-layer override"
+        )
     if "memory" in over:
         mem = float(over["memory"])
     elif res and res.memory:
         mem = _curve_value(res.memory, layer)
     else:
-        mem = parse_mem(job.memory)
+        raise SystemExit(
+            "job.resources.memory is required — a base/factor curve or a per-layer override"
+        )
     return cpu, mem
 
 
@@ -61,9 +65,7 @@ def batch_for(job, layer: int) -> int:
 def layer_requests(job, layer: int) -> dict:
     """The layer's normalized k8s requests — the cheapest valid Autopilot point."""
     cpu, mem = requests_for(job, layer)
-    cpu, mem, warnings, errors = normalize_requests(cpu, mem, job.compute_class)
-    if errors:
-        raise SystemExit("; ".join(errors))
+    cpu, mem, warnings = normalize_requests(cpu, mem, job.compute_class)
     for warning in warnings:
         note(warning)
     return {"cpu": f"{round(cpu * 1000)}m", "memory": f"{round(mem * 1024)}Mi"}

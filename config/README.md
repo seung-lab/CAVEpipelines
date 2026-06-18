@@ -41,7 +41,7 @@ from `pipeline.yml`'s `bigtable:`.
 | `dataset` | dataset yaml, relative to the pipeline yaml's directory (default `dataset.yml`; subdirs ok) |
 | `workload` | `ingest` \| `l2cache` \| `meshing` \| `migrate` \| `migrate_cleanup` — the active workload; honored by every command. `deploy --all-layers` runs its layers; `deploy --oneshot` runs a chosen depth range of the build DAG (ingest → meshing/l2cache, same-depth stages in parallel) regardless of this value, except migrate |
 | `persistent_util` | keep the spot util pod alive between layers running a warm cg-cache server (sub-second meta probes); `false` = a one-shot pod per probe (idle 0 nodes) |
-| `secret_files` | `{container_filename: local_path under ./secrets}`; must include `google-secret.json` — all Google clients authenticate with it |
+| `secret_files` | `{container_filename: local_path under ./secrets}`; must include `google-secret.json` — all Google clients authenticate with it. `cave-secret.json` is optional: meshing needs the file but never the token, so deploy mounts a placeholder when it is absent (provide a real one only for CAVE registration) |
 | `secret_name` | name of the k8s Secret built from `secret_files` (default `cloud-volume-secrets`) |
 | `images.pcg` / `images.l2cache` | container image per workload |
 | `workload_identity.service_account` | KSA bound to the worker GSA |
@@ -97,7 +97,7 @@ untouched.
 
 ### Tuning per dataset
 
-`batch_size`, `job.ramp.*`, and `job.cpu`/`memory`/`compute_class` are throughput knobs — size
+`batch_size`, `job.ramp.*`, `job.resources`, and `compute_class` are throughput knobs — size
 them to the graph and the target layer throughput, and revise per layer:
 
 - **`batch_size`** (chunks per pod) sets the task count `ceil(chunks / batch_size)`, which is also
@@ -105,17 +105,16 @@ them to the graph and the target layer throughput, and revise per layer:
   more pods; larger = fewer, larger pods.
 - **`job.ramp.*`** grows the worker count up to `max` — capped at the task count, so a small layer uses
   fewer workers no matter how high `max` is.
-- **`job.memory` / `compute_class`** — raise for heavy upper layers (stitching, meshing).
+- **`job.resources` / `compute_class`** — raise for heavy upper layers (stitching, meshing).
 
 `pipeline submit` prints `chunks / batch = tasks; workers …`; track progress with `pipeline status`.
 
 ### How per-layer resources scale
 
-Upper layers do heavier per-chunk work; `job.resources` declares requests as a curve instead of
-one flat size — per dimension, `value(L) = min(base × factor^(L−2) + add, max)` (layer 2 is the
-base; `max: 0` = uncapped; a dimension without a curve falls back to the flat `job.cpu` /
-`job.memory`). `overrides` pins exact values for layers that break the curve. Every value is
-operator-declared — nothing is assumed.
+Upper layers do heavier per-chunk work; `job.resources` declares per-pod requests as a curve —
+per dimension, `value(L) = min(base × factor^(L−2) + add, max)` (layer 2 is the base; `max: 0`
+= uncapped). `job.resources` is required: every dimension needs a curve (or a per-layer
+`overrides` entry) — there is no flat fallback or default, so nothing is silently assumed.
 
 With `cpu: base 1, factor 2, max 28` and `memory: base 1, factor 2, add 1, max 33`:
 
@@ -127,9 +126,9 @@ With `cpu: base 1, factor 2, max 28` and `memory: base 1, factor 2, add 1, max 3
 Each layer is then snapped to the **cheapest valid Autopilot request**: memory is raised to the
 1 GiB/vCPU billing floor and cpu to the 6.5 GiB/vCPU ceiling's implied minimum (Autopilot would
 round both up silently and bill the result — explicit keeps cost records true), off-step cpu
-(0.25-vCPU grid) warns, and anything past the general-purpose ceiling (30 vCPU / 110 GiB) refuses
-with a pointer to `compute_class` or an override. A curve can therefore never silently land on a
-pricier bill than declared.
+(0.25-vCPU grid) warns, and anything past the general-purpose ceiling (30 vCPU / 110 GiB) is
+clamped with a warning pointing to `compute_class` or an override. A curve can therefore never
+silently land on a pricier bill than declared.
 
 ## `dataset.yml`
 

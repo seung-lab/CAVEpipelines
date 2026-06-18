@@ -85,7 +85,13 @@ class Meshing(BaseStage):
         note(util.run_with_dataset(cfg, "mesh-meta", argv) or "mesh metadata written")
 
     def top_layer(self, cfg, counts) -> int:
-        return min(int(cfg.dataset["mesh_config"]["max_layer"]), max(counts))
+        max_layer = (cfg.dataset.get("mesh_config") or {}).get("max_layer")
+        if max_layer is None:
+            raise SystemExit("mesh_config: max_layer is required for meshing")
+        try:
+            return min(int(max_layer), max(counts))
+        except (TypeError, ValueError):
+            raise SystemExit(f"mesh_config.max_layer must be an int, got {max_layer!r}")
 
     def output_dir(self, cfg) -> str | None:
         ws = (cfg.dataset.get("data_source") or {}).get("WATERSHED")

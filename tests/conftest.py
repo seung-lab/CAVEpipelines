@@ -34,7 +34,15 @@ def cfg(tmp_path):
         ),
         bigtable=config.Bigtable(project="proj", instance="inst"),
         dataset={"data_source": {"EDGES": "gs://b/e"}},
-        job=config.Job(perm_seed=7, batch_size=1000, compute_class="Balanced"),
+        job=config.Job(
+            perm_seed=7,
+            batch_size=1000,
+            compute_class="Balanced",
+            resources=config.Resources(
+                cpu=config.Curve(base=1, factor=2, max=28),
+                memory=config.Curve(base=2, factor=2, max=33),
+            ),
+        ),
         config_dir=str(tmp_path),
         database={
             "cost": f"sqlite:///{tmp_path}/cost.db",

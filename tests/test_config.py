@@ -98,7 +98,7 @@ def test_switching_configs_requires_reset(tmp_path, monkeypatch):
 def test_unreadable_config_never_becomes_the_session(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
     _write(tmp_path, "pipeline.yml", BASE)
-    with pytest.raises(OSError):
+    with pytest.raises(SystemExit, match="config not found"):
         config.resolve(str(tmp_path / "missing.yml"))
     assert config.resolve().source.endswith("pipeline.yml")  # typo did not stick
 

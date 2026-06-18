@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import yaml
 from rich.console import Group
 from rich.table import Table
+from rich.text import Text
 
 from . import cgcache, costs, kube, manifest, note
 from .db import cost, state
@@ -39,25 +40,23 @@ def run_workload(cfg, name, argv, timeout=300):
     return kube.run_oneshot(cfg.namespace, manifest.oneshot_pod_spec(cfg, name, argv))
 
 
-def _query_meta(cfg, op, gid) -> str:
+def _query_meta(cfg, op, gid, quiet=False) -> str:
     """Run a cg meta probe ('counts'|'mesh') and return its stdout: the persistent util
     pod's warm cg-cache server over its socket, else a one-shot pod that imports cg
-    inline. A PCG error surfaces via the non-zero exit, traceback already streamed."""
+    inline. `quiet` drops the live line echo (the failure reason still rides the raised
+    SystemExit) so best-effort callers present their own one-line summary instead."""
     name = {"counts": "layer-counts", "mesh": "mesh-check"}[op]
+    echo = None if quiet else (lambda ln: note(f"  [{name}] {ln}"))
     if cfg.persistent_util:
         pod = kube.util_pod(cfg.namespace)
-        note(f"{name}: in util pod")
+        if not quiet:
+            note(f"{name}: in util pod")
         argv = ["python", "-u", "-c", cgcache.CLIENT_SRC, cgcache.CG_SOCK, op, gid]
         argv.append(str(CG_TIMEOUT))  # the client's own connect-retry deadline
         # exec cap exceeds that deadline so the client's 'unreachable' message wins
-        return kube.exec_cmd(
-            cfg.namespace,
-            pod,
-            argv,
-            timeout=CG_TIMEOUT + 5,
-            on_line=lambda ln: note(f"  [{name}] {ln}"),
-        )
-    note(f"{name}: in one-shot pod")
+        return kube.exec_cmd(cfg.namespace, pod, argv, timeout=CG_TIMEOUT + 5, on_line=echo)
+    if not quiet:
+        note(f"{name}: in one-shot pod")
     argv = ["python", "-u", "-c", cgcache.ONESHOT_SRC, op, gid]
     # the probe reads the ChunkedGraph, so it runs in the PCG image whatever workload we're in
     return kube.run_oneshot(
@@ -120,14 +119,14 @@ def cached_layer_counts(cfg) -> dict:
     return {int(k): v for k, v in cached.items()} if cached else None
 
 
-def read_layer_counts(cfg) -> dict:
+def read_layer_counts(cfg, quiet=False) -> dict:
     """{layer: chunk_count} for every layer (L2..root). Cached locally after the first
-    read, so ChunkedGraph is initialized at most once per graph. Any read failure
-    raises with the PCG traceback already streamed above."""
+    read, so ChunkedGraph is initialized at most once per graph. Any read failure raises;
+    `quiet` suppresses the in-pod line echo (the reason rides the SystemExit)."""
     cache = _read_cache(cfg)
     if cfg.graph_id in cache:
         return {int(k): v for k, v in cache[cfg.graph_id].items()}
-    out = _query_meta(cfg, "counts", cfg.graph_id)
+    out = _query_meta(cfg, "counts", cfg.graph_id, quiet=quiet)
     for line in reversed(out.splitlines()):
         parts = line.split()
         if parts and all(p.isdigit() for p in parts):
@@ -138,6 +137,21 @@ def read_layer_counts(cfg) -> dict:
     raise SystemExit(
         f"could not read layer counts for graph '{cfg.graph_id}'; pod output:\n{out}"
     )
+
+
+def try_layer_counts(cfg):
+    """Best-effort warm-up for `status`: cached counts, else a quiet probe. A failure
+    (graph not built yet, pipeline torn down) prints one clean line — never a remote
+    traceback — and returns None so the caller renders the bare table."""
+    cached = cached_layer_counts(cfg)
+    if cached is not None:
+        return cached
+    try:
+        return read_layer_counts(cfg, quiet=True)
+    except (SystemExit, Exception) as exc:  # noqa: BLE001 - status must never crash
+        lines = [ln.strip() for ln in str(exc).splitlines() if ln.strip()]
+        note(f"layer-counts unavailable: {lines[-1] if lines else type(exc).__name__}")
+        return None
 
 
 def read_n(cfg, layer):
@@ -191,6 +205,55 @@ def job_state(job):
         if c.type == "Failed" and c.status == "True":
             return "failed"
     return "running"
+
+
+def _pod_terminated(pod):
+    """The container's terminal state (current or last), or None — holds the exit reason."""
+    for cs in pod.status.container_statuses or []:
+        term = (cs.state and cs.state.terminated) or (cs.last_state and cs.last_state.terminated)
+        if term:
+            return term
+    return None
+
+
+def pod_status(pod) -> str:
+    """Phase plus the container's terminal reason/exit, e.g. 'Failed OOMKilled (137)'."""
+    term = _pod_terminated(pod)
+    if term and (term.reason or term.exit_code is not None):
+        return f"{pod.status.phase} {term.reason or 'exit'} ({term.exit_code})"
+    return pod.status.phase
+
+
+def pod_reason(pod) -> str:
+    """Why a pod isn't progressing: unschedulable message, container waiting reason, or exit."""
+    for c in pod.status.conditions or []:
+        if c.type == "PodScheduled" and c.status != "True":
+            return f"{c.reason}: {c.message}".strip(": ")
+    for cs in pod.status.container_statuses or []:
+        waiting = cs.state and cs.state.waiting
+        if waiting:
+            return f"{waiting.reason}: {waiting.message or ''}".strip(": ")
+    term = _pod_terminated(pod)
+    return f"{term.reason or 'exit'} ({term.exit_code})" if term else ""
+
+
+def relevant_log(text: str, n: int = 40) -> str:
+    """Pod log narrowed for failure inspection: from the Python traceback onward (the
+    actual failure) when present, else the last `n` lines. Pod-log noise is dropped."""
+    lines = [
+        ln
+        for ln in text.splitlines()
+        if ln.strip() and not any(s in ln for s in kube.LOG_NOISE)
+    ]
+    start = next(
+        (
+            i
+            for i, ln in enumerate(lines)
+            if ln.lstrip().startswith("Traceback (most recent call last)")
+        ),
+        max(0, len(lines) - n),
+    )
+    return "\n".join(lines[start:])
 
 
 def _terminal_time(job):
@@ -268,7 +331,7 @@ def runs_table(cfg, rate_table, graph=None) -> Table:
         groups.setdefault((j.graph, j.run_id), []).append(j)
     has_rates = bool(cfg.region) and bool(rate_table)
     table = Table(title=f"recorded runs{f' | {graph}' if graph else ''}")
-    for col in ("run", "graph", "workloads", "layers", "started", "cost"):
+    for col in ("run", "graph", "workloads", "layers", "started", "compute_cost"):
         table.add_column(col, justify="right")
     for (g, run_id), js in sorted(
         groups.items(), key=lambda kv: _run_start(kv[1]), reverse=True
@@ -338,7 +401,7 @@ def run_breakdown(cfg, rate_table, run_id) -> Table:
         "ok",
         "fail",
         "pod-hr",
-        "cost",
+        "compute_cost",
         "basis",
     ):
         table.add_column(col, justify="right")
@@ -359,13 +422,10 @@ def run_breakdown(cfg, rate_table, run_id) -> Table:
     return table
 
 
-def usage_table(cfg, job_name, layer=None) -> Table:
+def usage_table(cfg, job_name, layer) -> Table:
     """Per-pod usage for one layer Job, in cores/GiB, ordered by task index."""
-    if layer is None:
-        caption = f"requests: {cfg.job.cpu} cpu | {cfg.job.memory} per pod"
-    else:  # the layer's actual request (curves/overrides), not the flat default
-        cpu, mem = manifest.requests_for(cfg.job, layer)
-        caption = f"requests: {cpu:g} cpu | {mem:g}Gi per pod"
+    cpu, mem = manifest.requests_for(cfg.job, layer)
+    caption = f"requests: {cpu:g} cpu | {mem:g}Gi per pod"
     table = Table(title=f"{job_name} usage", caption=caption)
     for col, justify in (("pod", "left"), ("cpu", "right"), ("memory", "right")):
         table.add_column(col, justify=justify)
@@ -390,7 +450,7 @@ def usage_table(cfg, job_name, layer=None) -> Table:
     return table
 
 
-def status_table(cfg, layer_totals=None, run_id="") -> Table:
+def status_table(cfg, layer_totals=None, run_id="") -> Group:
     """Per-layer progress. With `layer_totals` ({layer: chunks}), every layer is shown —
     submitted ones with live progress, the rest with their a-priori total (pending).
     The cost column is scoped to `run_id` (the current run; "" for ad-hoc/no run)."""
@@ -404,10 +464,15 @@ def status_table(cfg, layer_totals=None, run_id="") -> Table:
         nodes = f"{n_nodes} nodes | {spot} spot" + (f" | {types}" if types else "")
     except Exception:  # noqa: BLE001 - node list may be RBAC-denied; not essential
         nodes = "nodes ?"
+    # node_summary changes every refresh; keep it one non-wrapping line so the table
+    # height stays constant — a title that wraps differently per frame leaves rich's
+    # Live unable to erase the taller previous frame (the stacked-header bug).
+    header = Text(
+        f"{cfg.workload} | {cfg.graph_id} | {nodes}", no_wrap=True, overflow="ellipsis"
+    )
     table = Table(
-        title=f"{cfg.workload} | {cfg.graph_id} | {nodes}",
         caption="retries = failed attempts (transient) | failed = dead tasks (`inspect`) | "
-        "active−ready ≈ pods waiting on capacity | cost = recorded Spot estimate",
+        "active−ready ≈ pods waiting on capacity | compute_cost = recorded Spot estimate",
     )
     cols = (
         "layer",
@@ -419,7 +484,7 @@ def status_table(cfg, layer_totals=None, run_id="") -> Table:
         "retries",
         "failed",
         "elapsed",
-        "cost",
+        "compute_cost",
     )
     for col in cols:
         table.add_column(col, justify="right")
@@ -453,7 +518,7 @@ def status_table(cfg, layer_totals=None, run_id="") -> Table:
             elapsed(job),
             cost_cell,
         )
-    return table
+    return Group(header, table)
 
 
 _GLYPH = {

@@ -26,24 +26,23 @@ def test_pause_suspends_only_incomplete_jobs_and_marks_paused(
     assert state.get_run(cfg).status == state.PAUSED
 
 
-def test_resume_unsuspends_suspended_jobs_then_drives(
+def test_drive_clears_leftover_suspend_then_runs(
     monkeypatch, cfg, running_run, make_job
 ):
-    state.set_run_status(cfg, state.PAUSED)
+    state.set_run_status(cfg, state.PAUSED)  # a prior self-pause left the jobs suspended
     monkeypatch.setattr(
         ops.kube,
         "list_jobs",
         lambda ns: [make_job(name="ingest-l2", suspend=True), make_job(name="ingest-l3")],
     )
-    calls = []
+    cleared = []
     monkeypatch.setattr(
-        ops.kube, "set_suspend", lambda ns, name, s: calls.append((name, s))
+        ops.kube, "set_suspend", lambda ns, name, s: cleared.append((name, s))
     )
-    monkeypatch.setattr(ops, "drive", lambda c: calls.append("drive"))
-    ops.resume(cfg)
-    unsuspends = [c for c in calls if isinstance(c, tuple)]
-    assert unsuspends == [("ingest-l2", False)]  # only the suspended job is unsuspended
-    assert calls[-1] == "drive" and state.get_run(cfg).status == state.RUNNING
+    monkeypatch.setattr(ops, "orchestrate", lambda c, run_set, parallel: None)
+    ops.drive(cfg)
+    assert cleared == [("ingest-l2", False)]  # only the suspended leftover is unsuspended
+    assert state.get_run(cfg).status == state.DONE  # converged: unsuspend -> run -> done
 
 
 def test_resume_without_a_run_errors(cfg):
@@ -52,6 +51,8 @@ def test_resume_without_a_run_errors(cfg):
 
 
 def test_drive_self_pauses_on_failure(monkeypatch, cfg, running_run):
+    monkeypatch.setattr(ops.kube, "list_jobs", lambda ns: [])
+
     def boom(c, run_set, parallel):
         raise SystemExit("dead tasks")
 
@@ -59,11 +60,28 @@ def test_drive_self_pauses_on_failure(monkeypatch, cfg, running_run):
     paused = []
     monkeypatch.setattr(ops, "pause", lambda c: paused.append(True))
     with pytest.raises(SystemExit, match="dead tasks"):
-        ops.drive(cfg)
+        ops.drive(cfg)  # unattended: self-pauses and re-raises, no prompt
     assert paused == [True]  # a dying driver suspends the cluster
 
 
+def test_drive_resumes_in_place_when_attended(monkeypatch, cfg, running_run):
+    monkeypatch.setattr(ops.kube, "list_jobs", lambda ns: [])
+    monkeypatch.setattr(ops, "pause", lambda c: None)
+    runs = []
+
+    def orchestrate(c, run_set, parallel):
+        runs.append(True)
+        if len(runs) == 1:
+            raise SystemExit("dead tasks")  # first attempt fails
+
+    monkeypatch.setattr(ops, "orchestrate", orchestrate)
+    monkeypatch.setattr(ops.click, "confirm", lambda *a, **k: True)  # operator fixes + resumes
+    ops.drive(cfg, interactive=True)
+    assert len(runs) == 2 and state.get_run(cfg).status == state.DONE
+
+
 def test_drive_marks_the_run_done_on_success(monkeypatch, cfg, running_run):
+    monkeypatch.setattr(ops.kube, "list_jobs", lambda ns: [])
     monkeypatch.setattr(ops, "orchestrate", lambda c, run_set, parallel: None)
     monkeypatch.setattr(ops, "pause", lambda c: pytest.fail("must not pause on success"))
     ops.drive(cfg)
@@ -71,6 +89,8 @@ def test_drive_marks_the_run_done_on_success(monkeypatch, cfg, running_run):
 
 
 def test_drive_exits_cleanly_when_paused(monkeypatch, cfg, running_run):
+    monkeypatch.setattr(ops.kube, "list_jobs", lambda ns: [])
+
     def paused(c, run_set, parallel):
         raise ops.Paused("suspended")
 
@@ -82,6 +102,8 @@ def test_drive_exits_cleanly_when_paused(monkeypatch, cfg, running_run):
 
 
 def test_drive_exits_cleanly_when_undeployed(monkeypatch, cfg, running_run):
+    monkeypatch.setattr(ops.kube, "list_jobs", lambda ns: [])
+
     def undeployed(c, run_set, parallel):
         raise ops.Undeployed("run undeployed")
 
@@ -125,7 +147,7 @@ def test_resume_drives_a_stalled_run(monkeypatch, cfg, running_run):
     state.set_run_pid(cfg, 2**31 - 1)  # dead pid -> stalled, resumable
     monkeypatch.setattr(ops.kube, "list_jobs", lambda ns: [])
     driven = []
-    monkeypatch.setattr(ops, "drive", lambda c: driven.append(True))
+    monkeypatch.setattr(ops, "drive", lambda c, interactive=False: driven.append(True))
     ops.resume(cfg)
     assert driven == [True]
 

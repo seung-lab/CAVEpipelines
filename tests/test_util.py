@@ -87,11 +87,17 @@ def test_status_table_splits_retries_from_dead_tasks(monkeypatch, cfg, make_job)
     monkeypatch.setattr(util.kube, "list_jobs", lambda ns, workload=None: [job])
     monkeypatch.setattr(util.kube, "node_summary", lambda: (0, 0, {}))
     monkeypatch.setattr(util.costs, "load_table", lambda: {})
-    cells = {c.header: list(c.cells) for c in util.status_table(cfg, {2: 100}).columns}
+    cells = {
+        c.header: list(c.cells)
+        for c in util.status_table(cfg, {2: 100}).renderables[1].columns
+    }
     assert cells["retries"] == ["34"]  # transient attempts, all recovered
     assert cells["failed"] == ["0"]  # nothing permanently dead -> not alarming
     job.status.failed_indexes = "1,3-5,7"
-    cells = {c.header: list(c.cells) for c in util.status_table(cfg, {2: 100}).columns}
+    cells = {
+        c.header: list(c.cells)
+        for c in util.status_table(cfg, {2: 100}).renderables[1].columns
+    }
     assert cells["failed"] == ["[red]5[/]"]
 
 
@@ -107,7 +113,7 @@ def test_usage_table_renders_cores_and_gib_by_task_index(monkeypatch, cfg):
         },
     ]
     monkeypatch.setattr(util.kube, "pod_metrics", lambda ns, name: items)
-    cells = {c.header: list(c.cells) for c in util.usage_table(cfg, "ingest-l6").columns}
+    cells = {c.header: list(c.cells) for c in util.usage_table(cfg, "ingest-l6", 6).columns}
     assert cells["pod"] == ["ingest-l6-2-xyz", "ingest-l6-11-abc"]  # task order
     assert cells["cpu"] == ["0.2", "8.9"]
     assert cells["memory"] == ["0.4Gi", "6.0Gi"]
@@ -120,7 +126,7 @@ def test_status_table_shows_pending_layers(monkeypatch, cfg):
     monkeypatch.setattr(util.kube, "list_jobs", lambda ns, workload=None: [])
     monkeypatch.setattr(util.kube, "node_summary", _raise)
     monkeypatch.setattr(util.costs, "load_table", lambda: {})
-    table = util.status_table(cfg, {2: 100, 3: 200})
+    table = util.status_table(cfg, {2: 100, 3: 200}).renderables[1]
     assert table.row_count == 2  # both layers shown though none submitted
 
 
@@ -191,3 +197,29 @@ def test_run_breakdown_rows_by_workload_layer_scoped_to_the_run(cfg, seed_cost, 
     out = render(util.run_breakdown(cfg, {}, "g-1"))
     assert "ingest" in out and "meshing" in out  # both workloads of this run
     assert "l2cache" not in out  # scoped to run g-1, not g-2
+
+
+def test_relevant_log_retains_the_traceback_and_drops_noise():
+    log = "\n".join(
+        [
+            "I0618 00:00 google_auth_provider.cc:149] Using credentials at /x",
+            "Using ServiceAccount AuthProvider",
+            "layer 2 batch 100: 4 chunks",
+            "Traceback (most recent call last):",
+            '  File "worker.py", line 32, in process_one',
+            "    do()",
+            "RuntimeError: boom",
+            "resource_tracker: leaked semaphore at shutdown",
+        ]
+    )
+    out = util.relevant_log(log)
+    assert out.startswith("Traceback (most recent call last):")  # anchored at the failure
+    assert "RuntimeError: boom" in out
+    assert "google_auth_provider" not in out  # auth banner dropped
+    assert "leaked semaphore" not in out  # shutdown chatter dropped
+    assert "batch 100" not in out  # pre-failure progress dropped
+
+
+def test_relevant_log_tails_when_no_traceback():
+    log = "\n".join(f"line {i}" for i in range(50))
+    assert util.relevant_log(log, n=5).splitlines() == [f"line {i}" for i in range(45, 50)]

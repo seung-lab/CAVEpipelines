@@ -22,7 +22,7 @@ asia-south2,Balanced,0.0775,0.0232,0.0085703,0.0025711,0.1
 asia-south2,Scale-Out,0.0673,0.0202,0.0074496,0.0022349,0.1
 asia-south2,general-purpose,0.0534,0.016,0.0059124,0.0017737,0.1
 asia-southeast1,Balanced,0.0796,0.0239,0.008803,0.0026409,0.1
-asia-southeast1,Scale-Out,0.0692,0.0132,0.0048583,0.0014575,0.1
+asia-southeast1,Scale-Out,0.0692,0.0208,0.0076518,0.0022956,0.1
 asia-southeast1,general-purpose,0.0549,0.0165,0.0060729,0.0018219,0.1
 asia-southeast2,Balanced,0.0867,0.026,0.009595,0.0028785,0.1
 asia-southeast2,Scale-Out,0.0754,0.0226,0.0083403,0.0025021,0.1
@@ -60,7 +60,7 @@ europe-west3,Balanced,0.0831,0.0249,0.0091933,0.002758,0.1
 europe-west3,Scale-Out,0.0722,0.0217,0.0079911,0.0023973,0.1
 europe-west3,general-purpose,0.0573,0.0172,0.0063421,0.0019026,0.1
 europe-west4,Balanced,0.071,0.0213,0.0078568,0.002357,0.1
-europe-west4,Scale-Out,0.0392,0.0118,0.0068294,0.0013008,0.1
+europe-west4,Scale-Out,0.0617,0.0185,0.0068294,0.0020488,0.1
 europe-west4,general-purpose,0.049,0.0147,0.0054202,0.001626,0.1
 europe-west6,Balanced,0.0902,0.0271,0.0099817,0.0029945,0.1
 europe-west6,Scale-Out,0.0784,0.0235,0.0086765,0.0026029,0.1
@@ -94,7 +94,7 @@ southamerica-east1,general-purpose,0.0707,0.0212,0.0078164,0.0023449,0.1
 southamerica-west1,Balanced,0.0922,0.0277,0.0102036,0.0030611,0.1
 southamerica-west1,general-purpose,0.0636,0.0191,0.0070392,0.0021118,0.1
 us-central1,Balanced,0.0645,0.0194,0.0071354,0.0021406,0.1
-us-central1,Scale-Out,0.0356,0.0107,0.003938,0.0018607,0.1
+us-central1,Scale-Out,0.0561,0.0168,0.0062023,0.0018607,0.1
 us-central1,general-purpose,0.0445,0.0133,0.0049225,0.0014767,0.1
 us-east1,Balanced,0.0645,0.0194,0.0071354,0.0021406,0.1
 us-east1,Scale-Out,0.0561,0.0168,0.0062023,0.0018607,0.1

@@ -383,6 +383,17 @@ cache and the run state; the durable cost db and the cluster remain.
 account. Bigtable and the segmentation/mesh bucket are not terraform-managed, so
 they are left intact.
 
+## Release
+
+`cave-pipeline` publishes to PyPI via a one-click workflow — no manual tag or version edit.
+
+- **Release:** Actions → **ci** → **Run workflow** → choose `part` (`major`/`minor`/`patch`), or
+  `gh workflow run ci.yml -f part=patch`. It computes the next version from the latest `vX.Y.Z` tag,
+  tags it, builds, and publishes to PyPI (OIDC trusted publishing).
+- **Preview:** `dry-run=true` prints the next version without tagging or publishing.
+
+The version is derived from the git tag by `setuptools_scm`; there is no version literal to bump.
+
 ## Reference
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — design and rationale: how the system works and why.

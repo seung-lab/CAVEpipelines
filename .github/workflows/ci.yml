@@ -3,8 +3,20 @@ name: ci
 on:
   push:
     branches: ["**"]
-    tags: ["v*"]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      part:
+        description: "Semver part to bump"
+        type: choice
+        required: true
+        default: patch
+        options: [major, minor, patch]
+      dry-run:
+        description: "Dry run — compute the next version, do not tag or publish"
+        type: boolean
+        required: true
+        default: false
 
 jobs:
   test:
@@ -27,24 +39,14 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false  # coverage upload must never block CI
 
-  validate-tag:
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Reject a non-SemVer tag
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(\.(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?(\+([0-9a-zA-Z-]+(\.[0-9a-zA-Z-]+)*))?$'
-          [[ "$TAG" =~ $re ]] || { echo "Tag '$TAG' is not SemVer (vMAJOR.MINOR.PATCH[-pre][+build])"; exit 1; }
-
-  publish:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, validate-tag]
+  release:
+    if: github.event_name == 'workflow_dispatch'
+    needs: test
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
-      id-token: write  # OIDC trusted publishing — no API token
+      contents: write  # push the tag
+      id-token: write  # OIDC trusted publishing
     steps:
       - uses: actions/checkout@v6
         with:
@@ -52,6 +54,34 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-      - run: pip install build
-      - run: python -m build
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Next version from the latest tag
+        id: ver
+        run: |
+          latest="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+          latest="${latest#v}"
+          [ -z "$latest" ] && latest="0.0.0"
+          IFS=. read -r major minor patch <<< "$latest"
+          case "${{ github.event.inputs.part }}" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+          echo "version=$major.$minor.$patch" >> "$GITHUB_OUTPUT"
+      - name: Tag and push
+        if: github.event.inputs.dry-run == 'false'
+        run: |
+          git tag "v${{ steps.ver.outputs.version }}"
+          git push origin "v${{ steps.ver.outputs.version }}"
+      - name: Build
+        if: github.event.inputs.dry-run == 'false'
+        run: |
+          pip install build
+          python -m build
       - uses: pypa/gh-action-pypi-publish@release/v1
+        if: github.event.inputs.dry-run == 'false'
+      - name: Summary
+        run: echo "next v${{ steps.ver.outputs.version }} (dry-run=${{ github.event.inputs.dry-run }})"

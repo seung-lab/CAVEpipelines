@@ -28,6 +28,9 @@ asia-southeast2,Balanced,0.0867,0.026,0.009595,0.0028785,0.1
 asia-southeast2,Scale-Out,0.0754,0.0226,0.0083403,0.0025021,0.1
 asia-southeast2,general-purpose,0.0598,0.018,0.0066193,0.0019858,0.1
 asia-southeast3,general-purpose,0.046725,0.013965,0.0051686,0.0015505,0.1
+asia-southeast4,Balanced,0.067725,0.02037,0.0074922,0.0022476,0.1
+asia-southeast4,Scale-Out,0.058905,0.01764,0.0065124,0.0019537,0.1
+asia-southeast4,general-purpose,0.046725,0.013965,0.0051686,0.0015505,0.1
 australia-southeast1,Balanced,0.0916,0.0275,0.0101287,0.0030386,0.1
 australia-southeast1,Scale-Out,0.0796,0.0239,0.0088042,0.0026413,0.1
 australia-southeast1,general-purpose,0.0632,0.019,0.0069875,0.0020962,0.1

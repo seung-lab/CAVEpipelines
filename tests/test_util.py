@@ -39,7 +39,7 @@ def test_elapsed():
 def _populate(monkeypatch, job):
     """Stub the cluster: one job + a fixed node summary, for status_table rendering."""
     monkeypatch.setattr(util.kube, "list_jobs", lambda ns, w=None: [job])
-    monkeypatch.setattr(util.kube, "node_summary", lambda: (3, 2, {"e2-standard-4": 3}))
+    monkeypatch.setattr(util.kube, "node_summary", lambda: (3, 2, 12.0, 48.0))
 
 
 def _job_row(succeeded, chunks, batch, conditions=None):
@@ -85,7 +85,7 @@ def test_count_indexes_parses_k8s_interval_strings():
 def test_status_table_splits_retries_from_dead_tasks(monkeypatch, cfg, make_job):
     job = make_job(chunks=100, batch_size=10, succeeded=10, failed=34)
     monkeypatch.setattr(util.kube, "list_jobs", lambda ns, workload=None: [job])
-    monkeypatch.setattr(util.kube, "node_summary", lambda: (0, 0, {}))
+    monkeypatch.setattr(util.kube, "node_summary", lambda: (0, 0, 0.0, 0.0))
     monkeypatch.setattr(util.costs, "load_table", lambda: {})
     cells = {
         c.header: list(c.cells)
@@ -113,7 +113,9 @@ def test_usage_table_renders_cores_and_gib_by_task_index(monkeypatch, cfg):
         },
     ]
     monkeypatch.setattr(util.kube, "pod_metrics", lambda ns, name: items)
-    cells = {c.header: list(c.cells) for c in util.usage_table(cfg, "ingest-l6", 6).columns}
+    cells = {
+        c.header: list(c.cells) for c in util.usage_table(cfg, "ingest-l6", 6).columns
+    }
     assert cells["pod"] == ["ingest-l6-2-xyz", "ingest-l6-11-abc"]  # task order
     assert cells["cpu"] == ["0.2", "8.9"]
     assert cells["memory"] == ["0.4Gi", "6.0Gi"]
@@ -222,4 +224,6 @@ def test_relevant_log_retains_the_traceback_and_drops_noise():
 
 def test_relevant_log_tails_when_no_traceback():
     log = "\n".join(f"line {i}" for i in range(50))
-    assert util.relevant_log(log, n=5).splitlines() == [f"line {i}" for i in range(45, 50)]
+    assert util.relevant_log(log, n=5).splitlines() == [
+        f"line {i}" for i in range(45, 50)
+    ]

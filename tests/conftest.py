@@ -110,7 +110,7 @@ def render():
 def no_cluster():
     """Stand-in for the kube module with an empty cluster (no jobs, no nodes)."""
     return SimpleNamespace(
-        list_jobs=lambda ns, w=None: [], node_summary=lambda: (0, 0, {})
+        list_jobs=lambda ns, w=None: [], node_summary=lambda: (0, 0, 0.0, 0.0)
     )
 
 

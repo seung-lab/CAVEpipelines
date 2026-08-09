@@ -4,7 +4,6 @@ import base64
 import functools
 import pathlib
 import time
-from collections import Counter
 
 from kubernetes import client, config as kube_config
 from kubernetes.client import ApiException
@@ -115,11 +114,19 @@ def unfinished_pods(namespace: str, job_name: str):
 
 
 def node_summary():
-    """(total, spot, {instance_type: count}) for the cluster — Autopilot capacity."""
-    labels = [n.metadata.labels or {} for n in core().list_node().items]
-    by_type = Counter(lbl.get("node.kubernetes.io/instance-type", "?") for lbl in labels)
+    """(total, spot, vCPU, GiB) for the cluster — Autopilot capacity.
+
+    cpu/memory sum each node's *allocatable* (capacity minus kubelet/system reserve),
+    so the totals are what pods can actually be scheduled against."""
+    from .costs import parse_cpu, parse_mem
+
+    nodes = core().list_node().items
+    labels = [n.metadata.labels or {} for n in nodes]
     spot = sum(1 for lbl in labels if lbl.get("cloud.google.com/gke-spot") == "true")
-    return len(labels), spot, dict(by_type)
+    alloc = [(n.status.allocatable or {}) if n.status else {} for n in nodes]
+    cpu = sum(parse_cpu(a.get("cpu")) for a in alloc)
+    gib = sum(parse_mem(a.get("memory")) for a in alloc)
+    return len(nodes), spot, cpu, gib
 
 
 # Pod-log noise the operator never needs, dropped from both streamed and saved logs:

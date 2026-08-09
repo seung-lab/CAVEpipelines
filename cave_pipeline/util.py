@@ -459,9 +459,8 @@ def status_table(cfg, layer_totals=None, run_id="") -> Group:
         for j in kube.list_jobs(cfg.namespace, cfg.workload)
     }
     try:
-        n_nodes, spot, by_type = kube.node_summary()
-        types = ", ".join(f"{c}×{t}" for t, c in sorted(by_type.items()))
-        nodes = f"{n_nodes} nodes | {spot} spot" + (f" | {types}" if types else "")
+        n_nodes, spot, cpu, gib = kube.node_summary()
+        nodes = f"{n_nodes} nodes | {spot} spot | {cpu:g} cpu, {gib:.0f}Gi"
     except Exception:  # noqa: BLE001 - node list may be RBAC-denied; not essential
         nodes = "nodes ?"
     # node_summary changes every refresh; keep it one non-wrapping line so the table

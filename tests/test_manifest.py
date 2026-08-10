@@ -47,6 +47,62 @@ def test_requests_require_a_curve(cfg):
         manifest.requests_for(cfg.job, 2)
 
 
+def _curves(cfg, compute_class="", overrides=None):
+    """The doubling cpu/memory curves the layer tests share."""
+    cfg.job.compute_class = compute_class
+    cfg.job.parallel = True
+    cfg.job.resources = config.Resources(
+        cpu=config.Curve(base=1, factor=2, max=28),
+        memory=config.Curve(base=1, factor=2, add=1, max=33),
+        overrides=overrides or {},
+    )
+    return cfg
+
+
+def test_worker_processes_track_the_pods_cpu_request(cfg):
+    """The pool must be bounded by the pod's own cpu, not mp.cpu_count() (= the node's cores)."""
+    _curves(cfg)
+    assert manifest.layer_processes(cfg.job, 2) == 1  # 1 vCPU -> 1 process
+    assert manifest.layer_processes(cfg.job, 5) == 8  # 8 vCPU -> 8
+    cfg.job.parallel = False
+    assert manifest.layer_processes(cfg.job, 5) == 1  # sequential: never fans out
+
+
+def test_worker_processes_count_the_billed_cpu_not_the_raw_ask(cfg):
+    """Autopilot bills a request rounded up to the 0.25-vCPU step, so 1.9 vCPU owns two
+    cores; flooring the ask would run one process against a two-core bill."""
+    _curves(cfg, overrides={3: {"cpu": 1.9, "memory": 4}})
+    assert manifest.layer_requests(cfg.job, 3)["cpu"] == "1900m"
+    assert manifest.layer_processes(cfg.job, 3) == 2
+    # 2.6 bills as 2.75 — still two whole cores, never three
+    _curves(cfg, overrides={3: {"cpu": 2.6, "memory": 6}})
+    assert manifest.layer_processes(cfg.job, 3) == 2
+
+
+def test_worker_processes_follow_the_memory_ceiling_bump(cfg):
+    """Memory past 6.5 GiB/vCPU raises cpu; the process count must follow that raise,
+    since the pod is billed (and scheduled) for the larger request."""
+    _curves(cfg, overrides={7: {"cpu": 2, "memory": 96}})
+    assert manifest.layer_processes(cfg.job, 7) == 15  # 96/6.5 = 14.77 -> billed 15
+
+
+def test_worker_processes_on_a_custom_compute_class_use_the_raw_request(cfg):
+    """normalize_requests passes non-default classes through untouched — there is no
+    Autopilot grid to snap to, so the count comes straight off the curve."""
+    _curves(cfg, compute_class="Scale-Out")
+    assert manifest.layer_processes(cfg.job, 5) == 8
+
+
+def test_job_spec_ships_the_process_count_matching_the_request(cfg):
+    _curves(cfg)
+    spec = client.ApiClient().sanitize_for_serialization(
+        manifest.job_spec(cfg, 5, 100, 5, 3)
+    )["spec"]["template"]["spec"]["containers"][0]
+    env = {e["name"]: e.get("value") for e in spec["env"]}
+    assert env["PCG_N_PROCESSES"] == "8"  # == the 8000m cpu request for layer 5
+    assert spec["resources"]["requests"]["cpu"] == "8000m"
+
+
 def test_job_spec_renders_layer_requests(cfg):
     cfg.job.compute_class = ""
     cfg.job.resources = config.Resources(
@@ -91,18 +147,25 @@ def test_worker_env_targets_the_right_chunk(cfg):
     assert env["PCG_BATCH_SIZE"] == "1000"
 
 
-def test_parallel_flag_drives_builder_gate(cfg):
-    env = {
-        e["name"]: e["value"]
-        for e in _job(cfg)["spec"]["template"]["spec"]["containers"][0]["env"]
-    }
-    assert int(env["PCG_N_THREADS"]) > 1  # parallel builds on by default
+def test_parallel_false_forces_a_single_process(cfg):
+    cfg.job.compute_class = ""
+    cfg.job.resources = config.Resources(
+        cpu=config.Curve(base=1, factor=2, max=28),
+        memory=config.Curve(base=1, factor=2, add=1, max=33),
+    )
+
+    def procs(layer):
+        spec = client.ApiClient().sanitize_for_serialization(
+            manifest.job_spec(cfg, layer, 100, 100, 5)
+        )
+        env = spec["spec"]["template"]["spec"]["containers"][0]["env"]
+        return {e["name"]: e["value"] for e in env}["PCG_N_PROCESSES"]
+
+    assert (
+        procs(5) == "8"
+    )  # parallel: fan out to the pod's 8 vCPU, never the node's cores
     cfg.job.parallel = False
-    env = {
-        e["name"]: e["value"]
-        for e in _job(cfg)["spec"]["template"]["spec"]["containers"][0]["env"]
-    }
-    assert env["PCG_N_THREADS"] == "1"  # sequential escape hatch
+    assert procs(5) == "1"  # sequential escape hatch
 
 
 def test_spot_scheduling(cfg):
@@ -118,6 +181,7 @@ def test_status_annotations_and_optional_secret(cfg):
     assert job["metadata"]["annotations"] == {
         "chunks": "100",
         "batch_size": "1000",
+        "parallel": "True",
         "run-id": "",
     }
     assert _job(cfg, run_id="r1")["metadata"]["annotations"]["run-id"] == "r1"

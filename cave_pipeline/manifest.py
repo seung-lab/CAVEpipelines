@@ -2,12 +2,14 @@
 helm values (dicts, rendered to YAML by helm — not client objects)."""
 
 import hashlib
+import math
 import re
 
 from kubernetes import client
 
-from . import cgcache, config as cfgmod, note
-from .costs import normalize_requests
+from . import cgcache, note
+from . import config as cfgmod
+from .costs import CPU_STEP, normalize_requests
 
 INGEST_COMMAND = ["python", "-m", "pychunkedgraph.pipeline.ingest"]
 MESHING_COMMAND = ["python", "-m", "pychunkedgraph.pipeline.meshing"]
@@ -62,13 +64,33 @@ def batch_for(job, layer: int) -> int:
     return max(1, job.batch_size // 2 ** (layer - 2))
 
 
+def _normalized(job, layer: int) -> tuple:
+    """(vCPU, GiB, warnings) after the Autopilot snap — the one derivation the k8s
+    requests and the process count both read, so they cannot disagree."""
+    cpu, mem = requests_for(job, layer)
+    return normalize_requests(cpu, mem, job.compute_class)
+
+
 def layer_requests(job, layer: int) -> dict:
     """The layer's normalized k8s requests — the cheapest valid Autopilot point."""
-    cpu, mem = requests_for(job, layer)
-    cpu, mem, warnings = normalize_requests(cpu, mem, job.compute_class)
+    cpu, mem, warnings = _normalized(job, layer)
     for warning in warnings:
         note(warning)
     return {"cpu": f"{round(cpu * 1000)}m", "memory": f"{round(mem * 1024)}Mi"}
+
+
+def layer_processes(job, layer: int) -> int:
+    """Worker processes for the layer — whole vCPUs the pod owns, never the node's.
+
+    PCG's builder pools must size themselves from this: `mp.cpu_count()` is `os.cpu_count()`,
+    i.e. the system's cores with no cgroup awareness, so it oversubscribes a small pod into
+    CFS throttling. Counted off the *billed* cpu, which Autopilot rounds up to CPU_STEP: a
+    1.9-vCPU ask is charged (and scheduled) as 2, so flooring the raw ask would idle a core."""
+    if not job.parallel:
+        return 1
+    cpu, _, _ = _normalized(job, layer)  # layer_requests logs the warnings
+    billed = math.ceil(round(cpu / CPU_STEP, 6)) * CPU_STEP
+    return max(1, int(billed))
 
 
 def dataset_configmap_name(graph_id: str) -> str:
@@ -182,9 +204,9 @@ def job_spec(
                 ("PCG_LAYER", str(layer)),
                 ("PCG_PERM_SEED", str(cfg.job.perm_seed)),
                 ("PCG_BATCH_SIZE", str(batch_size)),
-                # any value >1 opens the builder's process-pool gate; the pool then
-                # sizes itself to every core — the number itself is never a count
-                ("PCG_N_THREADS", "2" if cfg.job.parallel else "1"),
+                # the builder's pool size: the pod's own cpu. Left to itself the pool uses
+                # mp.cpu_count() (= os.cpu_count(), the *node*) and oversubscribes the pod.
+                ("PCG_N_PROCESSES", str(layer_processes(cfg.job, layer))),
             )
         ]
         + _l2cache_env(cfg)
@@ -219,6 +241,9 @@ def job_spec(
             annotations={
                 "chunks": str(chunks),
                 "batch_size": str(batch_size),
+                # the gate itself: PCG_N_PROCESSES is 1 both when parallelism is off and
+                # when the layer simply owns one core, so the env cannot stand in for it
+                "parallel": str(cfg.job.parallel),
                 "run-id": run_id,
             },
         ),
@@ -270,7 +295,8 @@ def immutable_drift(cfg, layer: int, job) -> list:
     checks = [
         ("perm_seed", env.get("PCG_PERM_SEED"), str(cfg.job.perm_seed)),
         ("batch_size", annotations.get("batch_size"), str(batch_for(cfg.job, layer))),
-        ("parallel", env.get("PCG_N_THREADS"), "2" if cfg.job.parallel else "1"),
+        # the gate, not PCG_N_PROCESSES: the count tracks job.resources, which apply edits
+        ("parallel", annotations.get("parallel"), str(cfg.job.parallel)),
         ("compute_class", selector.get("cloud.google.com/compute-class", ""), cfg.job.compute_class),
         ("zone", selector.get("topology.kubernetes.io/zone", ""), cfg.zone),
         ("image", container.image, cfg.image()),

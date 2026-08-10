@@ -43,13 +43,13 @@ from `pipeline.yml`'s `bigtable:`.
 | `persistent_util` | keep the spot util pod alive between layers running a warm cg-cache server (sub-second meta probes); `false` = a one-shot pod per probe (idle 0 nodes) |
 | `secret_files` | `{container_filename: local_path under ./secrets}`; must include `google-secret.json` — all Google clients authenticate with it. `cave-secret.json` is optional: meshing needs the file but never the token, so deploy mounts a placeholder when it is absent (provide a real one only for CAVE registration) |
 | `secret_name` | name of the k8s Secret built from `secret_files` (default `cloud-volume-secrets`) |
-| `images.pcg` / `images.l2cache` | container image per workload |
+| `images.pcg` / `images.l2cache` | container image per workload; `pychunkedgraph` must be **>= v3.2.0** (earlier tags lack the worker entrypoint this pipeline drives) |
 | `workload_identity.service_account` | KSA bound to the worker GSA |
 | `workload_identity.gsa_email` | the worker GSA (terraform output `worker_service_account`) |
 | `bigtable.project` / `bigtable.instance` | Bigtable target; also injected into `dataset.yml`'s `backend_client` |
 | `region` | GKE region — selects the cost rate row in [rates.csv](../pipeline/rates.csv) (required for cost estimates) |
 | `zone` | optional: pin worker pods to one zone (e.g. Bigtable's) for lower latency — trades Spot capacity |
-| `job.*` | sizing: `perm_seed`, `batch_size`, `parallel` (parent-chunk builds fan out over every core; `false` = sequential, for debugging), `cpu`, `memory`, `compute_class`, `task_retries` (per-task retry budget), `max_failed_tasks` (dead tasks tolerated before the layer aborts — bounds retry spend; auto-clamped to the layer's task count) |
+| `job.*` | sizing: `perm_seed`, `batch_size`, `parallel` (parent-chunk builds fan out over the pod's own cpu request, shipped as `PCG_N_PROCESSES`; `false` = sequential, for debugging), `compute_class`, `task_retries` (per-task retry budget), `max_failed_tasks` (dead tasks tolerated before the layer aborts — bounds retry spend; auto-clamped to the layer's task count) |
 | `job.resources.*` | optional per-layer cpu/memory curves + per-layer overrides — see ["How per-layer resources scale"](#how-per-layer-resources-scale) |
 | `job.workloads.<name>` | per-workload deep-overrides of `job` (own `batch_size`, curves, ramp) |
 | `job.ramp.*` | parallelism ramp: `start`, `factor`, `period` (s), `max` |

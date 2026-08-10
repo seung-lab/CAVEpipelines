@@ -36,7 +36,7 @@ def run(make_processor, *, context_factory, bounds_fn, finalize=None) -> int:
         "seed": int(os.environ["PCG_PERM_SEED"]),
         "batch_size": int(os.environ["PCG_BATCH_SIZE"]),
         "index": int(os.environ["JOB_COMPLETION_INDEX"]),
-        "n_threads": int(os.environ.get("PCG_N_THREADS", 1)),
+        "n_processes": int(os.environ.get("PCG_N_PROCESSES", "1")),
     }
     layer, index = env["layer"], env["index"]
 

@@ -12,9 +12,15 @@ from cave_pipeline import kube, manifest, ops
 def _job(cfg, layer=2, completions=100, parallelism=4, run_id="deploy-1"):
     """A real Job built by job_spec, so immutable_drift is tested against the actual
     spec layout it mirrors (status is set to a running Job for reconcile)."""
-    job = manifest.job_spec(cfg, layer, completions, completions, parallelism, run_id=run_id)
+    job = manifest.job_spec(
+        cfg, layer, completions, completions, parallelism, run_id=run_id
+    )
     job.status = SimpleNamespace(conditions=[])
     return job
+
+
+def _env(job) -> dict:
+    return {e.name: e.value for e in job.spec.template.spec.containers[0].env}
 
 
 def _pod(name, phase, container, requests):
@@ -22,7 +28,11 @@ def _pod(name, phase, container, requests):
         metadata=SimpleNamespace(name=name),
         status=SimpleNamespace(phase=phase),
         spec=SimpleNamespace(
-            containers=[SimpleNamespace(name=container, resources=SimpleNamespace(requests=requests))]
+            containers=[
+                SimpleNamespace(
+                    name=container, resources=SimpleNamespace(requests=requests)
+                )
+            ]
         ),
     )
 
@@ -44,12 +54,12 @@ def test_immutable_drift_ignores_run_id(cfg):
     [
         (lambda c: setattr(c.job, "perm_seed", 99), "perm_seed"),
         (lambda c: setattr(c.job, "batch_size", 500), "batch_size"),
-        (lambda c: setattr(c.job, "parallel", False), "parallel"),
         (lambda c: setattr(c.job, "compute_class", "Scale-Out"), "compute_class"),
         (lambda c: setattr(c, "zone", "us-east1-b"), "zone"),
         (lambda c: setattr(c.job, "task_retries", 9), "task_retries"),
         (lambda c: setattr(c.job, "max_failed_tasks", 999), "max_failed_tasks"),
         (lambda c: setattr(c.images, "pcg", "repo/pcg:new"), "image"),
+        (lambda c: setattr(c.job, "parallel", False), "parallel"),
     ],
 )
 def test_immutable_drift_flags_each_changed_field(cfg, mutate, field):
@@ -58,12 +68,25 @@ def test_immutable_drift_flags_each_changed_field(cfg, mutate, field):
     assert field in {f for f, _, _ in manifest.immutable_drift(cfg, 2, job)}
 
 
+def test_immutable_drift_ignores_a_resource_edit(cfg):
+    """`apply` exists to resize a running layer, so a cpu-curve edit — which moves
+    PCG_N_PROCESSES — must not register as immutable drift and block itself."""
+    job = _job(cfg, layer=5)
+    cfg.job.resources.cpu.base *= 2  # the "widen a saturated layer" edit
+    assert manifest.layer_processes(cfg.job, 5) > int(
+        _env(job)["PCG_N_PROCESSES"]
+    )  # the count really did move
+    assert manifest.immutable_drift(cfg, 5, job) == []
+
+
 def test_immutable_drift_flags_l2cache_env(cfg):
     cfg.workload = "l2cache"
     cfg.dataset["l2cache_config"] = {"cv_path": "gs://a", "table_id": "t"}
     job = _job(cfg)
     cfg.dataset["l2cache_config"]["cv_path"] = "gs://b"
-    assert ("env:L2CACHE_CV_PATH", "gs://a", "gs://b") in manifest.immutable_drift(cfg, 2, job)
+    assert ("env:L2CACHE_CV_PATH", "gs://a", "gs://b") in manifest.immutable_drift(
+        cfg, 2, job
+    )
 
 
 # ---- kube.resize_pod: the /resize subresource call ---------------------------
@@ -77,7 +100,9 @@ def _fake_core(monkeypatch, raise_status=None):
         if raise_status:
             raise ApiException(status=raise_status)
 
-    monkeypatch.setattr(kube, "core", lambda: SimpleNamespace(patch_namespaced_pod_resize=patch_resize))
+    monkeypatch.setattr(
+        kube, "core", lambda: SimpleNamespace(patch_namespaced_pod_resize=patch_resize)
+    )
     return calls
 
 
@@ -85,7 +110,22 @@ def test_resize_pod_targets_the_resize_subresource(monkeypatch):
     calls = _fake_core(monkeypatch)
     kube.resize_pod("ns", "pod-1", "ingest", {"cpu": "2000m", "memory": "8192Mi"})
     assert calls == [
-        ("pod-1", "ns", {"spec": {"containers": [{"name": "ingest", "resources": {"requests": {"cpu": "2000m", "memory": "8192Mi"}}}]}})
+        (
+            "pod-1",
+            "ns",
+            {
+                "spec": {
+                    "containers": [
+                        {
+                            "name": "ingest",
+                            "resources": {
+                                "requests": {"cpu": "2000m", "memory": "8192Mi"}
+                            },
+                        }
+                    ]
+                }
+            },
+        )
     ]
 
 
@@ -110,8 +150,12 @@ def fake_kube(monkeypatch):
     rec = SimpleNamespace(parallelism=[], resized=[], jobs=[], pods=[])
     monkeypatch.setattr(kube, "list_jobs", lambda ns: rec.jobs)
     monkeypatch.setattr(kube, "pods_of", lambda ns, name: rec.pods)
-    monkeypatch.setattr(kube, "set_parallelism", lambda ns, name, p: rec.parallelism.append((name, p)))
-    monkeypatch.setattr(kube, "resize_pod", lambda ns, pod, c, r: rec.resized.append((pod, r)))
+    monkeypatch.setattr(
+        kube, "set_parallelism", lambda ns, name, p: rec.parallelism.append((name, p))
+    )
+    monkeypatch.setattr(
+        kube, "resize_pod", lambda ns, pod, c, r: rec.resized.append((pod, r))
+    )
     monkeypatch.setattr(ops.util, "job_state", lambda job: "running")
     return rec
 
@@ -121,9 +165,13 @@ def test_reconcile_resizes_running_drifted_pods_and_scales(cfg, fake_kube):
     desired = manifest.layer_requests(cfg.job, 2)
     fake_kube.jobs = [job]
     fake_kube.pods = [
-        _pod("p-old", "Running", "ingest", {"cpu": "1", "memory": "1Gi"}),  # drift -> resize
+        _pod(
+            "p-old", "Running", "ingest", {"cpu": "1", "memory": "1Gi"}
+        ),  # drift -> resize
         _pod("p-ok", "Running", "ingest", desired),  # matches -> skip
-        _pod("p-pending", "Pending", "ingest", {"cpu": "1", "memory": "1Gi"}),  # not Running
+        _pod(
+            "p-pending", "Pending", "ingest", {"cpu": "1", "memory": "1Gi"}
+        ),  # not Running
     ]
     ops.reconcile(cfg)
     assert fake_kube.parallelism == [(job.metadata.name, 10)]

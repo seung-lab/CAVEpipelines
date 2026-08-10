@@ -136,7 +136,7 @@ All workloads share one generic harness. A workload supplies a `make_processor(c
 → process_one(coord)` and an optional `finalize(cg, layer)`; the harness does the rest:
 
 1. Reads the env contract (`PCG_GRAPH_ID`, `PCG_LAYER`, `PCG_PERM_SEED`, `PCG_BATCH_SIZE`,
-   `PCG_N_THREADS`) plus the Kubernetes-injected `JOB_COMPLETION_INDEX`.
+   `PCG_N_PROCESSES`) plus the Kubernetes-injected `JOB_COMPLETION_INDEX`.
 2. Builds **one `ChunkedGraph` per pod** (the meta row is read once, never per chunk, so it
    never hot-rows).
 3. Computes its batch's coords from the index via the global shuffle.

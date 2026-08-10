@@ -168,8 +168,11 @@ def check_graph_owner(cfg, job, force=False) -> None:
 
 
 def require_prev_complete(cfg, layer, force=False) -> None:
-    """Refuse to submit a layer until the one below it is 100% complete."""
-    if layer <= 2 or force:
+    """Refuse to submit a layer until the one below it is 100% complete.
+
+    The run's first layer has nothing below it to check — at or under `start_layer`
+    the graph is declared already built, so the driven and manual paths agree."""
+    if layer <= start_layer(cfg) or force:
         return
     job = _read_job(cfg, layer - 1)
     if job is None:
@@ -190,8 +193,13 @@ def require_prev_complete(cfg, layer, force=False) -> None:
 def submit(cfg, layer, force=False) -> None:
     """Create one layer's Indexed Job (completions from cg.meta) and ramp parallelism."""
     note(f"submit L{layer} ({cfg.workload})")
-    if cfg.workload == "meshing" and layer == 2 and not util.mesh_meta_written(cfg):
-        # without it workers silently default mip=0; only need to check at the leaf layer
+    if (
+        cfg.workload == "meshing"
+        and layer <= start_layer(cfg)
+        and not util.mesh_meta_written(cfg)
+    ):
+        # without it workers silently default mip=0; check at the leaf layer a run starts
+        # from — `<=` so a manual `submit 2` is still guarded when start_layer is higher
         raise SystemExit("meshing has no mesh metadata; run `pipeline mesh-meta` first")
     require_prev_complete(cfg, layer, force=force)
     existing = _read_job(cfg, layer)
@@ -332,8 +340,23 @@ def _phase_cfg(cfg, workload):
     return c
 
 
+def start_layer(cfg) -> int:
+    """First layer the active run submits; below it the graph is taken as already built.
+
+    Scoped per workload in the yml (job.workloads.<name>.start_layer), so it persists
+    across resume without extra bookkeeping and cannot mean different work for two
+    stages whose layer 2 differ."""
+    return cfg.job.start_layer  # config.load enforces the floor; don't repair silently
+
+
+def layer_range(cfg, top) -> range:
+    """The layers a driven run covers: start_layer up to the workload's top."""
+    return range(start_layer(cfg), top + 1)
+
+
 def _layer_plan(cfg, cached, top) -> None:
-    for layer in sorted(layer for layer in cached if layer <= top):
+    covered = layer_range(cfg, top)
+    for layer in sorted(layer for layer in cached if layer in covered):
         req = manifest.layer_requests(cfg.job, layer)
         vcpu = costs.parse_cpu(req["cpu"])
         gib = costs.parse_mem(req["memory"])
@@ -526,7 +549,20 @@ def run_workload(cfg_w) -> None:
         _layer_plan(
             cfg_w, counts, top
         )  # every layer's requests + clamps up front, not at L7
-        for layer in range(2, top + 1):
+        layers = layer_range(cfg_w, top)
+        if not layers:  # else the stage would report complete having submitted nothing
+            blame = (
+                f"job.workloads.{cfg_w.workload}.start_layer {layers.start} is above"
+                if layers.start > config.ATOMIC_LAYER
+                else f"{cfg_w.workload} has no layers to run at or above"
+            )
+            raise SystemExit(f"{blame} its top layer {top}")
+        if layers.start > config.ATOMIC_LAYER:  # loud: this trusts every layer below it
+            note(
+                f"start_layer {layers.start} ({cfg_w.workload}): "
+                f"L{config.ATOMIC_LAYER}-L{layers.start - 1} assumed already built, not submitted"
+            )
+        for layer in layers:
             run_layer(cfg_w, layer)
     except (KeyboardInterrupt, Paused, Undeployed):
         raise  # don't fail the stage: a re-run resumes a pause; undeploy already cleared state

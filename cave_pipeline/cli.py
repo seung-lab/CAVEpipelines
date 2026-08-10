@@ -115,7 +115,10 @@ _LAYER = click.argument("layer", type=int)
     help="run `setup` after deploy (first-run convenience)",
 )
 @click.option(
-    "--submit-l2", is_flag=True, help="submit layer 2 after setup (requires --setup)"
+    "--submit-l2",
+    is_flag=True,
+    help="submit the workload's first layer after setup (requires --setup); layer 2 "
+    "unless job.workloads.<name>.start_layer raises it",
 )
 @click.option(
     "--oneshot",
@@ -170,7 +173,8 @@ def deploy(
     elif run_setup:
         ops.setup(cfg)
         if submit_l2:
-            ops.submit(cfg, 2)
+            # the workload's first layer, which start_layer may have raised above 2
+            ops.submit(cfg, ops.start_layer(cfg))
         else:
             note("pipeline ready; run `pipeline submit <layer>`")
 

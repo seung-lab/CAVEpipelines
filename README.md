@@ -142,10 +142,11 @@ caveconnectome/pcgl2cache:<tag>       # l2cache
 
 Pin the tags in `pipeline.yml` (`images:`).
 
-**Requires `pychunkedgraph` >= v3.2.0.dev5** — `pipeline` refuses an older tag. Images before
+**Requires `pychunkedgraph` >= v3.2.0.dev6** — `pipeline` refuses an older tag. Images before
 v3.2.0 predate the worker entrypoint this pipeline drives (the Indexed-Job env contract, incl.
-`PCG_N_PROCESSES`); dev4 honors it for ingest and dev5 for the meshing stitch. Anything older
-sizes a process pool from the node's cores, so the pod CFS-throttles itself.
+`PCG_N_PROCESSES`); dev4 honors it for ingest, dev5 for the meshing stitch, and dev6 bundles a
+`cave-pipeline` whose harness actually emits the variable. Anything older sizes a process pool
+from the node's cores, so the pod CFS-throttles itself.
 
 ## 3. Config + deploy
 

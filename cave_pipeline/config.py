@@ -18,11 +18,13 @@ import yaml
 
 CONFIG_DIR = "config"
 ENV_CONFIGMAP = "pcg-env"
-# v3.2.0 added the worker entrypoint and the PCG_* env contract; .dev4 made the
-# ingest pools honor PCG_N_PROCESSES and .dev5 the meshing stitch pool. Older
-# images either ignore the contract or size a pool from the node's cores, and
-# either way only fail once pods are burning.
-MIN_PCG_IMAGE = "v3.2.0.dev5"
+ATOMIC_LAYER = 2  # supervoxels; every graph is built from here up
+# v3.2.0 added the worker entrypoint and the PCG_* env contract; .dev4 made the ingest
+# pools honor PCG_N_PROCESSES, .dev5 the meshing stitch pool, and .dev6 bundles a
+# cave-pipeline whose harness actually emits that variable (dev5 pinned one that still
+# emitted n_threads, so every pod died on KeyError). Older images either ignore the
+# contract or size a pool from the node's cores — both only fail once pods are burning.
+MIN_PCG_IMAGE = "v3.2.0.dev6"
 
 
 @dataclass
@@ -72,6 +74,7 @@ class Resources:
 class Job:
     perm_seed: int = 0
     batch_size: int = 1000
+    start_layer: int = ATOMIC_LAYER  # first layer to submit; below it is assumed built
     parallel: bool = True  # process pool sized by the pod's cpu request, not the node's
     compute_class: str = ""
     task_retries: int = 3  # per-task retry budget before the task is dead
@@ -142,6 +145,53 @@ def image_version(image: str) -> tuple:
         _STAGE_RANK.get((stage or "").lower(), _FINAL),
         int(stage_no or 0),
     )
+
+
+_WORKLOADS = ("ingest", "l2cache", "meshing", "migrate", "migrate_cleanup")
+
+
+def _start_layer(path: str, value) -> int:
+    """Validate a workload's start_layer: a whole number at or above the atomic layer.
+
+    Truncating (3.9 -> 3) would start somewhere the operator never asked for, and a raw
+    string would survive to `max()` and fail mid-run, after the cluster was mutated."""
+    try:
+        layer = int(value)
+        if layer != float(value):
+            raise ValueError(value)
+    except (TypeError, ValueError, OverflowError):  # OverflowError: `.inf`
+        raise SystemExit(
+            f"{path}: start_layer must be a whole number >= {ATOMIC_LAYER}, got {value!r}"
+        )
+    if layer < ATOMIC_LAYER:
+        raise SystemExit(
+            f"{path}: start_layer must be >= {ATOMIC_LAYER} (the atomic layer)"
+        )
+    return layer
+
+
+def _check_start_layers(path: str, raw: dict) -> None:
+    """Validate every workload's start_layer up front, whichever one is being loaded.
+
+    Deferring it to the workload's own load means a typo in a sibling stage surfaces from
+    inside a running deploy, hours and real spend after the cluster was mutated."""
+    job = raw.get("job") or {}
+    if "start_layer" in job:
+        # unscoped it reaches every workload, and layer 2 is different work in each:
+        # skipping ingest's L3 would also skip meshing's marching-cubes pass, and
+        # l2cache (top layer 2) would be left with nothing to run at all
+        raise SystemExit(
+            f"{path}: job.start_layer must be scoped to one workload — set it under "
+            f"job.workloads.<{'|'.join(_WORKLOADS)}>.start_layer"
+        )
+    for name, block in (job.get("workloads") or {}).items():
+        if name not in _WORKLOADS:  # a typo silently drops the whole block
+            raise SystemExit(
+                f"{path}: job.workloads.{name} is not a workload — "
+                f"expected one of {', '.join(_WORKLOADS)}"
+            )
+        if "start_layer" in (block or {}):
+            _start_layer(path, block["start_layer"])
 
 
 def stored() -> str:
@@ -218,6 +268,9 @@ def load(name: str | None = None, workload: str | None = None) -> Config:
     ramp = Ramp(**(raw_job.pop("ramp", None) or {}))
     if ramp.start < 1 or ramp.factor <= 1:  # else submit's ramp loop never terminates
         raise SystemExit(f"{path}: job.ramp start must be >= 1 and factor > 1")
+    _check_start_layers(path, raw)
+    if "start_layer" in raw_job:  # coerce here; stored raw it breaks deep inside a run
+        raw_job["start_layer"] = _start_layer(path, raw_job["start_layer"])
     resources = _resources(raw_job.pop("resources", None))
     for dead in ("cpu", "memory"):
         if dead in raw_job:

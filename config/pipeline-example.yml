@@ -1,7 +1,7 @@
 # frequently-edited blocks first: images, job sizing (incl. ramp); identity/infra below
 
 images:
-  pcg: caveconnectome/pychunkedgraph:v3.2.0.dev5   # >= v3.2.0.dev5; older tags
+  pcg: caveconnectome/pychunkedgraph:v3.2.0.dev6   # >= v3.2.0.dev6; older tags
   # size a process pool from the node's cores and CFS-throttle every pod
   l2cache: caveconnectome/pcgl2cache:latest
 

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from click.testing import CliRunner
 
 from cave_pipeline import cli, ops
+from cave_pipeline.db import state
 
 
 def _invoke(args, cfg, **kw):
@@ -161,3 +162,29 @@ def test_all_layers_ingest_runs_setup_then_ingest_layers(monkeypatch, cfg):
     _mock_all_layers(monkeypatch, cfg, {2: 100, 3: 10}, calls)
     _invoke(["--all-layers", "--yes"], cfg)
     assert calls == ["helm", "setup(ingest,exist_ok=True)", "ingest-l2", "ingest-l3"]
+
+
+def test_start_layer_skips_the_layers_below_it(monkeypatch, cfg):
+    """Restarting mid-graph must not resubmit the layers already built — after an
+    undeploy they have no Job, so the driver would otherwise re-run all of L2."""
+    cfg.workload = "ingest"
+    cfg.job.start_layer = 3
+    calls = []
+    _mock_all_layers(monkeypatch, cfg, {2: 100, 3: 10, 4: 1}, calls)
+    _invoke(["--all-layers", "--yes"], cfg)
+    assert calls == ["helm", "setup(ingest,exist_ok=True)", "ingest-l3", "ingest-l4"]
+
+
+def test_start_layer_above_the_top_fails_the_stage(monkeypatch, cfg):
+    """An out-of-range start_layer must abort, not mark the stage complete having
+    submitted nothing: an empty layer range would otherwise fall straight through to
+    set_state(COMPLETE)."""
+    cfg.workload = "ingest"
+    cfg.job.start_layer = 9
+    calls = []
+    _mock_all_layers(monkeypatch, cfg, {2: 100, 3: 10}, calls)
+    res = _invoke(["--all-layers", "--yes"], cfg)
+    assert res.exit_code != 0
+    assert "job.workloads.ingest.start_layer 9 is above its top layer 3" in res.output
+    assert calls == ["helm", "setup(ingest,exist_ok=True)"]  # no layer submitted
+    assert state.states(cfg)["ingest"] != state.COMPLETE

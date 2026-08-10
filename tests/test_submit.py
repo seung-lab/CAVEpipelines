@@ -35,6 +35,45 @@ def test_submit_blocks_until_prev_layer_complete(monkeypatch, cfg, make_job):
     ops.require_prev_complete(cfg, 2, force=False)  # L2 has no predecessor
 
 
+def test_start_layer_is_the_gate_floor(monkeypatch, cfg, make_job):
+    """The run's first layer has nothing below it, so the gate must clear at start_layer
+    however the layer is submitted — otherwise `pipeline submit 3` is refused for a layer
+    job.start_layer already declares built."""
+    running = make_job(conditions=[])
+    monkeypatch.setattr(
+        cli.kube,
+        "batch",
+        lambda: SimpleNamespace(read_namespaced_job=lambda n, ns: running),
+    )
+    cfg.job.start_layer = 3
+    ops.require_prev_complete(cfg, 3, force=False)  # at the floor: nothing below to check
+    with pytest.raises(SystemExit, match="not complete"):
+        ops.require_prev_complete(cfg, 4, force=False)  # above it: still gated
+
+
+def test_meshing_mesh_meta_guard_survives_a_raised_start_layer(
+    monkeypatch, cfg, no_cost_sample, no_sleep
+):
+    """`submit 2` must stay guarded when start_layer is higher — an unguarded L2 writes a
+    whole marching-cubes pass at the default mip=0."""
+    cfg.workload = "meshing"
+    cfg.job.start_layer = 3
+    monkeypatch.setattr(ops.util, "mesh_meta_written", lambda c: False)
+    for layer in (2, 3):
+        with pytest.raises(SystemExit, match="mesh-meta"):
+            ops.submit(cfg, layer)
+    # and stops above it: an unconditional check would probe graph meta on every submit
+    probed = []
+    monkeypatch.setattr(ops.util, "mesh_meta_written", lambda c: probed.append(c) or True)
+    monkeypatch.setattr(ops, "require_prev_complete", lambda *a, **k: None)
+    monkeypatch.setattr(ops, "_read_job", lambda c, layer: None)
+    monkeypatch.setattr(ops.util, "read_n", lambda c, layer: 1)
+    monkeypatch.setattr(cli.kube, "recreate_job", lambda ns, spec: None)
+    monkeypatch.setattr(cli.kube, "set_parallelism", lambda ns, n, p: None)
+    ops.submit(cfg, 4)
+    assert probed == []
+
+
 def test_sample_runs_never_satisfy_the_layer_gate(monkeypatch, cfg, make_job):
     done_sample = make_job(
         conditions=[SimpleNamespace(type="Complete", status="True")],

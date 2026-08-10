@@ -35,8 +35,8 @@ def test_image_version_reads_the_tag(image, version):
 
 
 def test_prerelease_ordering_puts_dev_below_its_release():
-    """dev4 < dev5 < rc1 < the 3.2.0 release — the floor sits between dev4 and dev5."""
-    tags = ["v3.2.0.dev4", "v3.2.0.dev5", "v3.2.0rc1", "v3.2.0", "v3.2.1"]
+    """dev5 < dev6 < rc1 < the 3.2.0 release — the floor sits between dev5 and dev6."""
+    tags = ["v3.2.0.dev5", "v3.2.0.dev6", "v3.2.0rc1", "v3.2.0", "v3.2.1"]
     versions = [config.image_version(f"repo/pcg:{t}") for t in tags]
     assert versions == sorted(versions)
 
@@ -50,6 +50,7 @@ def test_prerelease_ordering_puts_dev_below_its_release():
         "v2.22.0.dev8",  # newer by date, older by version
         "v3.2.0.dev3",  # clears the entrypoint bar, still pools on the node's cores
         "v3.2.0.dev4",  # ingest pools fixed, meshing stitch still single-process
+        "v3.2.0.dev5",  # both pools fixed, but pins a harness emitting n_threads
         "v3.2.0.dev0",
     ],
 )
@@ -60,8 +61,78 @@ def test_load_rejects_a_pcg_image_below_the_floor(tmp_path, monkeypatch, tag):
         config.load(str(tmp_path / "pipeline.yml"))
 
 
+def _scoped(bad):
+    return {"job": {"workloads": {"ingest": {"start_layer": bad}}}}
+
+
+@pytest.mark.parametrize("bad", [1, 0, -1])
+def test_start_layer_below_the_atomic_layer_is_refused(tmp_path, monkeypatch, bad):
+    """L2 is the atomic layer; anything lower would skip real work silently."""
+    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
+    _write(tmp_path, "pipeline.yml", {**BASE, **_scoped(bad)})
+    with pytest.raises(SystemExit, match="start_layer must be >= 2"):
+        config.load(str(tmp_path / "pipeline.yml"))
+
+
+@pytest.mark.parametrize("bad", [3.9, 2.5, None, "three", [3]])
+def test_start_layer_must_be_a_whole_number(tmp_path, monkeypatch, bad):
+    """3.9 must not silently become 3, and a string must not reach the run as a string."""
+    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
+    _write(tmp_path, "pipeline.yml", {**BASE, **_scoped(bad)})
+    with pytest.raises(SystemExit, match="start_layer must be"):
+        config.load(str(tmp_path / "pipeline.yml"))
+
+
+def test_top_level_start_layer_is_refused(tmp_path, monkeypatch):
+    """Unscoped it reaches every workload: skipping ingest L3 would also skip meshing's
+    L2 marching-cubes pass, and l2cache (top layer 2) would have nothing left to run."""
+    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
+    _write(tmp_path, "pipeline.yml", {**BASE, "job": {"start_layer": 3}})
+    with pytest.raises(SystemExit, match="scoped to one workload"):
+        config.load(str(tmp_path / "pipeline.yml"))
+
+
+def test_misspelled_workload_key_is_refused(tmp_path, monkeypatch):
+    """A typo silently drops the block, so a mid-graph restart quietly re-ingests L2."""
+    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
+    bad = {"job": {"workloads": {"l2cach": {"start_layer": 5}}}}
+    _write(tmp_path, "pipeline.yml", {**BASE, **bad})
+    with pytest.raises(SystemExit, match="is not a workload"):
+        config.load(str(tmp_path / "pipeline.yml"))
+
+
+def test_every_workloads_start_layer_is_validated_up_front(tmp_path, monkeypatch):
+    """A sibling stage's typo must fail at load, not from inside a running deploy."""
+    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
+    bad = {"job": {"workloads": {"meshing": {"start_layer": "three"}}}}
+    _write(tmp_path, "pipeline.yml", {**BASE, **bad})
+    with pytest.raises(SystemExit, match="start_layer must be"):
+        config.load(str(tmp_path / "pipeline.yml"), workload="ingest")
+
+
+def test_known_workloads_match_the_stage_registry():
+    """config cannot import stages (circular), so this pins the hand-kept copy."""
+    from cave_pipeline import stages
+
+    assert set(config._WORKLOADS) == set(stages.STAGES)
+
+
+def test_start_layer_applies_only_to_its_own_workload(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
+    _write(tmp_path, "pipeline.yml", {**BASE, **_scoped(3)})
+    path = str(tmp_path / "pipeline.yml")
+    assert config.load(path, workload="ingest").job.start_layer == 3
+    assert config.load(path, workload="meshing").job.start_layer == 2
+
+
+def test_start_layer_defaults_to_the_atomic_layer(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
+    _write(tmp_path, "pipeline.yml", BASE)
+    assert config.load(str(tmp_path / "pipeline.yml")).job.start_layer == 2
+
+
 @pytest.mark.parametrize(
-    "tag", ["v3.2.0.dev5", "v3.2.0.dev6", "v3.2.0rc1", "v3.2.0", "v3.3.0", "v4.0.0"]
+    "tag", ["v3.2.0.dev6", "v3.2.0.dev7", "v3.2.0rc1", "v3.2.0", "v3.3.0", "v4.0.0"]
 )
 def test_load_accepts_the_floor_and_above(tmp_path, monkeypatch, tag):
     monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))

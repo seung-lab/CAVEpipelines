@@ -85,11 +85,16 @@ kernel record.
 
 ## Config gotchas
 
-- **`pychunkedgraph` >= v3.2.0.dev5 only**, enforced in `config.load()`. v3.2.0 added the worker
+- **`pychunkedgraph` >= v3.2.0.dev6 only**, enforced in `config.load()`. v3.2.0 added the worker
   entrypoint / env contract, `.dev4` made the ingest pools honor `PCG_N_PROCESSES`, `.dev5` the
-  meshing stitch pool — each bar is passed independently, so dev4 ingests correctly and still
-  meshes single-process. `latest` and digest pins are refused: an unreadable tag can't be
-  checked, and the wrong image fails inside the pod.
+  meshing stitch pool, `.dev6` a cave-pipeline wheel that actually emits the variable. Each bar
+  is passed independently, so dev4 ingests correctly and still meshes single-process.
+- **The image tag is a proxy; the real contract is the `cave-pipeline` wheel inside it.** dev5
+  pinned 0.0.3, whose harness still emitted `n_threads`, so every pod died on
+  `KeyError: 'n_processes'` — the tag gate cannot see that. Rename an env key here and the
+  wheel must be released and re-pinned in PCG's `requirements.txt` before any image is built.
+- `latest` and digest pins are refused: an unreadable tag can't be checked, and the wrong image
+  fails inside the pod.
 - No `-c` and no `config/.current` → falls back to `config/pipeline.yml`, which may be **another
   project's graph**. Always pass `-c` for destructive commands (`undeploy`, `delete`, `purge`).
 - The running driver holds the `cfg` loaded at `deploy`; editing the yml mid-run does not reach

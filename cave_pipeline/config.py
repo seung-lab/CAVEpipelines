@@ -11,12 +11,17 @@ through to `setup`.
 
 import contextlib
 import os
+import re
 from dataclasses import dataclass, field
 
 import yaml
 
 CONFIG_DIR = "config"
 ENV_CONFIGMAP = "pcg-env"
+# v3.2.0 added the worker entrypoint and the PCG_* env contract; .dev4 added the
+# pool sizing that honors PCG_N_PROCESSES. Older images either ignore the contract
+# or size their pools from the node's cores, and only fail once pods are burning.
+MIN_PCG_IMAGE = "v3.2.0.dev4"
 
 
 @dataclass
@@ -66,7 +71,7 @@ class Resources:
 class Job:
     perm_seed: int = 0
     batch_size: int = 1000
-    parallel: bool = True  # parent-chunk builds fan out over every core (process pool)
+    parallel: bool = True  # process pool sized by the pod's cpu request, not the node's
     compute_class: str = ""
     task_retries: int = 3  # per-task retry budget before the task is dead
     max_failed_tasks: int = 50  # dead tasks tolerated before the layer aborts
@@ -104,6 +109,36 @@ class Config:
 
     def image(self) -> str:
         return self.images.l2cache if self.workload == "l2cache" else self.images.pcg
+
+
+# every published 3.2 image is a pre-release, so the ordering has to rank them:
+# dev < alpha < beta < rc < the final release that follows them.
+_STAGE_RANK = {"dev": 0, "a": 1, "alpha": 1, "b": 2, "beta": 2, "rc": 3, "c": 3}
+_FINAL = max(_STAGE_RANK.values()) + 1
+_VERSION_RE = re.compile(
+    r"v?(\d+)\.(\d+)(?:\.(\d+))?(?:[._-]?(dev|alpha|beta|rc|a|b|c)\.?(\d+)?)?",
+    re.IGNORECASE,
+)
+
+
+def image_version(image: str) -> tuple:
+    """Sortable (major, minor, patch, stage, stage_no) from an image tag, or ().
+
+    A digest-pinned, untagged, or non-numeric reference yields (), which sorts below
+    every real version — so an unreadable tag fails the floor check like an old one."""
+    last = image.rpartition("/")[2]  # a registry host may carry a :port
+    tag = image.rpartition(":")[2] if ":" in last else ""
+    match = _VERSION_RE.match(tag)
+    if not match:
+        return ()
+    major, minor, patch, stage, stage_no = match.groups()
+    return (
+        int(major),
+        int(minor),
+        int(patch or 0),
+        _STAGE_RANK.get((stage or "").lower(), _FINAL),
+        int(stage_no or 0),
+    )
 
 
 def stored() -> str:
@@ -154,8 +189,22 @@ def load(name: str = None, workload: str = None) -> Config:
     for key in ("graph_id", "images"):
         if key not in raw:
             raise SystemExit(f"{path}: missing required key '{key}'")
-    if not (raw.get("images") or {}).get("pcg"):
+    image = (raw.get("images") or {}).get("pcg")
+    if not image:
         raise SystemExit(f"{path}: images.pcg is required")
+    version = image_version(image)
+    if not version:
+        raise SystemExit(
+            f"{path}: images.pcg '{image}' carries no version tag; pipeline requires "
+            f"pychunkedgraph >= {MIN_PCG_IMAGE}. A floating (`latest`) or digest-pinned "
+            f"reference cannot be checked, and the wrong image fails inside the pod."
+        )
+    if version < image_version(f":{MIN_PCG_IMAGE}"):
+        raise SystemExit(
+            f"{path}: images.pcg '{image}' is older than {MIN_PCG_IMAGE}, which "
+            f"pipeline requires — earlier images lack the worker entrypoint, or size "
+            f"their process pools from the node's cores and CFS-throttle every pod."
+        )
     # a present-but-empty yaml key parses to None; treat every block like {}
     bt = Bigtable(**(raw.get("bigtable") or {}))
     dataset, dataset_path = _read_dataset(config_dir, raw.get("dataset"))
@@ -165,12 +214,21 @@ def load(name: str = None, workload: str = None) -> Config:
     raw_job = _merge(raw_job, (raw_job.pop("workloads", None) or {}).get(workload) or {})
     ramp = Ramp(**(raw_job.pop("ramp", None) or {}))
     if ramp.start < 1 or ramp.factor <= 1:  # else submit's ramp loop never terminates
-        raise SystemExit("job.ramp: start must be >= 1 and factor > 1")
+        raise SystemExit(f"{path}: job.ramp start must be >= 1 and factor > 1")
     resources = _resources(raw_job.pop("resources", None))
     for dead in ("cpu", "memory"):
         if dead in raw_job:
+            # name the file and graph: with no session config this is the *default* yaml,
+            # which may belong to an entirely different project than the one intended.
+            switch = (
+                "`pipeline reset`, then -c <its pipeline.yml>"
+                if stored()
+                else "pass -c <its pipeline.yml>"
+            )
             raise SystemExit(
-                f"job.{dead} was removed; declare job.resources.{dead} (base/factor) instead"
+                f"{path} (graph '{raw['graph_id']}'): job.{dead} was removed; declare "
+                f"job.resources.{dead} (base/factor) instead. If you meant a different "
+                f"project, {switch}."
             )
     return Config(
         namespace=raw.get("namespace", "default"),

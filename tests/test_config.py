@@ -3,18 +3,76 @@ import yaml
 
 from cave_pipeline import config
 
-BASE = {"graph_id": "g", "images": {"pcg": "repo/pcg:t"}}
+BASE = {"graph_id": "g", "images": {"pcg": "repo/pcg:v3.2.0"}}
 
 
 def _write(dirpath, name, content):
     (dirpath / name).write_text(yaml.safe_dump(content))
 
 
+FINAL = config._FINAL
+
+
+@pytest.mark.parametrize(
+    "image, version",
+    [
+        ("caveconnectome/pychunkedgraph:v3.2.0", (3, 2, 0, FINAL, 0)),
+        ("caveconnectome/pychunkedgraph:3.2.0", (3, 2, 0, FINAL, 0)),  # v optional
+        ("caveconnectome/pychunkedgraph:v3.2", (3, 2, 0, FINAL, 0)),  # patch -> 0
+        ("caveconnectome/pychunkedgraph:v3.2.0.dev4", (3, 2, 0, 0, 4)),
+        ("caveconnectome/pychunkedgraph:v3.2.0rc1", (3, 2, 0, 3, 1)),  # no separator
+        ("caveconnectome/pychunkedgraph:v3.10.0", (3, 10, 0, FINAL, 0)),  # not lexical
+        ("localhost:5000/pcg:v4.0.0", (4, 0, 0, FINAL, 0)),  # port is not the tag
+        ("caveconnectome/pychunkedgraph:vNewIngest6", ()),
+        ("caveconnectome/pychunkedgraph:latest", ()),
+        ("caveconnectome/pychunkedgraph", ()),  # untagged
+        ("caveconnectome/pychunkedgraph@sha256:abc123", ()),  # digest-pinned
+        ("localhost:5000/pcg", ()),  # port, still untagged
+    ],
+)
+def test_image_version_reads_the_tag(image, version):
+    assert config.image_version(image) == version
+
+
+def test_prerelease_ordering_puts_dev_below_its_release():
+    """dev3 < dev4 < rc1 < the 3.2.0 release — the floor sits between dev3 and dev4."""
+    tags = ["v3.2.0.dev3", "v3.2.0.dev4", "v3.2.0rc1", "v3.2.0", "v3.2.1"]
+    versions = [config.image_version(f"repo/pcg:{t}") for t in tags]
+    assert versions == sorted(versions)
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "vNewIngest6",  # the tag that ran 2h and built nothing
+        "latest",
+        "v3.1.9",
+        "v2.22.0.dev8",  # newer by date, older by version
+        "v3.2.0.dev3",  # clears the entrypoint bar, still pools on the node's cores
+        "v3.2.0.dev0",
+    ],
+)
+def test_load_rejects_a_pcg_image_below_the_floor(tmp_path, monkeypatch, tag):
+    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
+    _write(tmp_path, "pipeline.yml", {**BASE, "images": {"pcg": f"repo/pcg:{tag}"}})
+    with pytest.raises(SystemExit, match=config.MIN_PCG_IMAGE):
+        config.load(str(tmp_path / "pipeline.yml"))
+
+
+@pytest.mark.parametrize(
+    "tag", ["v3.2.0.dev4", "v3.2.0.dev5", "v3.2.0rc1", "v3.2.0", "v3.3.0", "v4.0.0"]
+)
+def test_load_accepts_the_floor_and_above(tmp_path, monkeypatch, tag):
+    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
+    _write(tmp_path, "pipeline.yml", {**BASE, "images": {"pcg": f"repo/pcg:{tag}"}})
+    assert config.load(str(tmp_path / "pipeline.yml")).images.pcg == f"repo/pcg:{tag}"
+
+
 def test_load_defaults_and_bigtable_injection(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
     (tmp_path / "pipeline.yml").write_text("""
 graph_id: g
-images: {pcg: repo/pcg:tag}
+images: {pcg: repo/pcg:v3.2.0}
 bigtable: {project: proj, instance: inst}
 secret_files: {google-secret.json: projA/g.json}
 env:
@@ -37,7 +95,7 @@ def test_bare_yaml_blocks_load_as_defaults(tmp_path, monkeypatch):
     # an operator can leave any block key present-but-empty (it parses to None)
     monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
     (tmp_path / "pipeline.yml").write_text(
-        "graph_id: g\nimages: {pcg: x:1}\n"
+        "graph_id: g\nimages: {pcg: x:v3.2.0}\n"
         "job:\nbigtable:\nworkload_identity:\nsecret_files:\ncommands:\n"
     )
     cfg = config.load()
@@ -54,7 +112,7 @@ def test_non_growing_ramp_is_rejected(tmp_path, monkeypatch):
 
 def test_bigtable_not_injected_when_absent(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
-    (tmp_path / "pipeline.yml").write_text("graph_id: g\nimages: {pcg: x:1}\n")
+    (tmp_path / "pipeline.yml").write_text("graph_id: g\nimages: {pcg: x:v3.2.0}\n")
     cfg = config.load()
     assert "backend_client" not in cfg.dataset
 

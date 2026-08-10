@@ -37,6 +37,7 @@ dev = [
     "pre-commit",
     "pytest",
     "pytest-cov",
+    "pyte",  # virtual terminal, for asserting the live display redraws in place
     "ruff",
     "build",
 ]

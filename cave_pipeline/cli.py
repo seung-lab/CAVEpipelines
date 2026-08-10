@@ -20,8 +20,19 @@ from rich.console import Console
 from rich.live import Live
 from rich.table import Table
 
-from . import NOTE, config, costs, kube, log, manifest, note, ops, util
+from . import (
+    NOTE,
+    config,
+    costs,
+    kube,
+    log,
+    manifest,
+    note,
+    ops,
+    util,
+)
 from .db import cost, state
+from .term import ConsoleHandler, console
 from .distribution import run_and_exit
 
 
@@ -50,7 +61,7 @@ from .distribution import run_and_exit
 def cli(ctx, config_name, graph_id, verbose):
     # Root stays at NOTE so -v doesn't unleash urllib3/kubernetes HTTP body dumps
     # (unreadable multi-KB single lines); -v only deepens our own logger.
-    logging.basicConfig(level=NOTE, format="%(message)s")
+    logging.basicConfig(level=NOTE, format="%(message)s", handlers=[ConsoleHandler()])
     # kubernetes' urllib3 logs transient connection retries (RemoteDisconnected) at
     # WARNING; they recover, so drop them — a real failure still raises ApiException.
     logging.getLogger("urllib3").setLevel(logging.ERROR)
@@ -411,7 +422,7 @@ def top(cfg, layer, once, interval):
         Console().print(util.usage_table(cfg, name, layer))
         return
     try:
-        with Live(refresh_per_second=4) as live:
+        with Live(console=console, refresh_per_second=4) as live:
             while True:
                 live.update(util.usage_table(cfg, name, layer))
                 time.sleep(interval)
@@ -487,7 +498,7 @@ def status(cfg, once, interval):
             Console().print(view)
         return
     try:
-        with Live(refresh_per_second=4) as live:
+        with Live(console=console, refresh_per_second=4) as live:
             while True:  # stays up across layers; Ctrl-C to stop
                 view = render()
                 if view is None:  # the watched run was cleared (undeploy/purge)

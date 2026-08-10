@@ -175,6 +175,33 @@ def test_start_layer_skips_the_layers_below_it(monkeypatch, cfg):
     assert calls == ["helm", "setup(ingest,exist_ok=True)", "ingest-l3", "ingest-l4"]
 
 
+def test_out_of_range_start_layer_warns_but_does_not_block_the_prompt(monkeypatch, cfg):
+    """Advisory, not fatal: `setup` invalidates these counts, so a graph rebuilt taller
+    would otherwise be refused on numbers the driver is about to replace."""
+    cfg.workload = "ingest"
+    cfg.job.start_layer = 9
+    said = []
+    monkeypatch.setattr(ops, "note", said.append)
+    monkeypatch.setattr(ops.util, "cached_layer_counts", lambda c: {2: 100, 3: 10})
+    monkeypatch.setattr(ops.config, "load", _fake_load(cfg))
+    res = CliRunner().invoke(cli.deploy, ["--all-layers"], obj=cfg, input="n\n")
+    assert any("above ingest's cached top layer 3" in m for m in said)
+    assert "proceed?" in res.output  # warned, still the operator's call
+
+
+def test_confirm_run_announces_the_skipped_layers(monkeypatch, cfg):
+    """The skip must be visible at the prompt, while answering 'no' still works."""
+    cfg.workload = "ingest"
+    cfg.job.start_layer = 3
+    said = []
+    monkeypatch.setattr(ops, "note", said.append)
+    monkeypatch.setattr(ops.util, "cached_layer_counts", lambda c: {2: 100, 3: 10, 4: 1})
+    monkeypatch.setattr(ops.config, "load", _fake_load(cfg))
+    res = CliRunner().invoke(cli.deploy, ["--all-layers"], obj=cfg, input="n\n")
+    assert any("L2-L2 assumed already built (start_layer 3)" in m for m in said)
+    assert res.exit_code != 0  # declined at the prompt
+
+
 def test_start_layer_above_the_top_fails_the_stage(monkeypatch, cfg):
     """An out-of-range start_layer must abort, not mark the stage complete having
     submitted nothing: an empty layer range would otherwise fall straight through to

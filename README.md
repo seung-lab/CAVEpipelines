@@ -43,7 +43,7 @@ behind it, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 | Path | What |
 |---|---|
-| [pipeline/](pipeline/) | the **`pipeline` CLI** (Python, kubernetes client) — the operator entry point |
+| [cave_pipeline/](cave_pipeline/) | the **`pipeline` CLI** (Python, kubernetes client) — the operator entry point |
 | [config/](config/) | all run configs — `-c` is the path to a pipeline yaml, its `dataset:` key names the dataset yaml relative to it; any number of projects side by side — see [config/README.md](config/README.md) |
 | [secrets/](secrets/) | local secret files (gitignored); `secret_files:` in `pipeline.yml` picks which to load |
 | [terraform/](terraform/) | the GKE Autopilot cluster + Workload-Identity service account |
@@ -327,7 +327,7 @@ capture the main levers — operators mainly right-size requests and keep the de
 Costs are **recorded** as the CLI watches the cluster (each `pipeline status` tick, `submit`'s
 ramp, `pipeline costs`): it samples pod runtimes into the cost database (`database.cost`, default a
 local SQLite under `costs/`; point it at a server to share), priced at read time from
-[rates.csv](pipeline/rates.csv). It is an estimate — keep `pipeline status` running during a layer
+[rates.csv](cave_pipeline/rates.csv). It is an estimate — keep `pipeline status` running during a layer
 for exact accounting. Each deploy is tagged with a run-id, so `pipeline costs <layer>` and the
 `status` compute_cost column report **this run's** spend — re-running the same graph starts a fresh tally
 rather than summing past runs. The cost db keeps every run: `pipeline runs` lists them (newest

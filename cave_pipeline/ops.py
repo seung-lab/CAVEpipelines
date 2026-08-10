@@ -172,7 +172,15 @@ def require_prev_complete(cfg, layer, force=False) -> None:
 
     The run's first layer has nothing below it to check — at or under `start_layer`
     the graph is declared already built, so the driven and manual paths agree."""
-    if layer <= start_layer(cfg) or force:
+    if force:
+        return
+    start = start_layer(cfg)
+    if layer <= start:
+        if layer > config.ATOMIC_LAYER:  # never silent: this waives the run's one gate
+            note(
+                f"L{layer} is at or below start_layer {start}, so L{layer - 1} is "
+                f"assumed built — completeness gate skipped"
+            )
         return
     job = _read_job(cfg, layer - 1)
     if job is None:
@@ -352,6 +360,32 @@ def start_layer(cfg) -> int:
 def layer_range(cfg, top) -> range:
     """The layers a driven run covers: start_layer up to the workload's top."""
     return range(start_layer(cfg), top + 1)
+
+
+def skip_note(cfg) -> None:
+    """Announce the layers this workload trusts rather than builds. Silent at the floor."""
+    start = start_layer(cfg)
+    if start > config.ATOMIC_LAYER:
+        note(
+            f"    {cfg.workload}: L{config.ATOMIC_LAYER}-L{start - 1} assumed already "
+            f"built (start_layer {start}), not submitted"
+        )
+
+
+def checked_layer_range(cfg, top) -> range:
+    """`layer_range`, refusing an empty one.
+
+    An empty range falls straight through the driver's loop, so the stage would be
+    marked complete having submitted nothing."""
+    layers = layer_range(cfg, top)
+    if not layers:
+        blame = (
+            f"job.workloads.{cfg.workload}.start_layer {layers.start} is above"
+            if layers.start > config.ATOMIC_LAYER
+            else f"{cfg.workload} has no layers to run at or above"
+        )
+        raise SystemExit(f"{blame} its top layer {top}")
+    return layers
 
 
 def _layer_plan(cfg, cached, top) -> None:
@@ -549,19 +583,8 @@ def run_workload(cfg_w) -> None:
         _layer_plan(
             cfg_w, counts, top
         )  # every layer's requests + clamps up front, not at L7
-        layers = layer_range(cfg_w, top)
-        if not layers:  # else the stage would report complete having submitted nothing
-            blame = (
-                f"job.workloads.{cfg_w.workload}.start_layer {layers.start} is above"
-                if layers.start > config.ATOMIC_LAYER
-                else f"{cfg_w.workload} has no layers to run at or above"
-            )
-            raise SystemExit(f"{blame} its top layer {top}")
-        if layers.start > config.ATOMIC_LAYER:  # loud: this trusts every layer below it
-            note(
-                f"start_layer {layers.start} ({cfg_w.workload}): "
-                f"L{config.ATOMIC_LAYER}-L{layers.start - 1} assumed already built, not submitted"
-            )
+        layers = checked_layer_range(cfg_w, top)
+        skip_note(cfg_w)  # loud: this trusts every layer below it
         for layer in layers:
             run_layer(cfg_w, layer)
     except (KeyboardInterrupt, Paused, Undeployed):
@@ -619,9 +642,18 @@ def confirm_run(cfg, run_set, parallel, yes) -> None:
         tag = " (parallel)" if parallel and len(batch) > 1 else ""
         note(f"  {' + '.join(batch)}{tag}")
         for w in batch:
+            c = _phase_cfg(cfg, w)
+            skip_note(c)  # needs no counts: say it while answering "no" still works
             if cached:
-                c = _phase_cfg(cfg, w)
-                _layer_plan(c, cached, top_layer(c, cached))
+                top = top_layer(c, cached)
+                if not layer_range(c, top):
+                    # advisory only: `setup` invalidates these counts, so a graph
+                    # rebuilt taller would be refused here on numbers about to change
+                    note(
+                        f"    start_layer {start_layer(c)} is above {w}'s cached top "
+                        f"layer {top}; it must be re-read at setup or the stage fails"
+                    )
+                _layer_plan(c, cached, top)
     if not cached:
         note("  layer counts are computed during setup")
     if not yes:

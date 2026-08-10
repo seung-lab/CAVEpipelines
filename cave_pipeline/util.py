@@ -11,7 +11,8 @@ from rich.console import Group
 from rich.table import Table
 from rich.text import Text
 
-from . import cgcache, costs, kube, manifest, note
+from . import cgcache, config, costs, kube, manifest, note
+from .config import ATOMIC_LAYER
 from .db import cost, state
 
 # Cold ChunkedGraph init fits in 30s with headroom; the warm cg-cache server pays it
@@ -452,10 +453,13 @@ def usage_table(cfg, job_name, layer) -> Table:
     return table
 
 
-def status_table(cfg, layer_totals=None, run_id="") -> Group:
+def status_table(cfg, layer_totals=None, run_id="", start_layer=ATOMIC_LAYER) -> Group:
     """Per-layer progress. With `layer_totals` ({layer: chunks}), every layer is shown —
     submitted ones with live progress, the rest with their a-priori total (pending).
-    The cost column is scoped to `run_id` (the current run; "" for ad-hoc/no run)."""
+    The cost column is scoped to `run_id` (the current run; "" for ad-hoc/no run).
+
+    `start_layer` is passed in, not read off `cfg`: a caller rendering several stages
+    holds one Config whose `job` was merged for a single workload."""
     jobs_by_layer = {
         int((j.metadata.labels or {}).get("layer", "0")): j
         for j in kube.list_jobs(cfg.namespace, cfg.workload)
@@ -498,8 +502,9 @@ def status_table(cfg, layer_totals=None, run_id="") -> Group:
     for layer in layers:
         job = jobs_by_layer.get(layer)
         total = (layer_totals or {}).get(layer)
-        if job is None:  # known size, not yet submitted
-            row = [str(layer), "-", str(total) if total else "-"] + ["-"] * 7
+        if job is None:  # known size, no Job: pending, or deliberately skipped
+            done = "skipped" if layer < start_layer else "-"
+            row = [str(layer), done, str(total) if total else "-"] + ["-"] * 7
             table.add_row(*row)
             continue
         p = job_progress(job, total)
@@ -566,6 +571,18 @@ def stage_summary(cfg_w, rate_table, run_id="") -> str:
     return f"  {cfg_w.workload}: complete  layers {layers[0]}-{layers[-1]}  {span}{spend}"
 
 
+def _start_layer(cfg, workload) -> int:
+    """That workload's own start_layer, re-merged from the yml.
+
+    `dataclasses.replace(cfg, workload=w)` keeps the Job merged for the *loaded*
+    workload, so the caller's value would mislabel every other stage. A live display
+    must never die on this: an unreadable yml falls back to the atomic layer."""
+    # SystemExit is not an Exception: config.load raises it for a missing/invalid yml
+    with contextlib.suppress(Exception, SystemExit):  # cosmetic; never break the display
+        return config.load(cfg.source, workload=workload).job.start_layer
+    return ATOMIC_LAYER
+
+
 def run_view(cfg, run, order, stage_states, layer_totals=None) -> Group:
     """A run as a DAG header plus per-stage detail: a full table while a stage runs, a
     one-line summary once it's done, a single line while pending. `order` is DAG-ordered."""
@@ -581,7 +598,9 @@ def run_view(cfg, run, order, stage_states, layer_totals=None) -> Group:
         st = stage_states.get(w, state.PENDING)
         cfg_w = dataclasses.replace(cfg, workload=w)
         if st == state.RUNNING:
-            parts.append(status_table(cfg_w, layer_totals, run.run_id))
+            parts.append(
+                status_table(cfg_w, layer_totals, run.run_id, _start_layer(cfg, w))
+            )
         elif st == state.COMPLETE:
             parts.append(stage_summary(cfg_w, rate_table, run.run_id))
         else:

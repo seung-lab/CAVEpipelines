@@ -46,7 +46,10 @@ def test_start_layer_is_the_gate_floor(monkeypatch, cfg, make_job):
         lambda: SimpleNamespace(read_namespaced_job=lambda n, ns: running),
     )
     cfg.job.start_layer = 3
+    said = []
+    monkeypatch.setattr(ops, "note", said.append)
     ops.require_prev_complete(cfg, 3, force=False)  # at the floor: nothing below to check
+    assert "completeness gate skipped" in said[0]  # never waived silently
     with pytest.raises(SystemExit, match="not complete"):
         ops.require_prev_complete(cfg, 4, force=False)  # above it: still gated
 

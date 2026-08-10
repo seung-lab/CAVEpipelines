@@ -133,6 +133,34 @@ def test_status_table_shows_pending_layers(monkeypatch, cfg):
     assert table.row_count == 2  # both layers shown though none submitted
 
 
+def test_status_table_marks_layers_below_start_layer_skipped(monkeypatch, cfg):
+    """A skipped layer has no Job, exactly like a pending one — without the label a
+    finished mid-graph restart shows an L2 row that never progresses."""
+    monkeypatch.setattr(util.kube, "list_jobs", lambda ns, workload=None: [])
+    monkeypatch.setattr(util.kube, "node_summary", lambda: (0, 0, 0.0, 0.0))
+    monkeypatch.setattr(util.costs, "load_table", dict)
+    table = util.status_table(cfg, {2: 100, 3: 200}, start_layer=3).renderables[1]
+    done = list(table.columns[1].cells)
+    assert done == ["skipped", "-"]  # L2 declared built; L3 pending, not yet submitted
+    # the default never labels: a caller rendering several stages holds one merged cfg
+    plain = util.status_table(cfg, {2: 100, 3: 200}).renderables[1]
+    assert list(plain.columns[1].cells) == ["-", "-"]
+
+
+def test_skipped_label_is_resolved_per_workload(monkeypatch, tmp_path, cfg):
+    """run_view replaces only `workload`, so cfg.job stays merged for the loaded one —
+    ingest's start_layer must not mark meshing's L2 skipped."""
+    (tmp_path / "p.yml").write_text(
+        "graph_id: g\nimages: {pcg: repo/pcg:v3.2.0}\n"
+        "job:\n  workloads:\n    ingest:\n      start_layer: 3\n"
+    )
+    cfg.source = str(tmp_path / "p.yml")
+    assert util._start_layer(cfg, "ingest") == 3
+    assert util._start_layer(cfg, "meshing") == 2  # never inherits ingest's
+    cfg.source = "nonexistent.yml"  # unreadable yml must not break a live display
+    assert util._start_layer(cfg, "ingest") == 2
+
+
 def test_query_meta_routes_persistent_to_cache_client(monkeypatch, cfg):
     cfg.persistent_util = True
     seen = {}

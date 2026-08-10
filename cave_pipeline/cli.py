@@ -500,7 +500,9 @@ def status(cfg, once, interval):
 
         def render():
             cost.sample(cfg)
-            return util.status_table(cfg, util.cached_layer_counts(cfg))
+            return util.status_table(
+                cfg, util.cached_layer_counts(cfg), start_layer=cfg.job.start_layer
+            )
 
     if once:
         view = render()

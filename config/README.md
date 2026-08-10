@@ -47,7 +47,7 @@ from `pipeline.yml`'s `bigtable:`.
 | `workload_identity.service_account` | KSA bound to the worker GSA |
 | `workload_identity.gsa_email` | the worker GSA (terraform output `worker_service_account`) |
 | `bigtable.project` / `bigtable.instance` | Bigtable target; also injected into `dataset.yml`'s `backend_client` |
-| `region` | GKE region — selects the cost rate row in [rates.csv](../pipeline/rates.csv) (required for cost estimates) |
+| `region` | GKE region — selects the cost rate row in [rates.csv](../cave_pipeline/rates.csv) (required for cost estimates) |
 | `zone` | optional: pin worker pods to one zone (e.g. Bigtable's) for lower latency — trades Spot capacity |
 | `job.workloads.<name>.start_layer` | first layer that workload submits, default 2. Set it to restart mid-graph: layers below are assumed built, are never submitted, and never gate the first one — the run announces which layers it skipped. **Per-workload only** (a top-level `job.start_layer` is refused): layer 2 is different work in each stage, so one number cannot mean "already built" for all of them. It also relaxes the `pipeline submit` completeness gate up to that layer, and persists — clear it once the restart is done, or a later run on a fresh graph will skip real work |
 | `job.*` | sizing: `perm_seed`, `batch_size`, `parallel` (parent-chunk builds fan out over the pod's own cpu request, shipped as `PCG_N_PROCESSES`; `false` = sequential, for debugging), `compute_class`, `task_retries` (per-task retry budget), `max_failed_tasks` (dead tasks tolerated before the layer aborts — bounds retry spend; auto-clamped to the layer's task count) |
@@ -73,7 +73,7 @@ do not list them here. Unset keys are skipped (a per-pod env entry overrides the
 The CLI records every pod's runtime into the cost database (`database.cost`; default a gitignored
 local SQLite file under `costs/`, rows scoped by graph, workload, and a per-deploy run-id) whenever
 it watches the cluster — each `pipeline status` tick, `submit`'s ramp, and `pipeline costs`. Dollars are computed at read time as recorded requests x runtime x the
-(`region`, compute class) rate from [rates.csv](../pipeline/rates.csv) (refreshed by the
+(`region`, compute class) rate from [rates.csv](../cave_pipeline/rates.csv) (refreshed by the
 [update-rates](../.github/workflows/update-rates.yml) workflow), so a
 rates refresh re-prices history. `pipeline costs` and `pipeline status` report the **current run**
 only (the active deploy's run-id), so re-running a graph never sums past runs into the figure;

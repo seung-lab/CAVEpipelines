@@ -5,7 +5,8 @@ import functools
 import pathlib
 import time
 
-from kubernetes import client, config as kube_config
+from kubernetes import client
+from kubernetes import config as kube_config
 from kubernetes.client import ApiException
 from kubernetes.stream import stream
 
@@ -15,10 +16,10 @@ from . import note
 def _load():
     try:
         kube_config.load_kube_config()
-    except Exception:
+    except Exception:  # noqa: BLE001 - any unusable kubeconfig falls through to in-cluster
         try:
             kube_config.load_incluster_config()
-        except Exception:
+        except Exception:  # noqa: BLE001 - neither source worked; report both as one
             raise SystemExit(
                 "cannot load kube config; set KUBECONFIG or run "
                 "`gcloud container clusters get-credentials <cluster>`"
@@ -27,19 +28,19 @@ def _load():
 
 # cached: a fresh ApiClient per call would re-read kubeconfig and re-handshake
 # TLS on every tick of the live status/top loops
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def batch():
     _load()
     return client.BatchV1Api()
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def core():
     _load()
     return client.CoreV1Api()
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def custom():
     _load()
     return client.CustomObjectsApi()
@@ -87,7 +88,7 @@ def util_pod(
     )
 
 
-def list_jobs(namespace: str, workload: str = None):
+def list_jobs(namespace: str, workload: str | None = None):
     """Layer Jobs — one workload's, or every pipeline Job when workload is None."""
     selector = f"pipeline={workload}" if workload else "pipeline"
     return batch().list_namespaced_job(namespace, label_selector=selector).items
@@ -95,9 +96,9 @@ def list_jobs(namespace: str, workload: str = None):
 
 def oom_events(namespace: str):
     """Cluster OOMKilling events (kubelet emits them node-level) in the namespace."""
-    return core().list_namespaced_event(
-        namespace, field_selector="reason=OOMKilling"
-    ).items
+    return (
+        core().list_namespaced_event(namespace, field_selector="reason=OOMKilling").items
+    )
 
 
 def unfinished_pods(namespace: str, job_name: str):
@@ -366,13 +367,17 @@ def set_suspend(namespace: str, name: str, suspend: bool):
 def resize_pod(namespace: str, name: str, container: str, requests: dict):
     """In-place bump a Running pod's container requests via the /resize subresource — no
     restart. 404 = pod already gone; 422 = resize unsupported (cluster < 1.34.0-gke.2201000)."""
-    body = {"spec": {"containers": [{"name": container, "resources": {"requests": requests}}]}}
+    body = {
+        "spec": {"containers": [{"name": container, "resources": {"requests": requests}}]}
+    }
     try:
         core().patch_namespaced_pod_resize(name, namespace, body)
     except ApiException as exc:
         if exc.status == 404:
             return
         if exc.status == 422:
-            note(f"resize unsupported here (needs GKE >= 1.34.0-gke.2201000); {name} kept at old size")
+            note(
+                f"resize unsupported here (needs GKE >= 1.34.0-gke.2201000); {name} kept at old size"
+            )
             return
         raise

@@ -151,7 +151,9 @@ def test_api_errors_exit_cleanly(monkeypatch, cfg, stub_layer_counts):
 
     monkeypatch.setattr(cli.kube, "list_jobs", boom)
     with pytest.raises(SystemExit, match="403"):
-        cli._dispatch(["status"])  # main() wraps this in os._exit; _dispatch is the testable unit
+        cli._dispatch(
+            ["status"]
+        )  # main() wraps this in os._exit; _dispatch is the testable unit
 
 
 def test_status_quiet_when_no_jobs(monkeypatch, cfg, stub_layer_counts):
@@ -212,8 +214,9 @@ def test_undeploy_requires_confirmation(monkeypatch, cfg):
     monkeypatch.setattr(
         ops.subprocess,
         "run",
-        lambda argv, **kw: ran.append(argv)
-        or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        lambda argv, **kw: (
+            ran.append(argv) or SimpleNamespace(returncode=0, stdout="", stderr="")
+        ),
     )
     res = CliRunner().invoke(cli.undeploy, [], obj=cfg, input="n\n")
     assert res.exit_code != 0  # aborted at the prompt

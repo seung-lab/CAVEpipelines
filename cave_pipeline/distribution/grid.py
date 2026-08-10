@@ -29,7 +29,7 @@ exact same chunk; and invertible (``unpermute``) to turn a failed index back int
 its coord for inspection. The seed is pinned per ingest run.
 """
 
-from typing import List, Sequence, Tuple
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -46,7 +46,7 @@ def _splitmix64(z: int) -> int:
     return z ^ (z >> 31)
 
 
-def _round_keys(seed: int) -> Tuple[int, ...]:
+def _round_keys(seed: int) -> tuple[int, ...]:
     return tuple(_splitmix64(seed + i) for i in range(_ROUNDS))
 
 
@@ -60,7 +60,7 @@ def _mix(value: int, round_key: int, mask: int) -> int:
     return _splitmix64(value ^ round_key) & mask
 
 
-def _feistel_forward(x: int, half_bits: int, round_keys: Tuple[int, ...]) -> int:
+def _feistel_forward(x: int, half_bits: int, round_keys: tuple[int, ...]) -> int:
     mask = (1 << half_bits) - 1
     left, right = (x >> half_bits) & mask, x & mask
     for rk in round_keys:
@@ -68,7 +68,7 @@ def _feistel_forward(x: int, half_bits: int, round_keys: Tuple[int, ...]) -> int
     return (left << half_bits) | right
 
 
-def _feistel_inverse(y: int, half_bits: int, round_keys: Tuple[int, ...]) -> int:
+def _feistel_inverse(y: int, half_bits: int, round_keys: tuple[int, ...]) -> int:
     mask = (1 << half_bits) - 1
     left, right = (y >> half_bits) & mask, y & mask
     for rk in reversed(round_keys):
@@ -106,7 +106,7 @@ def num_batches(n: int, batch_size: int) -> int:
 
 def batch_coords(
     batch_index: int, bounds: Sequence[int], seed: int, batch_size: int
-) -> List[Tuple[int, int, int]]:
+) -> list[tuple[int, int, int]]:
     """The chunk coords for one batch index (its slice of the shuffled order)."""
     shape = (int(bounds[0]), int(bounds[1]), int(bounds[2]))
     n = shape[0] * shape[1] * shape[2]

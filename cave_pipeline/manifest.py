@@ -297,11 +297,19 @@ def immutable_drift(cfg, layer: int, job) -> list:
         ("batch_size", annotations.get("batch_size"), str(batch_for(cfg.job, layer))),
         # the gate, not PCG_N_PROCESSES: the count tracks job.resources, which apply edits
         ("parallel", annotations.get("parallel"), str(cfg.job.parallel)),
-        ("compute_class", selector.get("cloud.google.com/compute-class", ""), cfg.job.compute_class),
+        (
+            "compute_class",
+            selector.get("cloud.google.com/compute-class", ""),
+            cfg.job.compute_class,
+        ),
         ("zone", selector.get("topology.kubernetes.io/zone", ""), cfg.zone),
         ("image", container.image, cfg.image()),
         ("task_retries", spec.backoff_limit_per_index, cfg.job.task_retries),
-        ("max_failed_tasks", spec.max_failed_indexes, min(cfg.job.max_failed_tasks, spec.completions)),
+        (
+            "max_failed_tasks",
+            spec.max_failed_indexes,
+            min(cfg.job.max_failed_tasks, spec.completions),
+        ),
     ]
     for var in _l2cache_env(cfg) + _extra_env(cfg):  # workload + operator env vars
         checks.append((f"env:{var.name}", env.get(var.name), var.value))

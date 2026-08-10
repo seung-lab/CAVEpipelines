@@ -16,7 +16,7 @@ def _stub_cache_server(sock_path, reply, ready):
     ready.set()
     try:
         conn, _ = srv.accept()
-    except socket.timeout:
+    except TimeoutError:
         srv.close()
         return
     with conn:
@@ -26,7 +26,7 @@ def _stub_cache_server(sock_path, reply, ready):
 
 
 def _run_client(sock_path, op, gid, timeout):
-    return subprocess.run(
+    return subprocess.run(  # noqa: PLW1510 - the caller asserts on returncode
         [sys.executable, "-c", cgcache.CLIENT_SRC, sock_path, op, gid, str(timeout)],
         capture_output=True,
         text=True,

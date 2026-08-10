@@ -67,7 +67,7 @@ def deploy_infra(cfg, secrets_dir: str) -> None:
     with tempfile.NamedTemporaryFile("w", suffix=".yaml") as f:
         yaml.safe_dump(manifest.helm_values(cfg, data), f)
         f.flush()
-        res = subprocess.run(
+        res = subprocess.run(  # noqa: PLW1510 - returncode handled below
             [
                 "helm",
                 "upgrade",
@@ -113,7 +113,7 @@ def undeploy(cfg) -> None:
     for cm in kube.list_configmaps(cfg.namespace, "pipeline=dataset"):
         kube.delete_configmap(cfg.namespace, cm.metadata.name)
         note(f"deleted dataset configmap {cm.metadata.name}")
-    res = subprocess.run(
+    res = subprocess.run(  # noqa: PLW1510 - returncode handled below
         ["helm", "uninstall", "pcg", "-n", cfg.namespace], capture_output=True, text=True
     )
     if res.returncode and "not found" not in (res.stderr or "").lower():
@@ -360,11 +360,17 @@ def _watch_oom(cfg, stop) -> None:
     current run that its layer is out of memory. Node-level events carry no run, so we
     scope via the Job's run-id annotation. Best-effort — never disrupts the driver."""
     warned, seen = set(), set()
-    with contextlib.suppress(Exception, SystemExit):  # OOMs already on-cluster aren't ours
+    with contextlib.suppress(
+        Exception, SystemExit
+    ):  # OOMs already on-cluster aren't ours
         seen = {e.metadata.uid for e in kube.oom_events(cfg.namespace)}
     while not stop.wait(OOM_POLL_SEC):
-        with contextlib.suppress(Exception, SystemExit):  # a hiccup never kills the watcher
-            fresh = [e for e in kube.oom_events(cfg.namespace) if e.metadata.uid not in seen]
+        with contextlib.suppress(
+            Exception, SystemExit
+        ):  # a hiccup never kills the watcher
+            fresh = [
+                e for e in kube.oom_events(cfg.namespace) if e.metadata.uid not in seen
+            ]
             seen.update(e.metadata.uid for e in fresh)
             if not fresh:
                 continue
@@ -377,7 +383,9 @@ def _watch_oom(cfg, stop) -> None:
                 if job.metadata.uid not in warned:
                     warned.add(job.metadata.uid)
                     layer = (job.metadata.labels or {}).get("layer", "?")
-                    note(f"layer {layer}: OOMKilling — raise its job.resources.memory, re-submit")
+                    note(
+                        f"layer {layer}: OOMKilling — raise its job.resources.memory, re-submit"
+                    )
 
 
 def _clear_suspend(cfg) -> None:
@@ -418,7 +426,9 @@ def drive(cfg, interactive=False) -> None:
                 orchestrate(cfg, run.stage_set, run.parallel)
                 break
             except Paused:
-                note("paused; `pipeline resume` to continue")  # external pause: respect it
+                note(
+                    "paused; `pipeline resume` to continue"
+                )  # external pause: respect it
                 return
             except Undeployed:
                 note("run undeployed; exiting")  # state + jobs already gone
@@ -426,7 +436,7 @@ def drive(cfg, interactive=False) -> None:
             except KeyboardInterrupt:
                 pause(cfg)  # Ctrl-C: stop the burn, don't nag to resume
                 raise
-            except BaseException as exc:  # noqa: BLE001 - any failure self-pauses
+            except BaseException as exc:
                 pause(cfg)  # suspend so no Jobs burn while the operator looks
                 if not (interactive and _confirm_resume(exc)):
                     raise
@@ -513,7 +523,9 @@ def run_workload(cfg_w) -> None:
         setup(cfg_w, exist_ok=True)  # forgiveness: a fresh graph creates, a resume skips
         counts = util.read_layer_counts(cfg_w)
         top = top_layer(cfg_w, counts)
-        _layer_plan(cfg_w, counts, top)  # every layer's requests + clamps up front, not at L7
+        _layer_plan(
+            cfg_w, counts, top
+        )  # every layer's requests + clamps up front, not at L7
         for layer in range(2, top + 1):
             run_layer(cfg_w, layer)
     except (KeyboardInterrupt, Paused, Undeployed):

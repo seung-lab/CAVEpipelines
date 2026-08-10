@@ -4,7 +4,7 @@ import contextlib
 import dataclasses
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import yaml
 from rich.console import Group
@@ -54,7 +54,9 @@ def _query_meta(cfg, op, gid, quiet=False) -> str:
         argv = ["python", "-u", "-c", cgcache.CLIENT_SRC, cgcache.CG_SOCK, op, gid]
         argv.append(str(CG_TIMEOUT))  # the client's own connect-retry deadline
         # exec cap exceeds that deadline so the client's 'unreachable' message wins
-        return kube.exec_cmd(cfg.namespace, pod, argv, timeout=CG_TIMEOUT + 5, on_line=echo)
+        return kube.exec_cmd(
+            cfg.namespace, pod, argv, timeout=CG_TIMEOUT + 5, on_line=echo
+        )
     if not quiet:
         note(f"{name}: in one-shot pod")
     argv = ["python", "-u", "-c", cgcache.ONESHOT_SRC, op, gid]
@@ -210,7 +212,9 @@ def job_state(job):
 def _pod_terminated(pod):
     """The container's terminal state (current or last), or None — holds the exit reason."""
     for cs in pod.status.container_statuses or []:
-        term = (cs.state and cs.state.terminated) or (cs.last_state and cs.last_state.terminated)
+        term = (cs.state and cs.state.terminated) or (
+            cs.last_state and cs.last_state.terminated
+        )
         if term:
             return term
     return None
@@ -268,7 +272,7 @@ def elapsed(job):
     start = job.status.start_time
     if not start:
         return "-"
-    end = job.status.completion_time or _terminal_time(job) or datetime.now(timezone.utc)
+    end = job.status.completion_time or _terminal_time(job) or datetime.now(UTC)
     minutes = int((end - start).total_seconds()) // 60
     hours, mins = divmod(minutes, 60)
     return f"{hours}h{mins:02d}m" if hours else f"{mins}m"
@@ -277,7 +281,7 @@ def elapsed(job):
 def recorded_costs(cfg, rate_table, run_id) -> tuple:
     """({layer: priced totals}, cluster fee) for one run of this (graph, workload)."""
     per_layer = {}
-    now = datetime.now(timezone.utc).timestamp()
+    now = datetime.now(UTC).timestamp()
     jobs = cost.jobs(cfg, run_id, cfg.workload)
     for j in jobs:
         rate = costs.rate_for(rate_table, cfg.region, j.compute_class)
@@ -317,15 +321,13 @@ def _run_start(jobs) -> float:
 
 
 def _fmt_started(ts: float) -> str:
-    return (
-        datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d %H:%M") if ts else "-"
-    )
+    return datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%d %H:%M") if ts else "-"
 
 
 def runs_table(cfg, rate_table, graph=None) -> Table:
     """One row per recorded run (newest first): run-id, graph, workloads, layer span,
     started, total cost. Spans the durable cost db, so it outlives undeploy."""
-    now = datetime.now(timezone.utc).timestamp()
+    now = datetime.now(UTC).timestamp()
     groups = {}
     for j in cost.runs(cfg, graph):
         groups.setdefault((j.graph, j.run_id), []).append(j)
@@ -359,7 +361,7 @@ def _price_jobs(cfg, rate_table, jobs, now) -> float:
 def run_breakdown(cfg, rate_table, run_id) -> Table:
     """One run's recorded cost by (workload, layer): requests, pods, succeeded/failed,
     runtime, priced cost, and the backfill basis. Spans the durable cost db."""
-    now = datetime.now(timezone.utc).timestamp()
+    now = datetime.now(UTC).timestamp()
     jobs = cost.run_jobs(cfg, run_id)
     rows = {}
     for j in jobs:

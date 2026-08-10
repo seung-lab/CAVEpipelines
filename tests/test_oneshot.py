@@ -16,7 +16,9 @@ def _mock_helm(monkeypatch, calls):
     monkeypatch.setattr(ops.os.path, "isdir", lambda p: True)
     monkeypatch.setattr(ops.kube, "secret_data", lambda d, m: {})
     monkeypatch.setattr(ops.kube, "util_pod", lambda ns, wait_create=False: "util-pod")
-    monkeypatch.setattr(ops.kube, "list_jobs", lambda ns, w=None: [])  # drive clears suspend on entry
+    monkeypatch.setattr(
+        ops.kube, "list_jobs", lambda ns, w=None: []
+    )  # drive clears suspend on entry
     monkeypatch.setattr(
         ops.subprocess,
         "run",

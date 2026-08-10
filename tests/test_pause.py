@@ -26,9 +26,7 @@ def test_pause_suspends_only_incomplete_jobs_and_marks_paused(
     assert state.get_run(cfg).status == state.PAUSED
 
 
-def test_drive_clears_leftover_suspend_then_runs(
-    monkeypatch, cfg, running_run, make_job
-):
+def test_drive_clears_leftover_suspend_then_runs(monkeypatch, cfg, running_run, make_job):
     state.set_run_status(cfg, state.PAUSED)  # a prior self-pause left the jobs suspended
     monkeypatch.setattr(
         ops.kube,
@@ -75,7 +73,9 @@ def test_drive_resumes_in_place_when_attended(monkeypatch, cfg, running_run):
             raise SystemExit("dead tasks")  # first attempt fails
 
     monkeypatch.setattr(ops, "orchestrate", orchestrate)
-    monkeypatch.setattr(ops.click, "confirm", lambda *a, **k: True)  # operator fixes + resumes
+    monkeypatch.setattr(
+        ops.click, "confirm", lambda *a, **k: True
+    )  # operator fixes + resumes
     ops.drive(cfg, interactive=True)
     assert len(runs) == 2 and state.get_run(cfg).status == state.DONE
 

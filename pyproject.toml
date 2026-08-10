@@ -38,7 +38,7 @@ dev = [
     "pytest",
     "pytest-cov",
     "pyte",  # virtual terminal, for asserting the live display redraws in place
-    "ruff",
+    "ruff==0.16.2",  # pinned to the .pre-commit-config rev; CI runs `ruff check .`
     "build",
 ]
 

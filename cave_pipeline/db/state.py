@@ -8,7 +8,7 @@ to degrade.
 """
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import delete, select
 
@@ -26,12 +26,12 @@ def _session(cfg):
 
 
 def _now() -> float:
-    return datetime.now(timezone.utc).timestamp()
+    return datetime.now(UTC).timestamp()
 
 
 def start_run(cfg, run_set, parallel, overwrite=False, pid=None) -> None:
     """Open the run: one Run row (status running) + every stage seeded pending."""
-    started = datetime.now(timezone.utc)
+    started = datetime.now(UTC)
     now = started.timestamp()
     run_id = f"{cfg.graph_id}-{started:%y%m%d-%H%M%S}"  # unique, sortable, graph-linked
     with _session(cfg) as s:

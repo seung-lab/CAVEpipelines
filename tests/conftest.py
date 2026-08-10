@@ -9,8 +9,8 @@ from rich.console import Console
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-from cave_pipeline import config, util  # noqa: E402
-from cave_pipeline.db import base, cost, models, state  # noqa: E402
+from cave_pipeline import config, util
+from cave_pipeline.db import base, cost, models, state
 
 
 @pytest.fixture(autouse=True)

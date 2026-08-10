@@ -51,7 +51,7 @@ def _sqlite_pragmas(dbapi_conn, _record) -> None:
     cur.close()
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _engine(url: str):
     if url.startswith("sqlite"):
         # connect per op so a deleted local file is reopened by path, never a pinned inode

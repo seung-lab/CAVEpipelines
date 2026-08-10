@@ -8,7 +8,7 @@ A sample writes absolute cluster state (not deltas), so concurrent samplers of o
 converge — sampling is best-effort and never blocks the actual run.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select, update
 
@@ -140,7 +140,7 @@ def _close_out_unlisted(s, cfg, listed) -> None:
 @best_effort
 def sample(cfg) -> None:
     """Record the workload's Jobs + pods right now; best-effort, never raises."""
-    now = datetime.now(timezone.utc).timestamp()
+    now = datetime.now(UTC).timestamp()
     with _session(cfg) as s:
         listed = []
         for job in kube.list_jobs(cfg.namespace, cfg.workload):

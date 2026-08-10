@@ -1,4 +1,5 @@
-from datetime import datetime, timedelta, timezone
+import textwrap
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -28,7 +29,7 @@ def test_job_state():
 
 
 def test_elapsed():
-    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
     end_75 = start + timedelta(minutes=75)
     end_5 = start + timedelta(minutes=5)
     assert util.elapsed(_job(start_time=start, completion_time=end_75)) == "1h15m"
@@ -86,7 +87,7 @@ def test_status_table_splits_retries_from_dead_tasks(monkeypatch, cfg, make_job)
     job = make_job(chunks=100, batch_size=10, succeeded=10, failed=34)
     monkeypatch.setattr(util.kube, "list_jobs", lambda ns, workload=None: [job])
     monkeypatch.setattr(util.kube, "node_summary", lambda: (0, 0, 0.0, 0.0))
-    monkeypatch.setattr(util.costs, "load_table", lambda: {})
+    monkeypatch.setattr(util.costs, "load_table", dict)
     cells = {
         c.header: list(c.cells)
         for c in util.status_table(cfg, {2: 100}).renderables[1].columns
@@ -123,11 +124,11 @@ def test_usage_table_renders_cores_and_gib_by_task_index(monkeypatch, cfg):
 
 def test_status_table_shows_pending_layers(monkeypatch, cfg):
     def _raise(*a, **k):
-        raise Exception("no nodes")
+        raise RuntimeError("no nodes")
 
     monkeypatch.setattr(util.kube, "list_jobs", lambda ns, workload=None: [])
     monkeypatch.setattr(util.kube, "node_summary", _raise)
-    monkeypatch.setattr(util.costs, "load_table", lambda: {})
+    monkeypatch.setattr(util.costs, "load_table", dict)
     table = util.status_table(cfg, {2: 100, 3: 200}).renderables[1]
     assert table.row_count == 2  # both layers shown though none submitted
 
@@ -202,18 +203,15 @@ def test_run_breakdown_rows_by_workload_layer_scoped_to_the_run(cfg, seed_cost, 
 
 
 def test_relevant_log_retains_the_traceback_and_drops_noise():
-    log = "\n".join(
-        [
-            "I0618 00:00 google_auth_provider.cc:149] Using credentials at /x",
-            "Using ServiceAccount AuthProvider",
-            "layer 2 batch 100: 4 chunks",
-            "Traceback (most recent call last):",
-            '  File "worker.py", line 32, in process_one',
-            "    do()",
-            "RuntimeError: boom",
-            "resource_tracker: leaked semaphore at shutdown",
-        ]
-    )
+    log = textwrap.dedent("""\
+        I0618 00:00 google_auth_provider.cc:149] Using credentials at /x
+        Using ServiceAccount AuthProvider
+        layer 2 batch 100: 4 chunks
+        Traceback (most recent call last):
+          File "worker.py", line 32, in process_one
+            do()
+        RuntimeError: boom
+        resource_tracker: leaked semaphore at shutdown""")
     out = util.relevant_log(log)
     assert out.startswith("Traceback (most recent call last):")  # anchored at the failure
     assert "RuntimeError: boom" in out

@@ -11,7 +11,7 @@ import functools
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import click
 import urllib3
@@ -32,8 +32,8 @@ from . import (
     util,
 )
 from .db import cost, state
-from .term import ConsoleHandler, console
 from .distribution import run_and_exit
+from .term import ConsoleHandler, console
 
 
 @click.group(help=__doc__, context_settings={"help_option_names": ["-h", "--help"]})
@@ -376,7 +376,9 @@ def events(cfg, layer):
         )
 
 
-@cli.command(help="describe a layer's Job: status, conditions, and the pods holding it back")
+@cli.command(
+    help="describe a layer's Job: status, conditions, and the pods holding it back"
+)
 @_LAYER
 @pass_cfg
 def describe(cfg, layer):
@@ -403,8 +405,12 @@ def describe(cfg, layer):
             "batch.kubernetes.io/job-completion-index", "?"
         )
         node = pod.spec.node_name or "-"
-        note(f"  task {idx} [{pod.status.phase}] on {node}: {util.pod_reason(pod) or '-'}")
-    for e in [e for e in kube.job_events(cfg.namespace, name) if e.type == "Warning"][-10:]:
+        note(
+            f"  task {idx} [{pod.status.phase}] on {node}: {util.pod_reason(pod) or '-'}"
+        )
+    for e in [e for e in kube.job_events(cfg.namespace, name) if e.type == "Warning"][
+        -10:
+    ]:
         note(f"  ! {e.reason}: {e.message}")
 
 
@@ -436,7 +442,7 @@ def _cost_note(cfg, workloads) -> None:
     if not (cfg.region and rate_table):
         return
     try:
-        now = datetime.now(timezone.utc).timestamp()
+        now = datetime.now(UTC).timestamp()
         run = state.get_run(cfg)
         run_id = run.run_id if run else ""  # this deploy's spend, not all past runs'
         compute, jobs = 0.0, []

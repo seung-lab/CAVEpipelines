@@ -145,7 +145,9 @@ class CaveRegister(BaseStage):
     def setup(self, cfg, secrets_dir, exist_ok: bool = False) -> None:
         cc = cfg.dataset.get("cave_config") or {}
         host, dataset = cc.get("host"), cc.get("dataset")
-        service = cc.get("service", "pychunkedgraph")  # the default service; rarely differs
+        service = cc.get(
+            "service", "pychunkedgraph"
+        )  # the default service; rarely differs
         if not (host and dataset):
             note("cave-register: cave_config needs host, dataset; skipping")
             return
@@ -162,7 +164,9 @@ class CaveRegister(BaseStage):
                 url, method="POST", headers={"Authorization": f"Bearer {token}"}
             )
             with urllib.request.urlopen(req, timeout=15) as resp:
-                note(f"cave-register: {resp.status} {resp.read().decode(errors='replace')}")
+                note(
+                    f"cave-register: {resp.status} {resp.read().decode(errors='replace')}"
+                )
         except urllib.error.HTTPError as exc:
             note(f"cave-register: {exc.code} {exc.read().decode(errors='replace')}")
         except Exception as exc:  # noqa: BLE001 - best-effort, never block the deploy

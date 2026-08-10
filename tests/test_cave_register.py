@@ -1,13 +1,17 @@
 import io
+import json
 import urllib.error
 
 from cave_pipeline import ops, stages
 
 
 def _cave_cfg(cfg, tmp_path, token="tok"):
-    (tmp_path / "cave-secret.json").write_text('{"token": "%s"}' % token)
+    (tmp_path / "cave-secret.json").write_text(json.dumps({"token": token}))
     cfg.secret_files = {"cave-secret.json": "cave-secret.json"}
-    cfg.dataset["cave_config"] = {"host": "https://h", "dataset": "ds"}  # service defaults
+    cfg.dataset["cave_config"] = {
+        "host": "https://h",
+        "dataset": "ds",
+    }  # service defaults
     return cfg
 
 

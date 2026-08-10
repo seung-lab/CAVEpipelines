@@ -76,7 +76,9 @@ class Job:
     task_retries: int = 3  # per-task retry budget before the task is dead
     max_failed_tasks: int = 50  # dead tasks tolerated before the layer aborts
     ramp: Ramp = field(default_factory=Ramp)
-    resources: Resources = None  # per-pod requests (cpu/memory curves); None = default base
+    resources: Resources = (
+        None  # per-pod requests (cpu/memory curves); None = default base
+    )
 
 
 @dataclass
@@ -156,7 +158,7 @@ def forget() -> None:
         os.remove(os.path.join(CONFIG_DIR, ".current"))
 
 
-def resolve(name: str = None, workload: str = None) -> Config:
+def resolve(name: str | None = None, workload: str | None = None) -> Config:
     """Load the session config. The first explicit -c selects it for the session;
     a different -c is refused until `pipeline reset`."""
     current = stored()
@@ -172,7 +174,7 @@ def resolve(name: str = None, workload: str = None) -> Config:
     return cfg
 
 
-def load(name: str = None, workload: str = None) -> Config:
+def load(name: str | None = None, workload: str | None = None) -> Config:
     """Load the pipeline yaml at `name` (any path); defaults to config/pipeline.yml.
 
     The `dataset:` key resolves relative to the pipeline yaml's directory.

@@ -43,7 +43,7 @@ from `pipeline.yml`'s `bigtable:`.
 | `persistent_util` | keep the spot util pod alive between layers running a warm cg-cache server (sub-second meta probes); `false` = a one-shot pod per probe (idle 0 nodes) |
 | `secret_files` | `{container_filename: local_path under ./secrets}`; must include `google-secret.json` — all Google clients authenticate with it. `cave-secret.json` is optional: meshing needs the file but never the token, so deploy mounts a placeholder when it is absent (provide a real one only for CAVE registration) |
 | `secret_name` | name of the k8s Secret built from `secret_files` (default `cloud-volume-secrets`) |
-| `images.pcg` / `images.l2cache` | container image per workload; `pychunkedgraph` must be **>= v3.2.0** (earlier tags lack the worker entrypoint this pipeline drives) and in practice **>= v3.2.0.dev4** (dev3 and older pool on the node's cores, throttling every pod) |
+| `images.pcg` / `images.l2cache` | container image per workload; `pychunkedgraph` must be **>= v3.2.0.dev5**, enforced at config load (v3.2.0 added the worker entrypoint, dev4 the ingest pool sizing, dev5 the meshing stitch pool; older tags pool on the node's cores and throttle every pod) |
 | `workload_identity.service_account` | KSA bound to the worker GSA |
 | `workload_identity.gsa_email` | the worker GSA (terraform output `worker_service_account`) |
 | `bigtable.project` / `bigtable.instance` | Bigtable target; also injected into `dataset.yml`'s `backend_client` |

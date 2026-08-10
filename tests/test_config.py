@@ -35,8 +35,8 @@ def test_image_version_reads_the_tag(image, version):
 
 
 def test_prerelease_ordering_puts_dev_below_its_release():
-    """dev3 < dev4 < rc1 < the 3.2.0 release — the floor sits between dev3 and dev4."""
-    tags = ["v3.2.0.dev3", "v3.2.0.dev4", "v3.2.0rc1", "v3.2.0", "v3.2.1"]
+    """dev4 < dev5 < rc1 < the 3.2.0 release — the floor sits between dev4 and dev5."""
+    tags = ["v3.2.0.dev4", "v3.2.0.dev5", "v3.2.0rc1", "v3.2.0", "v3.2.1"]
     versions = [config.image_version(f"repo/pcg:{t}") for t in tags]
     assert versions == sorted(versions)
 
@@ -49,6 +49,7 @@ def test_prerelease_ordering_puts_dev_below_its_release():
         "v3.1.9",
         "v2.22.0.dev8",  # newer by date, older by version
         "v3.2.0.dev3",  # clears the entrypoint bar, still pools on the node's cores
+        "v3.2.0.dev4",  # ingest pools fixed, meshing stitch still single-process
         "v3.2.0.dev0",
     ],
 )
@@ -60,7 +61,7 @@ def test_load_rejects_a_pcg_image_below_the_floor(tmp_path, monkeypatch, tag):
 
 
 @pytest.mark.parametrize(
-    "tag", ["v3.2.0.dev4", "v3.2.0.dev5", "v3.2.0rc1", "v3.2.0", "v3.3.0", "v4.0.0"]
+    "tag", ["v3.2.0.dev5", "v3.2.0.dev6", "v3.2.0rc1", "v3.2.0", "v3.3.0", "v4.0.0"]
 )
 def test_load_accepts_the_floor_and_above(tmp_path, monkeypatch, tag):
     monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))

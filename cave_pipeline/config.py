@@ -18,10 +18,11 @@ import yaml
 
 CONFIG_DIR = "config"
 ENV_CONFIGMAP = "pcg-env"
-# v3.2.0 added the worker entrypoint and the PCG_* env contract; .dev4 added the
-# pool sizing that honors PCG_N_PROCESSES. Older images either ignore the contract
-# or size their pools from the node's cores, and only fail once pods are burning.
-MIN_PCG_IMAGE = "v3.2.0.dev4"
+# v3.2.0 added the worker entrypoint and the PCG_* env contract; .dev4 made the
+# ingest pools honor PCG_N_PROCESSES and .dev5 the meshing stitch pool. Older
+# images either ignore the contract or size a pool from the node's cores, and
+# either way only fail once pods are burning.
+MIN_PCG_IMAGE = "v3.2.0.dev5"
 
 
 @dataclass

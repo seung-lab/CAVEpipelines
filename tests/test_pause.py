@@ -17,7 +17,9 @@ def drive_env(monkeypatch):
     test queues. Recording `pause` keeps "must not pause" an assertion in the test body."""
     rec = SimpleNamespace(paused=[], calls=[])
     # matches the real signature: a one-arg stub would TypeError if this starts filtering
-    monkeypatch.setattr(ops.kube, "list_jobs", lambda ns, workload=None: [])
+    monkeypatch.setattr(
+        ops.kube, "list_jobs", lambda ns, workload=None, *, graph=None: []
+    )
     monkeypatch.setattr(ops, "pause", lambda c: rec.paused.append(True))
 
     def orchestrate(*outcomes):
@@ -36,9 +38,20 @@ def drive_env(monkeypatch):
 
 
 def _pause_calls(monkeypatch, jobs):
-    """Record the ordered (action, job) calls pause makes against the cluster."""
+    """Record the ordered (action, job) calls pause makes against the cluster.
+
+    The stub applies the `graph` selector itself; a stub that ignored it would hide a
+    sweep that reaches another graph's Jobs."""
     calls = []
-    monkeypatch.setattr(ops.kube, "list_jobs", lambda ns: jobs)
+
+    def _list(ns, workload=None, *, graph=None):
+        return [
+            j
+            for j in jobs
+            if not graph or (j.metadata.labels or {}).get("graph") == graph
+        ]
+
+    monkeypatch.setattr(ops.kube, "list_jobs", _list)
     monkeypatch.setattr(
         ops.kube,
         "set_suspend",
@@ -62,6 +75,30 @@ def test_pause_suspends_only_incomplete_jobs_and_marks_paused(
     # the finished layer is left alone — neither suspended nor stripped of its pods
     assert [c[1] for c in calls] == ["ingest-l2", "ingest-l2"]
     assert state.get_run(cfg).status == state.PAUSED
+
+
+def test_pause_spares_another_graphs_jobs(monkeypatch, cfg, running_run, make_job):
+    """A namespace can hold several graphs; a self-pause that sweeps the bare `pipeline`
+    label suspends and drains a co-tenant's run."""
+    mine = make_job(name="ingest-l2", conditions=[])
+    theirs = make_job(name="ingest-l2", graph="other", conditions=[])
+    calls = _pause_calls(monkeypatch, [mine, theirs])
+    ops.pause(cfg)
+    assert [c[0] for c in calls] == ["suspend", "delete"]  # one job touched, not two
+
+
+def test_clear_suspend_spares_another_graphs_jobs(
+    monkeypatch, cfg, running_run, make_job
+):
+    """Two-sided with pause: filtering only one leaves a co-tenant to be unsuspended by
+    whichever driver runs next."""
+    mine = make_job(name="ingest-l2", suspend=True)
+    theirs = make_job(name="ingest-l2", graph="other", suspend=True)
+    _pause_calls(monkeypatch, [mine, theirs])
+    cleared = []
+    monkeypatch.setattr(ops.kube, "set_suspend", lambda ns, n, s: cleared.append((n, s)))
+    ops._clear_suspend(cfg)
+    assert cleared == [("ingest-l2", False)]  # only this graph's
 
 
 def test_pause_clears_pods_and_only_after_suspending(
@@ -94,7 +131,10 @@ def test_drive_clears_leftover_suspend_then_runs(monkeypatch, cfg, running_run, 
     monkeypatch.setattr(
         ops.kube,
         "list_jobs",
-        lambda ns: [make_job(name="ingest-l2", suspend=True), make_job(name="ingest-l3")],
+        lambda ns, workload=None, *, graph=None: [
+            make_job(name="ingest-l2", suspend=True),
+            make_job(name="ingest-l3"),
+        ],
     )
     cleared = []
     monkeypatch.setattr(

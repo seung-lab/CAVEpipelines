@@ -350,6 +350,19 @@ def max_parallelism(ramp_max: int, completions: int) -> int:
     return min(ramp_max, completions)
 
 
+# Drift that invalidates work already done — the running Job is computing the wrong thing,
+# so finished chunks are suspect and a resubmit is the point. Everything else only changes
+# how pods are scheduled or retried: it reaches pods on the next resubmit anyway, and
+# throwing away progress to apply it would redo every finished chunk. That matters because
+# only ingest has a per-chunk done marker; meshing/l2cache/migrate would rebuild in full.
+STALE_WORK_DRIFT = frozenset({"image", "perm_seed", "batch_size"})
+
+
+def resubmit_drift(drift: list) -> list:
+    """The subset of ``immutable_drift`` whose change makes completed work wrong."""
+    return [d for d in drift if d[0] in STALE_WORK_DRIFT or d[0].startswith("env:")]
+
+
 def immutable_drift(cfg, layer: int, job) -> list:
     """``(field, running, desired)`` for every immutable Job field whose yml value differs
     from the running Job — mirrors ``job_spec``. The live ``apply`` fields (resources,

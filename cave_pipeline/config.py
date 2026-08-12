@@ -280,6 +280,10 @@ def load(name: str | None = None, workload: str | None = None) -> Config:
     for key in ("graph_id", "images"):
         if key not in raw:
             raise SystemExit(f"{path}: missing required key '{key}'")
+    # present-but-empty would pass the check above and then silently unscope every
+    # graph-filtered sweep (pause, resume) to the whole namespace
+    if not str(raw.get("graph_id") or "").strip():
+        raise SystemExit(f"{path}: graph_id must be a non-empty name")
     image = (raw.get("images") or {}).get("pcg")
     if not image:
         raise SystemExit(f"{path}: images.pcg is required")

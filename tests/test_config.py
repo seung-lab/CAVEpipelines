@@ -60,6 +60,15 @@ def test_load_rejects_a_pcg_image_below_the_floor(tmp_path, tag):
         config.load(str(tmp_path / "pipeline.yml"))
 
 
+@pytest.mark.parametrize("bad", ["", "   ", None])
+def test_load_rejects_an_empty_graph_id(tmp_path, bad):
+    """Present-but-empty clears the presence check, then the `graph=` selector it feeds
+    matches every Job in the namespace — pause and resume would sweep a co-tenant's run."""
+    _write(tmp_path, "pipeline.yml", {**BASE, "graph_id": bad})
+    with pytest.raises(SystemExit, match="graph_id"):
+        config.load(str(tmp_path / "pipeline.yml"))
+
+
 def _scoped(bad):
     return {"job": {"workloads": {"ingest": {"start_layer": bad}}}}
 

@@ -150,6 +150,10 @@ def _is_sample(job) -> bool:
     return bool((job.metadata.annotations or {}).get("sample"))
 
 
+def _fields(drift) -> str:
+    return "; ".join(f"{f} (running={r}, yml={w})" for f, r, w in drift)
+
+
 def check_graph_owner(cfg, job, force=False) -> None:
     """A job left by another graph makes layer-state checks meaningless — never mix."""
     owner = (job.metadata.labels or {}).get("graph", "")
@@ -462,7 +466,9 @@ def _clear_suspend(cfg) -> None:
     """Unsuspend every suspended Job of the run and mark it running. The driver converges
     from any prior pause, so deploy and resume are one 'make progress' action."""
     cleared = 0
-    for job in kube.list_jobs(cfg.namespace):
+    # graph-scoped, like pause: unsuspending a co-tenant's Jobs restarts a run this
+    # driver knows nothing about
+    for job in kube.list_jobs(cfg.namespace, graph=cfg.graph_id):
         if job.spec.suspend:
             kube.set_suspend(cfg.namespace, job.metadata.name, False)
             cleared += 1
@@ -524,7 +530,9 @@ def pause(cfg) -> None:
     evidence for the failure being reported."""
     # record intent first so a partial suspend still leaves the run marked paused
     state.set_run_status(cfg, state.PAUSED)
-    for job in kube.list_jobs(cfg.namespace):
+    # graph-scoped: a namespace can hold several graphs, and a self-pause must not drain
+    # a co-tenant's run
+    for job in kube.list_jobs(cfg.namespace, graph=cfg.graph_id):
         if util.job_state(job) == "complete":
             continue
         name = job.metadata.name
@@ -707,19 +715,20 @@ def run_layer(cfg, layer) -> None:
         # a running Job carries the spec it was created with — image included — so
         # attaching blind runs whatever the yml said then, not what it says now
         drift = manifest.immutable_drift(cfg, layer, job)
-        done = (job.status.succeeded or 0) if job.status else 0
-        if drift and done:  # replacing would drop completedIndexes; not ours to discard
-            fields = "; ".join(f"{f} (running={r}, yml={w})" for f, r, w in drift)
-            raise SystemExit(
-                f"L{layer} ({cfg.workload}) is running a Job that no longer matches "
-                f"{cfg.source}: {fields}. It has {done} completed tasks, so it is not "
-                f"replaced automatically — `pipeline delete {layer}` to rebuild it, or "
-                f"put the yml back"
-            )
-        if drift:  # nothing completed yet, so rebuilding costs nothing
-            fields = "; ".join(f"{f} (running={r}, yml={w})" for f, r, w in drift)
-            note(f"L{layer} ({cfg.workload}) differs from {cfg.source}: {fields}")
+        stale = manifest.resubmit_drift(drift)
+        if stale:
+            # the running Job is computing the wrong thing, so its progress is suspect —
+            # resubmit however much has completed. Refusing made `resume` useless for the
+            # case it exists for: fixing a bad image.
+            note(f"L{layer} ({cfg.workload}) differs from {cfg.source}: {_fields(stale)}")
             submit(cfg, layer)
+        elif drift:
+            # scheduling-only: reaches pods on the next resubmit anyway, and discarding
+            # progress to apply it would rebuild every finished chunk outside ingest
+            note(
+                f"L{layer} ({cfg.workload}) differs from {cfg.source}: {_fields(drift)}; "
+                f"attaching — resubmit the layer to apply it"
+            )
         else:
             note(f"L{layer} ({cfg.workload}) already running; attaching")
     else:  # absent, failed, or a leftover sample run -> (re)submit replaces it

@@ -253,7 +253,7 @@ URL at Postgres and the same code shares state across machines.
 | Fatal chunk (exit 42) | only that index fails (`FailIndex`); `pipeline inspect` shows the chunk + traceback |
 | Too many dead indexes | the Job aborts once `maxFailedIndexes` is exceeded |
 | Re-submit a layer | already-done chunks skip (ingest lock markers; others idempotent) — resumes, not restarts |
-| Resize mid-layer | `pipeline apply` reconciles the running layer to the edited `pipeline.yml` in place — worker *count* (`ramp.max` → parallelism) and per-pod *resources* (in-place pod resize, no restart, no progress loss). Immutable fields (seed, batch size, image, …) are refused; resubmit to change them. `scale` still sets parallelism directly |
+| Resize mid-layer | `pipeline apply` reconciles the running layer to the edited `pipeline.yml` in place — worker *count* (`ramp.max` → parallelism) and per-pod *resources* (in-place pod resize, no restart, no progress loss). Immutable fields (seed, batch size, image, …) are skipped by `apply`; the driver resubmits that layer on its next pass, and already-done chunks skip. `scale` still sets parallelism directly |
 | Driver crash / pause | cluster suspended (self-pause or `pause`); `resume` continues; a dead-pid `running` run is flagged stalled |
 
 ## Design decisions, in brief

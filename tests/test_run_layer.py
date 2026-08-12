@@ -49,16 +49,40 @@ def test_run_layer_replaces_a_stale_job_it_would_otherwise_attach_to(
     assert submitted == [2]  # rebuilt from the yml, not attached
 
 
-def test_run_layer_refuses_to_discard_a_drifted_job_with_progress(
+def test_run_layer_replaces_a_drifted_job_that_has_progress(
     monkeypatch, running_run, make_job, no_cost_sample
 ):
-    """Recreating drops completedIndexes, so a Job that has finished work is the
-    operator's call — the driver stops and names the mismatch."""
+    """Completed tasks must not pin a bad image: chunks carry their own done marker, so a
+    replacement re-scans them. Halting here made `resume` useless after an image fix."""
     stale = make_job(conditions=_CONDS["running"], image="repo/pcg:old", succeeded=7)
     monkeypatch.setattr(ops, "_read_job", lambda c, layer: stale)
     submitted = []
     monkeypatch.setattr(ops, "submit", lambda c, layer: submitted.append(layer))
-    with pytest.raises(SystemExit, match="image .running=repo/pcg:old"):
+    monkeypatch.setattr(
+        ops.util, "job_progress", lambda j, t=None: 1 / 0
+    )  # stop the poll
+    with pytest.raises(ZeroDivisionError):
+        ops.run_layer(running_run, 2)
+    assert submitted == [2]
+
+
+def test_run_layer_attaches_when_drift_only_changes_scheduling(
+    monkeypatch, running_run, make_job, no_cost_sample
+):
+    """`processes_per_vcpu` changes how a chunk is worked, not what it produces, so the
+    finished chunks stay valid — resubmitting to apply it would rebuild all of them."""
+    drifted = make_job(
+        conditions=_CONDS["running"],
+        annotations={"processes_per_vcpu": "9"},
+        succeeded=7,
+    )
+    monkeypatch.setattr(ops, "_read_job", lambda c, layer: drifted)
+    submitted = []
+    monkeypatch.setattr(ops, "submit", lambda c, layer: submitted.append(layer))
+    monkeypatch.setattr(
+        ops.util, "job_progress", lambda j, t=None: 1 / 0
+    )  # stop the poll
+    with pytest.raises(ZeroDivisionError):  # reached the poll, so it attached
         ops.run_layer(running_run, 2)
     assert not submitted
 

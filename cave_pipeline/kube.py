@@ -94,9 +94,14 @@ def util_pod(
     )
 
 
-def list_jobs(namespace: str, workload: str | None = None):
-    """Layer Jobs — one workload's, or every pipeline Job when workload is None."""
+def list_jobs(namespace: str, workload: str | None = None, *, graph: str | None = None):
+    """Layer Jobs — one workload's, or every pipeline Job when workload is None.
+
+    `graph` scopes to one graph's Jobs; a namespace can hold several, and anything that
+    suspends or deletes what it lists must not reach a co-tenant's run."""
     selector = f"pipeline={workload}" if workload else "pipeline"
+    if graph:
+        selector += f",graph={graph}"
     return batch().list_namespaced_job(namespace, label_selector=selector).items
 
 

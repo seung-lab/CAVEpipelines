@@ -458,7 +458,8 @@ def _watch_oom(cfg, stop) -> None:
                     warned.add(job.metadata.uid)
                     layer = (job.metadata.labels or {}).get("layer", "?")
                     note(
-                        f"layer {layer}: OOMKilling — raise its job.resources.memory, re-submit"
+                        f"layer {layer}: OOM — lower job.processes_per_vcpu or raise "
+                        f"job.resources.memory, then re-submit"
                     )
 
 
@@ -709,6 +710,9 @@ def run_layer(cfg, layer) -> None:
     if job:
         check_graph_owner(cfg, job)
         if util.job_state(job) == "complete" and not _is_sample(job):
+            # the poll loop's final pass never ran if the driver died before the layer
+            # ended, leaving its last pods frozen at an interim estimate forever
+            cost.sample(cfg, final=True)
             note(f"L{layer} ({cfg.workload}) already complete; skipping")
             return
     if job and util.job_state(job) == "running" and not _is_sample(job):

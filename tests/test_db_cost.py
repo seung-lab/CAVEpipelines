@@ -51,19 +51,23 @@ def _job(
     )
 
 
+def _rfc(dt):
+    """RFC3339 as the API emits it — kube.pods_of_uid returns unparsed JSON."""
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt else None
+
+
 def _pod(uid, running=True, end=None, start=T0, container=True):
-    term = None if running else SimpleNamespace(started_at=start, finished_at=end)
-    statuses = (
-        [SimpleNamespace(state=SimpleNamespace(terminated=term))] if container else []
-    )
-    return SimpleNamespace(
-        metadata=SimpleNamespace(uid=uid, creation_timestamp=T0),
-        status=SimpleNamespace(
-            phase="Running" if running else "Succeeded",
-            start_time=start,
-            container_statuses=statuses,
-        ),
-    )
+    """A raw pod dict, matching what pods_of_uid hands record(): camelCase, str times."""
+    term = None if running else {"startedAt": _rfc(start), "finishedAt": _rfc(end)}
+    statuses = [{"state": {"terminated": term}}] if container else []
+    return {
+        "metadata": {"uid": uid, "creationTimestamp": _rfc(T0)},
+        "status": {
+            "phase": "Running" if running else "Succeeded",
+            "startTime": _rfc(start),
+            "containerStatuses": statuses,
+        },
+    }
 
 
 def _patch_cluster(monkeypatch, jobs, pods, by_uid=None):
@@ -209,6 +213,17 @@ def test_terminal_pod_without_container_state_freezes_at_now(cfg, monkeypatch):
     _patch_cluster(monkeypatch, [_job()], [_pod("p1", running=False, container=False)])
     cost.sample(cfg)
     assert cost.pods(cfg, "j1")[0].finished_at is not None
+
+
+def test_unparseable_pod_timestamp_still_records_the_pod(cfg, monkeypatch):
+    """Times arrive as raw strings now, so a bad one must not drop a pod that is billing."""
+    pod = _pod("p1")
+    pod["status"]["startTime"] = "not-a-timestamp"
+    _patch_cluster(monkeypatch, [_job()], [pod])
+    cost.sample(cfg)
+    rows = cost.pods(cfg, "j1")
+    assert [r.pod_uid for r in rows] == ["p1"]
+    assert rows[0].started_at is None  # unknown, not invented
 
 
 def test_failed_job_ends_at_its_condition(cfg, monkeypatch):

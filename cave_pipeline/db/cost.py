@@ -8,6 +8,7 @@ A sample writes absolute cluster state (not deltas), so concurrent samplers of o
 converge — sampling is best-effort and never blocks the actual run.
 """
 
+import contextlib
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -36,6 +37,18 @@ def _session(cfg):
 
 def _ts(dt) -> float | None:
     return dt.timestamp() if dt else None
+
+
+def _rfc3339(text) -> float | None:
+    """Unix seconds from an API timestamp string; None when absent or unparseable.
+
+    kube.pods_of_uid returns raw JSON, where every time is a string — a bad one must not
+    kill a sample, since cost is auxiliary and the pod is still billing."""
+    if not text:
+        return None
+    with contextlib.suppress(ValueError):
+        return datetime.fromisoformat(text).timestamp()
+    return None
 
 
 def _terminal_ts(status) -> float | None:
@@ -78,20 +91,24 @@ def record(s, cfg, job, pods, now: float) -> None:
     row.last_seen = now
     row.parallelism = max(row.parallelism or 0, job.spec.parallelism or 0)
     seen = []
-    for pod in pods:
-        statuses = pod.status.container_statuses or []
-        term = statuses[0].state.terminated if statuses and statuses[0].state else None
+    for pod in pods:  # raw JSON dicts, camelCase keys — see kube.pods_of_uid
+        status = pod.get("status") or {}
+        statuses = status.get("containerStatuses") or []
+        term = (statuses[0].get("state") or {}).get("terminated") if statuses else None
         # bill from node-bound start, never creation: Pending time is not billed
-        started = (_ts(term.started_at) if term else None) or _ts(pod.status.start_time)
-        finished = _ts(term.finished_at) if term else None
-        phase = pod.status.phase or ""
+        started = _rfc3339(term.get("startedAt") if term else None) or _rfc3339(
+            status.get("startTime")
+        )
+        finished = _rfc3339(term.get("finishedAt") if term else None)
+        phase = status.get("phase") or ""
         if finished is None and phase in ("Succeeded", "Failed"):
             finished = now  # terminal pod without container state: stop accruing
-        seen.append(pod.metadata.uid)
-        prow = s.get(Pod, pod.metadata.uid)
+        pod_uid = (pod.get("metadata") or {}).get("uid")
+        seen.append(pod_uid)
+        prow = s.get(Pod, pod_uid)
         if prow is None:
             prow = Pod(
-                pod_uid=pod.metadata.uid,
+                pod_uid=pod_uid,
                 graph=cfg.graph_id,
                 workload=cfg.workload,
                 run_id=run_id,

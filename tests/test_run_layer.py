@@ -20,6 +20,18 @@ def test_run_layer_skips_complete_layers(monkeypatch, cfg, make_job):
     assert not submitted
 
 
+def test_skipping_a_complete_layer_still_closes_out_its_cost(monkeypatch, cfg, make_job):
+    """A driver that died mid-layer never ran the poll loop's final pass, so the layer's
+    last pods stay frozen at an interim estimate until something re-reads them."""
+    job = make_job(conditions=_CONDS["complete"], succeeded=5)
+    monkeypatch.setattr(ops, "_read_job", lambda c, layer: job)
+    monkeypatch.setattr(ops, "submit", lambda c, layer: None)
+    finals = []
+    monkeypatch.setattr(ops.cost, "sample", lambda c, final=False: finals.append(final))
+    ops.run_layer(cfg, 2)
+    assert finals == [True]  # true terminated timestamps, not the interim freeze
+
+
 def test_run_layer_attaches_and_stops_on_dead_tasks(
     monkeypatch, running_run, make_job, no_cost_sample
 ):

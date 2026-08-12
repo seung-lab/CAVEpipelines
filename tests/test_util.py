@@ -115,6 +115,67 @@ def test_live_usage_table_renders_when_metrics_are_missing(
     assert "cpu" in out and "mem" in out  # the rows are present, just dashed
 
 
+def _event(kind, name, reason="OOMKilled"):
+    return SimpleNamespace(
+        reason=reason, involved_object=SimpleNamespace(kind=kind, name=name)
+    )
+
+
+def test_layer_ooms_counts_this_jobs_pod_kills(monkeypatch, cfg, make_job):
+    """make_job is named 'ingest-l2'; only its own pods' kills are charged to the layer."""
+    monkeypatch.setattr(
+        util.kube,
+        "oom_events",
+        lambda ns: [_event("Pod", "ingest-l2-0-abc"), _event("Pod", "ingest-l2-7-def")],
+    )
+    assert util.layer_ooms(cfg, make_job()) == 2
+
+
+def test_layer_ooms_excludes_other_jobs_and_node_scoped_events(
+    monkeypatch, cfg, make_job
+):
+    """'ingest-l20' must not match 'ingest-l2-', and a Node event names no Job at all."""
+    monkeypatch.setattr(
+        util.kube,
+        "oom_events",
+        lambda ns: [
+            _event("Pod", "ingest-l20-0-abc"),  # a different layer
+            _event("Pod", "someone-else-9-xyz"),
+            _event("Node", "n1", reason="OOMKilling"),
+        ],
+    )
+    assert util.layer_ooms(cfg, make_job()) == 0
+
+
+def test_layer_ooms_never_lists_pods(monkeypatch, cfg, make_job):
+    """This runs every frame; resolving names via a pod list is the fleet-sized read."""
+    listed = []
+    monkeypatch.setattr(util.kube, "oom_events", lambda ns: [_event("Pod", "x-0-a")])
+    monkeypatch.setattr(util.kube, "pods_of", lambda ns, job: listed.append(job) or [])
+    monkeypatch.setattr(util.kube, "pods_of_uid", lambda *a, **k: listed.append(a) or [])
+    util.layer_ooms(cfg, make_job())
+    assert not listed
+
+
+def test_layer_ooms_survives_unreadable_events(monkeypatch, cfg, make_job):
+    """RBAC can deny Events; a missing count must not take down the status frame."""
+    monkeypatch.setattr(util.kube, "oom_events", lambda ns: 1 / 0)
+    assert util.layer_ooms(cfg, make_job()) == 0
+
+
+def test_usage_table_flags_ooms_without_literal_markup(render):
+    """Text(), not markup: a '[red]' tag would print verbatim through Rich."""
+    out = render(util.usage_table([], 2.0, 4.0, "cap", ooms=3))
+    assert "OOM x3" in out and "[red]" not in out
+    assert "OOM" not in render(util.usage_table([], 2.0, 4.0, "cap"))
+
+
+def test_at_risk_is_not_the_failure_colour():
+    """A saturated pod may still finish; red is reserved for the kill that happened, so
+    the operator can tell a near miss from a dead task at a glance."""
+    assert util.AT_RISK != "red"
+
+
 def test_status_progress_math(monkeypatch, cfg, render):
     _populate(monkeypatch, _job_row(succeeded=4, chunks=1000, batch=100))
     out = render(util.status_table(cfg))
@@ -264,12 +325,16 @@ def test_usage_table_renders_cores_and_gib_by_task_index():
 
 
 def test_usage_table_flags_memory_at_the_saturation_mark():
-    """The red mem cell is the OOM warning; without it a pod at 95% of its request reads
-    the same as one at 10%."""
+    """The marked mem cell is the OOM warning; without it a pod at 95% of its request
+    reads the same as one at 10%. Not red: this pod is at risk, not dead."""
     recs = util.usage_records([_metric("hot", "1", "7.6Gi", idx=0)], "ingest")
-    assert "[red]" in _cells(util._pod_usage_table(recs, 8.0, 8.0, 10))["mem%"][0]
+    hot = _cells(util._pod_usage_table(recs, 8.0, 8.0, 10))["mem%"][0]
+    assert f"[{util.AT_RISK}]" in hot and "[red]" not in hot
     recs = util.usage_records([_metric("cool", "1", "1Gi", idx=0)], "ingest")
-    assert "[red]" not in _cells(util._pod_usage_table(recs, 8.0, 8.0, 10))["mem%"][0]
+    assert (
+        f"[{util.AT_RISK}]"
+        not in _cells(util._pod_usage_table(recs, 8.0, 8.0, 10))["mem%"][0]
+    )
 
 
 def test_usage_table_counts_the_pods_it_elides_and_survives_a_missing_index():

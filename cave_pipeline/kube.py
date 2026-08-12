@@ -3,6 +3,7 @@
 import base64
 import contextlib
 import functools
+import json
 import pathlib
 import time
 
@@ -105,11 +106,27 @@ def list_jobs(namespace: str, workload: str | None = None, *, graph: str | None 
     return batch().list_namespaced_job(namespace, label_selector=selector).items
 
 
+OOM_REASONS = ("OOMKilling", "OOMKilled")
+
+
 def oom_events(namespace: str):
-    """Cluster OOMKilling events (kubelet emits them node-level) in the namespace."""
-    return (
-        core().list_namespaced_event(namespace, field_selector="reason=OOMKilling").items
-    )
+    """OOM events in the namespace, both scopes.
+
+    node-problem-detector emits ``OOMKilling`` against the Node for a system-wide kill;
+    kubelet emits ``OOMKilled`` against the Pod when a container exceeds its cgroup limit.
+    Neither is inferable from the exit code — a Spot preemption is also 137 — so the event
+    is the only unambiguous signal, and a pod-scoped kill is invisible without both.
+
+    One call per reason: the apiserver has no OR over a single field. Field-selected, so a
+    healthy namespace transfers nothing."""
+    out = []
+    for reason in OOM_REASONS:
+        out.extend(
+            core()
+            .list_namespaced_event(namespace, field_selector=f"reason={reason}")
+            .items
+        )
+    return out
 
 
 def unfinished_pods(namespace: str, job_name: str):
@@ -269,11 +286,15 @@ def pods_of_uid(namespace: str, job_uid: str, *, unfinished: bool = False):
 
     `unfinished` drops Succeeded pods server-side. A Job retains them until GC, so the full
     list grows with every completed task (100+ MB on a 1.5M-chunk layer) while those rows
-    are already final in the cost DB — see db.cost.sample."""
+    are already final in the cost DB — see db.cost.sample.
+
+    Returns raw JSON dicts, not models: deserializing a fleet-sized list costs more than
+    the transfer does (1.9x on a 1,040-pod read), and db.cost.record needs four fields."""
     kwargs = {"label_selector": f"batch.kubernetes.io/controller-uid={job_uid}"}
     if unfinished:
         kwargs["field_selector"] = "status.phase!=Succeeded"
-    return core().list_namespaced_pod(namespace, **kwargs).items
+    resp = core().list_namespaced_pod(namespace, _preload_content=False, **kwargs)
+    return json.loads(resp.data).get("items", [])
 
 
 def read_job(namespace: str, name: str):

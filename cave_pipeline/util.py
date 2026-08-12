@@ -517,6 +517,9 @@ def _quantile(values, q: float) -> float:
 # of the request: the band where one spike OOM-kills the task. Distinct from the 0.90
 # quantile below and from the 1.05 over-request threshold in usage_view.
 SATURATED = 0.9
+# risk vs fact: saturation is a pod that *might* die, so it warns; red is kept for the
+# kill that already happened, which the operator must not confuse with a near miss
+AT_RISK = "dark_orange"
 PCTS = ((0.10, "p10"), (0.50, "p50"), (0.90, "p90"))  # peak is its own column
 
 
@@ -525,7 +528,9 @@ def _cell(value: float, req: float, spec: str) -> str:
     return costs.fmt_pct(value, req) if req else format(value, spec)
 
 
-def usage_table(recs, billed: float, req_mem: float, procs, caption: str) -> Table:
+def usage_table(
+    recs, billed: float, req_mem: float, caption: str, ooms: int = 0
+) -> Table:
     """cpu/memory distribution, one row per resource.
 
     Peak is p99 for cpu but the true max for memory: a pod dies at its memory peak, so the
@@ -535,11 +540,14 @@ def usage_table(recs, billed: float, req_mem: float, procs, caption: str) -> Tab
     for _, label in PCTS:
         table.add_column(label, justify="right")
     # the header carries the definition so the caption need not spend a line on it
-    for col in ("p99/max", "request", "pods >=90%"):
+    for col in ("p99/max", "request", "pods >=90%", "signals"):
         table.add_column(col, justify="right")
+    # an OOM is a memory verdict, so it rides the mem row; percentiles cannot show it,
+    # since the pod dies at its peak and stops reporting before the next scrape
+    oom_cell = Text(f"OOM x{ooms:,}", style="red") if ooms else ""
     if not recs:
-        table.add_row("cpu", *["-"] * 6)
-        table.add_row("mem", *["-"] * 6)
+        table.add_row("cpu", *["-"] * 6, "")
+        table.add_row("mem", *["-"] * 6, oom_cell)
         return table
     cpus = sorted(r["cpu"] for r in recs)  # each series sorted on its own: reusing the
     mems = sorted(r["mem"] for r in recs)  # cpu order yields a non-monotonic mem p50>p90
@@ -549,6 +557,7 @@ def usage_table(recs, billed: float, req_mem: float, procs, caption: str) -> Tab
         _cell(_quantile(cpus, 0.99), billed, ".2f"),
         f"{billed:g} vCPU" if billed else "?",  # vCPU: "1 cores" reads as a bug
         f"{sum(1 for v in cpus if v >= SATURATED * billed):,}" if billed else "?",
+        "",
     )
     tight = sum(1 for v in mems if v >= SATURATED * req_mem) if req_mem else 0
     table.add_row(
@@ -557,9 +566,33 @@ def usage_table(recs, billed: float, req_mem: float, procs, caption: str) -> Tab
         f"{mems[-1]:.1f}Gi",
         f"{req_mem:g}Gi" if req_mem else "?",
         # a style, not markup: Text() renders markup verbatim and would print the tag
-        Text(f"{tight:,}", style="red") if tight else ("0" if req_mem else "?"),
+        Text(f"{tight:,}", style=AT_RISK) if tight else ("0" if req_mem else "?"),
+        oom_cell,
     )
     return table
+
+
+def layer_ooms(cfg, job) -> int:
+    """Pod-scoped OOM kills charged to this Job; 0 when Events are unreadable.
+
+    Matched on the pod-name prefix rather than a pod list: this runs every status frame,
+    and listing a layer's pods to resolve names is the fleet-sized read the rest of the
+    view exists without. The trailing '-' is load-bearing — 'meshing-l5-' must not match
+    a 'meshing-l50' pod.
+
+    Node-scoped ``OOMKilling`` names a Node, which no cheap query ties back to a Job, so
+    it is left to the driver's watcher; counting it here would charge a co-tenant's kill
+    to this layer."""
+    try:
+        prefix = f"{job.metadata.name}-"
+        return sum(
+            1
+            for e in kube.oom_events(cfg.namespace)
+            if e.involved_object.kind == "Pod"
+            and (e.involved_object.name or "").startswith(prefix)
+        )
+    except Exception:  # noqa: BLE001 - a missing count must not kill the status frame
+        return 0
 
 
 def live_usage_table(cfg, job, layer: int):
@@ -581,10 +614,10 @@ def live_usage_table(cfg, job, layer: int):
         # the frame mid-run, and a renderable whose height changes breaks Live's erase
         reporting = f"{len(recs):,} pods reporting" if recs else "no metrics yet"
         caption = f"L{layer} only — the running layer | {reporting} | {procs} procs"
-        return usage_table(recs, billed, req_mem, procs, caption)
+        return usage_table(recs, billed, req_mem, caption, layer_ooms(cfg, job))
     except Exception as exc:  # noqa: BLE001 - never kill the status frame
         caption = f"L{layer} only — the running layer | usage unavailable: {exc}"
-        return usage_table([], 0.0, 0.0, "?", caption)
+        return usage_table([], 0.0, 0.0, caption)
 
 
 def _pod_usage_table(recs, billed: float, req_mem: float, rows: int) -> Table:
@@ -603,7 +636,7 @@ def _pod_usage_table(recs, billed: float, req_mem: float, rows: int) -> Table:
         for r in recs[band.start : band.stop]:
             mem_cell = costs.fmt_pct(r["mem"], req_mem)
             if req_mem and r["mem"] >= SATURATED * req_mem:
-                mem_cell = f"[red]{mem_cell}[/]"
+                mem_cell = f"[{AT_RISK}]{mem_cell}[/]"
             table.add_row(
                 "?" if r["idx"] is None else str(r["idx"]),
                 # two decimals: at :.1f, 0.00 (nothing running) and 0.07 (one worker
@@ -695,7 +728,7 @@ def usage_view(cfg, job_name: str, layer: int, rows: int = USAGE_ROWS) -> Group:
     # head's "[state]" is literal text that markup would eat as a tag, so it stays a
     # plain Text even though the usage lines below it do not
     lines = [Text(head, no_wrap=True, overflow="ellipsis")]
-    lines.append(usage_table(recs, billed, req_mem, procs, f"{procs} procs"))
+    lines.append(usage_table(recs, billed, req_mem, f"{procs} procs"))
     lines.append(Text(" | ".join(notes), no_wrap=True, overflow="ellipsis"))
     return Group(*lines, _pod_usage_table(recs, billed, req_mem, rows))
 

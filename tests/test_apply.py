@@ -19,10 +19,6 @@ def _job(cfg, layer=2, completions=100, parallelism=4, run_id="deploy-1"):
     return job
 
 
-def _env(job) -> dict:
-    return {e.name: e.value for e in job.spec.template.spec.containers[0].env}
-
-
 def _pod(name, phase, container, requests):
     return SimpleNamespace(
         metadata=SimpleNamespace(name=name),
@@ -60,6 +56,8 @@ def test_immutable_drift_ignores_run_id(cfg):
         (lambda c: setattr(c.job, "max_failed_tasks", 999), "max_failed_tasks"),
         (lambda c: setattr(c.images, "pcg", "repo/pcg:new"), "image"),
         (lambda c: setattr(c.job, "parallel", False), "parallel"),
+        # the documented OOM remedy: it only reaches pods via a resubmit, so it must drift
+        (lambda c: setattr(c.job, "processes_per_vcpu", 1), "processes_per_vcpu"),
     ],
 )
 def test_immutable_drift_flags_each_changed_field(cfg, mutate, field):
@@ -68,13 +66,13 @@ def test_immutable_drift_flags_each_changed_field(cfg, mutate, field):
     assert field in {f for f, _, _ in manifest.immutable_drift(cfg, 2, job)}
 
 
-def test_immutable_drift_ignores_a_resource_edit(cfg):
+def test_immutable_drift_ignores_a_resource_edit(cfg, container_env):
     """`apply` exists to resize a running layer, so a cpu-curve edit — which moves
     PCG_N_PROCESSES — must not register as immutable drift and block itself."""
     job = _job(cfg, layer=5)
     cfg.job.resources.cpu.base *= 2  # the "widen a saturated layer" edit
     assert manifest.layer_processes(cfg.job, 5) > int(
-        _env(job)["PCG_N_PROCESSES"]
+        container_env(job)["PCG_N_PROCESSES"]
     )  # the count really did move
     assert manifest.immutable_drift(cfg, 5, job) == []
 

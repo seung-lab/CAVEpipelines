@@ -10,9 +10,10 @@ through to `setup`.
 """
 
 import contextlib
+import hashlib
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
 import yaml
 
@@ -25,6 +26,13 @@ ATOMIC_LAYER = 2  # supervoxels; every graph is built from here up
 # emitted n_threads, so every pod died on KeyError). Older images either ignore the
 # contract or size a pool from the node's cores — both only fail once pods are burning.
 MIN_PCG_IMAGE = "v3.2.0.dev6"
+# builders block on Bigtable at ~6% of a core, so one worker per vCPU idles the pod
+PROCESSES_PER_VCPU = 2
+# Pod-billed classes. "" is the default class, requested by omitting the selector — there is
+# no selectable name for it. A custom class is pod-billed only if its priorities use
+# podFamily, which the name cannot show, so it is refused here.
+# https://docs.cloud.google.com/kubernetes-engine/docs/concepts/autopilot-compute-classes
+POD_BILLED_CLASSES = ("", "Balanced", "Scale-Out")
 
 
 @dataclass
@@ -64,10 +72,21 @@ class Curve:
 
 
 @dataclass
+class Override:
+    """Exact requests for one layer; a dimension left out falls back to its curve."""
+
+    cpu: float | None = None
+    memory: float | None = None
+
+
+@dataclass
 class Resources:
     cpu: Curve = None
     memory: Curve = None
-    overrides: dict = field(default_factory=dict)  # {layer: {"cpu": x, "memory": y}}
+    overrides: dict = field(default_factory=dict)  # {layer: Override}
+    # fill the node the request already forces (packing.fill_node); raises the billed
+    # request above the curve value, so size ramp.max off the request
+    pack: bool = True
 
 
 @dataclass
@@ -76,6 +95,8 @@ class Job:
     batch_size: int = 1000
     start_layer: int = ATOMIC_LAYER  # first layer to submit; below it is assumed built
     parallel: bool = True  # process pool sized by the pod's cpu request, not the node's
+    # workers per billed vCPU; above 1 splits the memory request that many ways
+    processes_per_vcpu: int = PROCESSES_PER_VCPU
     compute_class: str = ""
     task_retries: int = 3  # per-task retry budget before the task is dead
     max_failed_tasks: int = 50  # dead tasks tolerated before the layer aborts
@@ -112,6 +133,9 @@ class Config:
     )
     source: str = "pipeline.yml"  # config file name this was loaded from
     dataset_path: str = ""  # resolved dataset yaml path ("" when graph-less)
+    # digest of the dataset yaml at load; "" when built outside load(). Dataset only —
+    # fingerprinting pipeline.yml would make every `apply` a hard stop.
+    fingerprint: str = ""
 
     def image(self) -> str:
         return self.images.l2cache if self.workload == "l2cache" else self.images.pcg
@@ -168,6 +192,23 @@ def _start_layer(path: str, value) -> int:
             f"{path}: start_layer must be >= {ATOMIC_LAYER} (the atomic layer)"
         )
     return layer
+
+
+def _processes_per_vcpu(path: str, value) -> int:
+    """A whole number >= 0 (0 and 1 both mean one worker).
+
+    Stored raw it breaks inside the pod: 1.5 ships PCG_N_PROCESSES="21.0"."""
+    try:
+        procs = int(value)
+        if procs != float(value):
+            raise ValueError(value)
+    except (TypeError, ValueError, OverflowError):
+        raise SystemExit(
+            f"{path}: job.processes_per_vcpu must be a whole number, got {value!r}"
+        )
+    if procs < 0:
+        raise SystemExit(f"{path}: job.processes_per_vcpu must be >= 0, got {procs}")
+    return procs
 
 
 def _check_start_layers(path: str, raw: dict) -> None:
@@ -233,12 +274,9 @@ def load(name: str | None = None, workload: str | None = None) -> Config:
     path = name or os.path.join(CONFIG_DIR, "pipeline.yml")
     config_dir = os.path.dirname(path) or "."
     try:
-        with open(path) as stream:
-            raw = yaml.safe_load(stream) or {}
+        raw = _read_yaml(path)
     except FileNotFoundError:
         raise SystemExit(f"config not found: {path}; `pipeline reset` to pick a new one")
-    except yaml.YAMLError as exc:
-        raise SystemExit(f"invalid yaml in {path}: {exc}")
     for key in ("graph_id", "images"):
         if key not in raw:
             raise SystemExit(f"{path}: missing required key '{key}'")
@@ -258,19 +296,34 @@ def load(name: str | None = None, workload: str | None = None) -> Config:
             f"pipeline requires — earlier images lack the worker entrypoint, or size "
             f"their process pools from the node's cores and CFS-throttle every pod."
         )
-    # a present-but-empty yaml key parses to None; treat every block like {}
-    bt = Bigtable(**(raw.get("bigtable") or {}))
+    # a present-but-empty yaml key parses to None; _block/_value resolve that to the
+    # field's declared default, so a default is never written twice
+    bt = _block(Bigtable, raw.get("bigtable"))
     dataset, dataset_path = _read_dataset(config_dir, raw.get("dataset"))
     dataset = _with_bigtable(dataset, bt)
     raw_job = dict(raw.get("job") or {})
     workload = workload or raw.get("workload", "ingest")
     raw_job = _merge(raw_job, (raw_job.pop("workloads", None) or {}).get(workload) or {})
-    ramp = Ramp(**(raw_job.pop("ramp", None) or {}))
+    ramp = _block(Ramp, raw_job.pop("ramp", None))
     if ramp.start < 1 or ramp.factor <= 1:  # else submit's ramp loop never terminates
         raise SystemExit(f"{path}: job.ramp start must be >= 1 and factor > 1")
+    # checked after the workload merge, so an override cannot smuggle a class in unseen.
+    # A present-but-empty `compute_class:` key parses to None and means the default class.
+    raw_job["compute_class"] = compute_class = raw_job.get("compute_class") or ""
+    if compute_class not in POD_BILLED_CLASSES:
+        raise SystemExit(
+            f"{path}: job.compute_class '{compute_class}' bills per node plus a management "
+            f"premium, not per pod request, unless its spec.priorities use podFamily — which "
+            f"the name alone cannot show. Use one of "
+            f"{', '.join(repr(c) for c in POD_BILLED_CLASSES)} ('' is the default class)."
+        )
     _check_start_layers(path, raw)
     if "start_layer" in raw_job:  # coerce here; stored raw it breaks deep inside a run
         raw_job["start_layer"] = _start_layer(path, raw_job["start_layer"])
+    if raw_job.get("processes_per_vcpu") is not None:  # same: raw, it breaks in the pod
+        raw_job["processes_per_vcpu"] = _processes_per_vcpu(
+            path, raw_job["processes_per_vcpu"]
+        )
     resources = _resources(raw_job.pop("resources", None))
     for dead in ("cpu", "memory"):
         if dead in raw_job:
@@ -287,26 +340,45 @@ def load(name: str | None = None, workload: str | None = None) -> Config:
                 f"project, {switch}."
             )
     return Config(
-        namespace=raw.get("namespace", "default"),
+        namespace=_value(raw, "namespace", "default"),
         graph_id=raw["graph_id"],
-        images=Images(**(raw["images"] or {})),
-        workload_identity=WorkloadIdentity(**(raw.get("workload_identity") or {})),
+        images=_block(Images, raw["images"]),
+        workload_identity=_block(WorkloadIdentity, raw.get("workload_identity")),
         bigtable=bt,
         dataset=dataset,
-        job=Job(ramp=ramp, resources=resources, **raw_job),
+        # _block's present-but-empty rule, applied to the splatted job scalars
+        job=Job(
+            ramp=ramp,
+            resources=resources,
+            **{k: v for k, v in raw_job.items() if v is not None},
+        ),
         workload=workload,
-        secret_name=raw.get("secret_name", "cloud-volume-secrets"),
-        persistent_util=raw.get("persistent_util", True),
+        secret_name=_value(raw, "secret_name", "cloud-volume-secrets"),
+        persistent_util=_value(raw, "persistent_util", True),
         secret_files=raw.get("secret_files") or {},
         commands=raw.get("commands") or {},
         env=raw.get("env") or {},
         database=raw.get("database") or {},
-        region=raw.get("region", ""),
-        zone=raw.get("zone", ""),
+        region=_value(raw, "region", ""),
+        zone=_value(raw, "zone", ""),
         config_dir=config_dir,
         source=path,
         dataset_path=dataset_path,
+        fingerprint=fingerprint_of(dataset_path),
     )
+
+
+def _block(cls, raw):
+    """One yaml block as its config dataclass, dropping keys left present-but-empty so the
+    field's declared default is the only place that default is written."""
+    return cls(**{k: v for k, v in (raw or {}).items() if v is not None})
+
+
+def _value(raw: dict, key: str, default):
+    """A scalar from yaml, where a present-but-empty key means unset. Not `or`: `false` and
+    `0` are values an operator chose, and must survive."""
+    value = raw.get(key)
+    return default if value is None else value
 
 
 def _merge(base: dict, override: dict) -> dict:
@@ -320,14 +392,68 @@ def _merge(base: dict, override: dict) -> dict:
     return out
 
 
+def fingerprint_of(*paths) -> str:
+    """A stable digest of the given yaml files' bytes; unreadable paths contribute nothing."""
+    digest = hashlib.sha1()
+    for path in paths:
+        digest.update(b"\0")
+        if path:
+            with contextlib.suppress(OSError), open(path, "rb") as handle:
+                digest.update(handle.read())
+    return digest.hexdigest()[:12]
+
+
+def _override_layer(key) -> int:
+    """The layer an override is keyed by; yaml keys are strings, so this coerces."""
+    try:
+        return int(key)
+    except (TypeError, ValueError):
+        raise SystemExit(
+            f"job.resources.overrides: '{key}' is not a layer number — key each override "
+            f"by the layer it sizes, e.g. `5: {{cpu: 15, memory: 30}}`"
+        )
+
+
+def _override(layer, raw) -> Override:
+    """One layer's exact requests. An unknown dimension is a config error: left to fall
+    through it would resolve to the curve, shipping a layer nobody asked for."""
+    known = {f.name for f in fields(Override)}
+    if raw is not None and not isinstance(raw, dict):
+        raise SystemExit(
+            f"job.resources.overrides[{layer}]: expected a mapping of "
+            f"{' and/or '.join(sorted(known))}, got {raw!r}"
+        )
+    unknown = sorted(set(raw or {}) - known)
+    if unknown:
+        raise SystemExit(
+            f"job.resources.overrides[{layer}]: unknown {', '.join(unknown)}; "
+            f"expected {' and/or '.join(sorted(known))}"
+        )
+    return Override(**(raw or {}))
+
+
 def _resources(raw) -> Resources:
     if not raw:
         return None
     return Resources(
         cpu=Curve(**raw["cpu"]) if "cpu" in raw else None,
         memory=Curve(**raw["memory"]) if "memory" in raw else None,
-        overrides={int(k): v for k, v in raw.get("overrides", {}).items()},
+        overrides={
+            _override_layer(k): _override(k, v)
+            for k, v in (raw.get("overrides") or {}).items()
+        },
+        pack=bool(_value(raw, "pack", True)),
     )
+
+
+def _read_yaml(path: str) -> dict:
+    """Parse a config yaml. A syntax error names the file rather than surfacing a pyyaml
+    traceback, so every file this loader reads reports the same way."""
+    with open(path) as stream:
+        try:
+            return yaml.safe_load(stream) or {}
+        except yaml.YAMLError as exc:
+            raise SystemExit(f"invalid yaml in {path}: {exc}")
 
 
 def _read_dataset(config_dir: str, rel_path) -> tuple[dict, str]:
@@ -336,8 +462,7 @@ def _read_dataset(config_dir: str, rel_path) -> tuple[dict, str]:
     (graph-less workload) yields ({}, "")."""
     path = os.path.join(config_dir, rel_path or "dataset.yml")
     if os.path.exists(path):
-        with open(path) as stream:
-            return yaml.safe_load(stream) or {}, path
+        return _read_yaml(path), path
     if rel_path is not None:  # named in the pipeline yaml but not on disk
         raise SystemExit(f"dataset file not found: {path}")
     return {}, ""  # no dataset configured (graph-less workload)

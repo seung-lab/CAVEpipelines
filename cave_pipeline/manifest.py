@@ -2,20 +2,26 @@
 helm values (dicts, rendered to YAML by helm — not client objects)."""
 
 import hashlib
-import math
 import re
 
 from kubernetes import client
 
 from . import cgcache, note
 from . import config as cfgmod
-from .costs import CPU_STEP, normalize_requests
+from .costs import GP_MAX, billed_cpu, normalize_requests, parse_cpu, parse_mem
+from .packing import fill_node
 
 INGEST_COMMAND = ["python", "-m", "pychunkedgraph.pipeline.ingest"]
 MESHING_COMMAND = ["python", "-m", "pychunkedgraph.pipeline.meshing"]
 MIGRATE_COMMAND = ["python", "-m", "pychunkedgraph.pipeline.migrate"]
 L2CACHE_COMMAND = ["python", "-m", "pcgl2cache.pipeline.l2cache"]
 SPOT_SELECTOR = {"cloud.google.com/gke-spot": "true"}
+# Selectable built-ins; they take gke-spot alongside the class, while a custom class
+# carries spot in its own priorities and GKE rejects a pod pinning both. The default class
+# is not here — it is requested by omitting the selector.
+BUILTIN_COMPUTE_CLASSES = frozenset(
+    {"Balanced", "Scale-Out", "Performance", "Accelerator"}
+)
 SPOT_TOLERATION = {
     "key": "cloud.google.com/gke-spot",
     "operator": "Equal",
@@ -23,6 +29,10 @@ SPOT_TOLERATION = {
     "effect": "NoSchedule",
 }
 UTIL_REQUESTS = {"cpu": "250m", "memory": "1Gi"}  # cheapest that still imports PCG
+# Autopilot caps Spot pods at 25s and defaults to it. A worker cannot finish a chunk in
+# any grace period, so the wait only slows every teardown and preemption; the chunk's
+# lock expires on its own and a retry redoes it.
+GRACE_SECONDS = 5
 
 
 def job_name(cfg, layer: int) -> str:
@@ -38,17 +48,17 @@ def _curve_value(curve, layer: int) -> float:
 def requests_for(job, layer: int) -> tuple:
     """(vCPU, GiB) for a layer: per-layer override > resources curve > default base."""
     res = job.resources
-    over = res.overrides.get(layer, {}) if res else {}
-    if "cpu" in over:
-        cpu = float(over["cpu"])
+    over = (res.overrides.get(layer) if res else None) or cfgmod.Override()
+    if over.cpu is not None:
+        cpu = float(over.cpu)  # yaml can hand back a string
     elif res and res.cpu:
         cpu = _curve_value(res.cpu, layer)
     else:
         raise SystemExit(
             "job.resources.cpu is required — a base/factor curve or a per-layer override"
         )
-    if "memory" in over:
-        mem = float(over["memory"])
+    if over.memory is not None:
+        mem = float(over.memory)
     elif res and res.memory:
         mem = _curve_value(res.memory, layer)
     else:
@@ -68,6 +78,12 @@ def _normalized(job, layer: int) -> tuple:
     """(vCPU, GiB, warnings) after the Autopilot snap — the one derivation the k8s
     requests and the process count both read, so they cannot disagree."""
     cpu, mem = requests_for(job, layer)
+    res = job.resources
+    # never over an override: that layer's numbers were named exactly, and growing them
+    # would silently overrule the one instruction more specific than the curve
+    if (res is None or res.pack) and not (res and layer in res.overrides):
+        # only the default class has a ceiling; filling past it would just be clamped back
+        cpu, mem = fill_node(cpu, mem, max_cpu=0.0 if job.compute_class else GP_MAX[0])
     return normalize_requests(cpu, mem, job.compute_class)
 
 
@@ -79,18 +95,50 @@ def layer_requests(job, layer: int) -> dict:
     return {"cpu": f"{round(cpu * 1000)}m", "memory": f"{round(mem * 1024)}Mi"}
 
 
+def normalized_requests(job, layer: int) -> tuple:
+    """(vCPU, GiB) the pod will request — `layer_requests` without the warnings.
+
+    A read-only consumer needs the numbers only; `layer_requests` notes each warning,
+    which a Live view would reprint on every refresh."""
+    cpu, mem, _ = _normalized(job, layer)
+    return cpu, mem
+
+
 def layer_processes(job, layer: int) -> int:
-    """Worker processes for the layer — whole vCPUs the pod owns, never the node's.
+    """Worker processes for the layer: `processes_per_vcpu` x the vCPUs the pod owns.
 
     PCG's builder pools must size themselves from this: `mp.cpu_count()` is `os.cpu_count()`,
     i.e. the system's cores with no cgroup awareness, so it oversubscribes a small pod into
     CFS throttling. Counted off the *billed* cpu, which Autopilot rounds up to CPU_STEP: a
-    1.9-vCPU ask is charged (and scheduled) as 2, so flooring the raw ask would idle a core."""
+    1.9-vCPU ask is charged (and scheduled) as 2, so flooring the raw ask would idle a core.
+
+    Oversubscribed by default because a parent-chunk worker spends its time blocked on
+    Bigtable, not on the CPU — measured at ~6% of a core each — so one process per vCPU
+    leaves the pod idle waiting on the network. The cost is memory: the pod's request is
+    split this many ways, and the Autopilot ceiling of 6.5 GiB/vCPU makes that a hard
+    cap per worker, so a layer that OOMs is tuned here rather than by raising memory."""
     if not job.parallel:
         return 1
     cpu, _, _ = _normalized(job, layer)  # layer_requests logs the warnings
-    billed = math.ceil(round(cpu / CPU_STEP, 6)) * CPU_STEP
-    return max(1, int(billed))
+    return max(1, int(billed_cpu(cpu)) * max(1, job.processes_per_vcpu))
+
+
+def job_requests(job) -> tuple:
+    """(vCPU, GiB) the Job's pods actually request, off the live pod template.
+
+    `pipeline apply` re-scales a running Job, so the yml curve is the value most likely
+    to disagree with the pods being measured."""
+    spec = job.spec.template.spec
+    res = spec.containers[0].resources if spec.containers else None
+    req = (res.requests if res else None) or {}
+    return parse_cpu(req.get("cpu")), parse_mem(req.get("memory"))
+
+
+def job_env(job) -> dict:
+    """{name: value} for the Job's worker container env, off the live pod template."""
+    spec = job.spec.template.spec
+    env = (spec.containers[0].env if spec.containers else None) or []
+    return {e.name: e.value for e in env if e.value is not None}
 
 
 def dataset_configmap_name(graph_id: str) -> str:
@@ -186,13 +234,26 @@ def job_spec(
         )
     batch_size = batch_for(cfg.job, layer) if batch_size is None else batch_size
     name = name or job_name(cfg, layer)
-    node_selector = dict(SPOT_SELECTOR)
-    if cfg.job.compute_class:
-        node_selector["cloud.google.com/compute-class"] = cfg.job.compute_class
+    # A custom ComputeClass owns spot-ness itself (spec.priorities carry `spot`) and GKE
+    # rejects a pod that pins gke-spot alongside it; the built-in classes take both. The
+    # toleration is only a permit, never a request, so a custom class whose priorities
+    # omit `spot` provisions on-demand.
+    compute_class = cfg.job.compute_class
+    if compute_class and compute_class not in BUILTIN_COMPUTE_CLASSES:
+        node_selector = {"cloud.google.com/compute-class": compute_class}
+        note(
+            f"compute class '{compute_class}' is not built-in: the gke-spot selector is "
+            f"dropped, so spot must come from `spot: true` in its own spec.priorities"
+        )
+    else:
+        node_selector = dict(SPOT_SELECTOR)
+        if compute_class:
+            node_selector["cloud.google.com/compute-class"] = compute_class
     # optional: co-locate workers in one zone (e.g. Bigtable's) for lower latency
     if cfg.zone:
         node_selector["topology.kubernetes.io/zone"] = cfg.zone
 
+    requests = layer_requests(cfg.job, layer)
     container = client.V1Container(
         name=cfg.workload.replace("_", "-"),
         image=cfg.image(),
@@ -212,7 +273,10 @@ def job_spec(
         + _l2cache_env(cfg)
         + _extra_env(cfg),
         env_from=_env_from(),
-        resources=client.V1ResourceRequirements(requests=layer_requests(cfg.job, layer)),
+        # requests only: Autopilot bills them and a cpu limit would forfeit the burst into
+        # a node's spare cores for nothing. The pod-billed classes admit a template without
+        # limits — only a class naming a machineFamily requires them.
+        resources=client.V1ResourceRequirements(requests=requests),
         volume_mounts=[_secrets_mount()],
     )
     template = client.V1PodTemplateSpec(
@@ -224,6 +288,7 @@ def job_spec(
             tolerations=_spot_tolerations(),
             containers=[container],
             volumes=[_secrets_volume(cfg)],
+            termination_grace_period_seconds=GRACE_SECONDS,
         ),
     )
     return client.V1Job(
@@ -244,6 +309,9 @@ def job_spec(
                 # the gate itself: PCG_N_PROCESSES is 1 both when parallelism is off and
                 # when the layer simply owns one core, so the env cannot stand in for it
                 "parallel": str(cfg.job.parallel),
+                # the factor, not the product: PCG_N_PROCESSES also moves when a cpu-curve
+                # edit does, and that is an `apply` field, not immutable drift
+                "processes_per_vcpu": str(cfg.job.processes_per_vcpu),
                 "run-id": run_id,
             },
         ),
@@ -295,8 +363,16 @@ def immutable_drift(cfg, layer: int, job) -> list:
     checks = [
         ("perm_seed", env.get("PCG_PERM_SEED"), str(cfg.job.perm_seed)),
         ("batch_size", annotations.get("batch_size"), str(batch_for(cfg.job, layer))),
-        # the gate, not PCG_N_PROCESSES: the count tracks job.resources, which apply edits
+        # the gate and the factor, never PCG_N_PROCESSES: the product also tracks
+        # job.resources, which `apply` edits live and must not read as drift
         ("parallel", annotations.get("parallel"), str(cfg.job.parallel)),
+        # absent means the Job predates this annotation, not that it disagrees: reading
+        # that as drift strands every already-running layer on the next upgrade
+        (
+            "processes_per_vcpu",
+            annotations.get("processes_per_vcpu", str(cfg.job.processes_per_vcpu)),
+            str(cfg.job.processes_per_vcpu),
+        ),
         (
             "compute_class",
             selector.get("cloud.google.com/compute-class", ""),

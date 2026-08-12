@@ -24,6 +24,12 @@ returns `no pod for index N`.
 `job.resources.cpu` climbs per layer. Peak draw is `ramp_max × cpu(layer)`, so the same number
 costs several times more at the top of the curve than at L2.
 
+**`cpu(layer)` is the *requested* value, not the curve value.** `resources.pack` defaults on and
+grows each request to fill the rung it already forced — with the documented curve, L2 1 → 1 but
+L3 2 → 2.75, L4 4 → 6.75, L5 8 → 14.75, L6 16 → 30. Read the real number off
+`pipeline top <layer>` or `manifest.normalized_requests`; a `ramp.max` sized from the curve
+under-counts quota by up to ~1.9x and the layer stalls on capacity mid-run.
+
 L2 holds most of the chunks and most of the wall clock; upper layers self-limit on task count
 (`completions` caps parallelism below `ramp_max` once tasks run out). Size `max ≈ headroom /
 cpu(L2)` — sizing it so the *widest upper layer* fits leaves L2 running at a fraction of quota
@@ -44,8 +50,17 @@ under its request is backend-bound, and widening it only adds retries.
 
 `mp.cpu_count()` is `os.cpu_count()` — "CPUs in the **system**", no cgroup awareness, so in a
 container it returns the *node's* cores and a small pod forks itself into CFS throttling.
-`layer_processes(job, layer)` derives the count from the pod's billed cpu; `harness.py` reads it
-as `n_processes`; `parallel: false` → 1.
+`layer_processes(job, layer)` = `job.processes_per_vcpu` (default **2**) × the pod's *billed* cpu;
+`harness.py` reads it as `n_processes`; `parallel: false` → 1.
+
+The 2× is deliberate — a builder blocks on Bigtable at ~6% of a core, so one worker per vCPU
+leaves the pod waiting on the network. **It is paid in memory:** the pod's request is split that
+many ways, and Autopilot's 6.5 GiB/vCPU ceiling caps a worker at ~3.25 GiB. A layer that OOMs is
+fixed by lowering `processes_per_vcpu`, not by raising memory — raising memory past the ceiling
+raises cpu, which adds *more* workers.
+
+Env is immutable on a running Job, so this is **not** an `apply` field: it registers as immutable
+drift and reaches pods only on a resubmit. `apply` moves cpu/memory alone.
 
 Explicit passing is correct: `sched_getaffinity`/`os.process_cpu_count()` give the affinity mask,
 not the CFS quota Autopilot uses; `/sys/fs/cgroup/cpu.max` is cgroup-version-specific.
@@ -116,3 +131,21 @@ a workflow; read them there, never from a number written into a doc. Measure usa
 
 `completions = ceil(chunks / batch_size)`, and `batch_size` halves each layer above 2. Label the
 unit — 250 tasks/min at `batch_size 16` is 4,000 chunks/min.
+
+**Size `batch_size` by task *duration*, not by task count.** An index completes only if one pod
+clears every chunk in the batch in a single run, so a task longer than the interval between Spot
+preemptions rarely finishes — the layer burns pods and reports near-zero completions while every
+other metric looks busy. Budget `batch × per-chunk time` and keep it well inside that interval.
+
+The trap is that one number sets every layer, and per-chunk time is not constant: L2 chunks take
+seconds, parent chunks take minutes (they read the L2 mid-planes + boundary shell). `batch_size 16`
+is harmless at L2 and hands L3 a batch of 8 — half an hour per task. Start at **8**.
+
+Measure per-chunk time before trusting the arithmetic:
+
+```shell
+kubectl logs <pod> | grep add_parent_chunk   # one line per chunk built; diff the timestamps
+```
+
+Sizing it for pod counts or quota instead is how the wrong value gets chosen: those are visible in
+a spreadsheet, task duration is only visible on the cluster.

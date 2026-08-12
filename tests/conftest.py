@@ -9,7 +9,7 @@ from rich.console import Console
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-from cave_pipeline import config, util
+from cave_pipeline import config, manifest, util
 from cave_pipeline.db import base, cost, models, state
 
 
@@ -20,6 +20,15 @@ def _isolate_db_caches():
     yield
     base._engine.cache_clear()
     base._initialized.clear()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_config_dir(monkeypatch, tmp_path):
+    """Point config.CONFIG_DIR at this test's tmp_path.
+
+    resolve() writes CONFIG_DIR/.current, so unpatched it selects a session config in the
+    real config/. That file is the whole session state, so a per-test dir isolates it."""
+    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
 
 
 @pytest.fixture
@@ -44,6 +53,8 @@ def cfg(tmp_path):
             ),
         ),
         config_dir=str(tmp_path),
+        # absolute: the relative default resolves against pytest's cwd
+        source=str(tmp_path / "pipeline.yml"),
         database={
             "cost": f"sqlite:///{tmp_path}/cost.db",
             "state": f"sqlite:///{tmp_path}/state.db",
@@ -52,8 +63,11 @@ def cfg(tmp_path):
 
 
 @pytest.fixture
-def make_job():
-    """Factory for the fake Job shape consumed by util.job_progress/status_table."""
+def make_job(cfg):
+    """A Job built by job_spec, with the status a test needs layered on.
+
+    Real spec, not a shape-stub: immutable_drift compares the pod template, so a stub
+    would make every caller look like it drifted (or crash reading it)."""
 
     def _make(
         *,
@@ -61,7 +75,7 @@ def make_job():
         graph="g",
         layer=2,
         chunks=10,
-        batch_size=1,
+        batch_size=None,  # default: whatever the cfg implies, so no drift
         annotations=None,
         conditions=None,
         succeeded=0,
@@ -70,27 +84,48 @@ def make_job():
         failed=0,
         failed_indexes=None,
         suspend=None,
+        image=None,
     ):
-        ann = {"chunks": str(chunks), "batch_size": str(batch_size)}
-        ann.update(annotations or {})
-        return SimpleNamespace(
-            metadata=SimpleNamespace(
-                name=name, labels={"graph": graph, "layer": str(layer)}, annotations=ann
-            ),
-            spec=SimpleNamespace(suspend=suspend),
-            status=SimpleNamespace(
-                conditions=conditions or [],
-                succeeded=succeeded,
-                active=active,
-                ready=ready,
-                failed=failed,
-                failed_indexes=failed_indexes,
-                start_time=None,
-                completion_time=None,
-            ),
+        if batch_size is None:
+            batch_size = manifest.batch_for(cfg.job, layer)
+        job = manifest.job_spec(cfg, layer, chunks, chunks, 1, batch_size=batch_size)
+        job.metadata.name = name
+        job.metadata.labels = {**job.metadata.labels, "graph": graph}
+        job.metadata.annotations.update(annotations or {})
+        job.spec.suspend = suspend
+        if image is not None:  # a Job created before the yml's image changed
+            job.spec.template.spec.containers[0].image = image
+        job.status = SimpleNamespace(
+            conditions=conditions or [],
+            succeeded=succeeded,
+            active=active,
+            ready=ready,
+            failed=failed,
+            failed_indexes=failed_indexes,
+            start_time=None,
+            completion_time=None,
         )
+        return job
 
     return _make
+
+
+@pytest.fixture
+def container_env():
+    """Worker container env as a dict, from a sanitized Job or a live Job/Pod.
+
+    Only the live branch takes a Pod (one level shallower than a Job); no test asserts env
+    on a sanitized Pod, so that shape is unsupported rather than silently wrong."""
+
+    def _env(obj) -> dict:
+        if isinstance(obj, dict):  # sanitized Job
+            pod = obj["spec"]["template"]["spec"]
+            return {e["name"]: e.get("value") for e in pod["containers"][0]["env"]}
+        # live object: a Job nests its pod under spec.template, a Pod is already one
+        pod = getattr(getattr(obj.spec, "template", None), "spec", obj.spec)
+        return {e.name: e.value for e in pod.containers[0].env}
+
+    return _env
 
 
 @pytest.fixture

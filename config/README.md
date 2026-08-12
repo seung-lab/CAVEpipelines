@@ -50,8 +50,9 @@ from `pipeline.yml`'s `bigtable:`.
 | `region` | GKE region — selects the cost rate row in [rates.csv](../cave_pipeline/rates.csv) (required for cost estimates) |
 | `zone` | optional: pin worker pods to one zone (e.g. Bigtable's) for lower latency — trades Spot capacity |
 | `job.workloads.<name>.start_layer` | first layer that workload submits, default 2. Set it to restart mid-graph: layers below are assumed built, are never submitted, and never gate the first one — the run announces which layers it skipped. **Per-workload only** (a top-level `job.start_layer` is refused): layer 2 is different work in each stage, so one number cannot mean "already built" for all of them. It also relaxes the `pipeline submit` completeness gate up to that layer, and persists — clear it once the restart is done, or a later run on a fresh graph will skip real work |
-| `job.*` | sizing: `perm_seed`, `batch_size`, `parallel` (parent-chunk builds fan out over the pod's own cpu request, shipped as `PCG_N_PROCESSES`; `false` = sequential, for debugging), `compute_class`, `task_retries` (per-task retry budget), `max_failed_tasks` (dead tasks tolerated before the layer aborts — bounds retry spend; auto-clamped to the layer's task count) |
+| `job.*` | sizing: `perm_seed`, `batch_size`, `parallel` (parent-chunk builds fan out over the pod's own cpu request, shipped as `PCG_N_PROCESSES`; `false` = sequential, for debugging), `processes_per_vcpu` (workers per *billed* vCPU, default 2 — builders block on Bigtable, so one per vCPU idles the pod; the cost is memory, since the pod's request is split that many ways and Autopilot's 6.5 GiB/vCPU ceiling caps a worker at ~3.25 GiB — lower this when a layer OOMs, rather than raising memory), `compute_class` (a *custom* ComputeClass carries spot in its own `spec.priorities`, so the `gke-spot` selector is dropped for it; built-in classes keep both), `task_retries` (per-task retry budget), `max_failed_tasks` (dead tasks tolerated before the layer aborts — bounds retry spend; auto-clamped to the layer's task count) |
 | `job.resources.*` | optional per-layer cpu/memory curves + per-layer overrides — see ["How per-layer resources scale"](#how-per-layer-resources-scale) |
+| `job.resources.pack` | default `true` — grow each request to fill the node it already forces. Raises the per-pod bill; size `ramp.max` off the requested row, not the curve. `false` requests the curve verbatim |
 | `job.workloads.<name>` | per-workload deep-overrides of `job` (own `batch_size`, curves, ramp) |
 | `job.ramp.*` | parallelism ramp: `start`, `factor`, `period` (s), `max` |
 | `env` | extra env on every worker + setup pod (below) |
@@ -117,19 +118,35 @@ per dimension, `value(L) = min(base × factor^(L−2) + add, max)` (layer 2 is t
 = uncapped). `job.resources` is required: every dimension needs a curve (or a per-layer
 `overrides` entry) — there is no flat fallback or default, so nothing is silently assumed.
 
-With `cpu: base 1, factor 2, max 28` and `memory: base 1, factor 2, add 1, max 33`:
+With `cpu: base 1, factor 2, max 28` and `memory: base 1, factor 2, add 1, max 33`, the curve
+value and what the pod actually requests (`pack: true`, the default):
 
 | layer | 2 | 3 | 4 | 5 | 6 | 7+ |
 |---|---|---|---|---|---|---|
-| vCPU | 1 | 2 | 4 | 8 | 16 | 28 (capped) |
-| GiB | 2 | 3 | 5 | 9 | 17 | 33 (capped) |
+| curve vCPU | 1 | 2 | 4 | 8 | 16 | 28 (capped) |
+| curve GiB | 2 | 3 | 5 | 9 | 17 | 33 (capped) |
+| **requested vCPU** | 1 | 2.75 | 6.75 | 14.75 | 30 | 30 |
+| **requested GiB** | 2 | 4.12 | 8.44 | 16.59 | 31.88 | 35.36 |
+
+### `pack` — fill the node the request already forces
+
+Quota is charged on the whole **node** vCPU while Autopilot bills the **pod** request, so an
+8-vCPU pod alone on a 16-vCPU node holds ~2 node-vCPU per vCPU of work. `pack: true` (default)
+grows each request into the rung its curve value already forced, so that quota does real work.
+
+**It raises the bill per pod — up to ~1.9x — and the same `ramp.max` therefore draws
+proportionally more vCPU.** That is the trade: fewer, fuller nodes for the same quota, and the
+layer finishes sooner at the same spend per pod-second. Size `ramp.max` off the **requested**
+row above, not the curve row. Set `job.resources.pack: false` to request the curve value
+verbatim. A per-layer `overrides` entry is never packed — naming a layer's numbers exactly is
+the more specific instruction.
 
 Each layer is then snapped to the **cheapest valid Autopilot request**: memory is raised to the
 1 GiB/vCPU billing floor and cpu to the 6.5 GiB/vCPU ceiling's implied minimum (Autopilot would
 round both up silently and bill the result — explicit keeps cost records true), off-step cpu
 (0.25-vCPU grid) warns, and anything past the general-purpose ceiling (30 vCPU / 110 GiB) is
-clamped with a warning pointing to `compute_class` or an override. A curve can therefore never
-silently land on a pricier bill than declared.
+clamped with a warning pointing to `compute_class` or an override. Packing stops at that
+ceiling, so only a curve you wrote above it is ever clamped.
 
 ## `dataset.yml`
 

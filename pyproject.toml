@@ -63,3 +63,11 @@ line-length = 90
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = ["--strict-markers", "--strict-config"]
+# only our own deprecations are fatal: deps are lower-bounded across a 3.12-3.14 matrix,
+# so an unscoped rule reds the build on an upstream release. Last match wins.
+filterwarnings = [
+    "default",
+    "error::DeprecationWarning:cave_pipeline.*",
+    "error::PendingDeprecationWarning:cave_pipeline.*",
+]

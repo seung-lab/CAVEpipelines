@@ -304,7 +304,10 @@ Upgrade tuning comes from the `env:` block in `pipeline.yml` (`TASK_SIZE`, `PROC
 Autopilot bills pod **requests** (not usage) per second; Spot Pods are 60–91% off. The defaults
 capture the main levers — operators mainly right-size requests and keep the default compute class.
 
-- **Spot** (default) — 60–91% off; every worker Job runs on Spot.
+- **Spot** (default) — 60–91% off; every worker Job pins the `gke-spot` selector, alongside a
+  built-in `compute_class` if one is set. A **custom** ComputeClass is the exception: GKE rejects
+  a pod that requests both, so the selector is dropped and Spot must come from `spot: true` in the
+  class's own `spec.priorities` — a class that omits it bills on-demand silently.
 - **Default (general-purpose) compute class** — the cheapest pod-based class; `Balanced` costs about
   45% more and `Scale-Out` about 26% more per vCPU/GiB. Leave `compute_class: ""` unless a layer
   needs the extra capacity or higher per-pod limits.

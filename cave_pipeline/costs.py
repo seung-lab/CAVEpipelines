@@ -7,6 +7,8 @@ The runtimes come from the local cost db samples — never from live cluster sta
 which Kubernetes garbage-collects. This is an estimate, not the invoice.
 """
 
+import math
+
 from . import rates
 
 _GENERAL = "general-purpose"  # GKE default compute class (empty compute_class maps here)
@@ -45,6 +47,15 @@ def parse_mem(value) -> float:
         if text.endswith(unit):
             return float(text[: -len(unit)]) * mult / 2**30
     return float(text) / 2**30  # bare bytes
+
+
+def billed_cpu(cores: float) -> float:
+    """The vCPU Autopilot bills and schedules: the ask rounded up to CPU_STEP.
+
+    A container's CFS quota comes from the billed value, so 1.9 runs — and is charged —
+    as 2.0; dividing measured usage by the raw ask reports 105% for a pod that is merely
+    pinned at its wall."""
+    return math.ceil(round(cores / CPU_STEP, 6)) * CPU_STEP
 
 
 def normalize_requests(cpu: float, mem: float, compute_class: str = "") -> tuple:
@@ -192,6 +203,13 @@ def fee(table: dict, region: str, jobs, now: float) -> float:
 def fmt_dollars(value: float) -> str:
     """Dollar string with sub-cent resolution below $1, so slow accrual stays visible."""
     return f"${value:.2f}" if value >= 1 else f"${value:.3f}"
+
+
+def fmt_pct(part: float, whole: float) -> str:
+    """part/whole as a floored percent ('43%'); '-' when whole is 0 or missing.
+
+    Floored, not rounded: 3.999 of 4.00 reads 99%, so only a truly pinned pod reads 100%."""
+    return f"{int(100 * part / whole)}%" if whole else "-"
 
 
 def format_cost(est: dict) -> str:

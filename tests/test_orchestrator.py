@@ -1,17 +1,66 @@
 import dataclasses
 
 import pytest
+import yaml
 
-from cave_pipeline import ops, stages
+from cave_pipeline import config, ops, stages
 from cave_pipeline.db import state
 
+BASE = {"graph_id": "g", "images": {"pcg": "repo/pcg:v3.2.0"}}
 
-def test_dag_levels_orders_by_depth():
+
+def _write(dirpath, name, content):
+    (dirpath / name).write_text(yaml.safe_dump(content))
+
+
+def test_editing_the_dataset_yaml_makes_a_submit_refuse(tmp_path):
+    """A driver holds one cfg for the whole run and writes the dataset into the graph from
+    that snapshot, so a mid-run edit (mesh_config.mip is the case this exists for) reaches
+    neither — it must fail loudly instead of building against the values it replaced."""
+    _write(tmp_path, "dataset.yml", {"mesh_config": {"mip": 2, "max_layer": 6}})
+    _write(tmp_path, "pipeline.yml", {**BASE, "dataset": "dataset.yml"})
+    cfg = config.load()
+    ops.require_config_unchanged(cfg)  # unedited: passes
+
+    # dataset-only, so an apply field must not trip it. ramp.max, not zone — test_apply
+    # asserts zone registers as immutable drift.
+    edited = {**BASE, "dataset": "dataset.yml", "job": {"ramp": {"max": 512}}}
+    _write(tmp_path, "pipeline.yml", edited)
+    ops.require_config_unchanged(cfg)
+
+    _write(tmp_path, "dataset.yml", {"mesh_config": {"mip": 1, "max_layer": 6}})
+    with pytest.raises(SystemExit, match="dataset.yml changed since this run loaded it"):
+        ops.require_config_unchanged(cfg)
+
+
+def test_dag_batches_orders_by_depth():
     # ingest at depth 0; meshing + l2cache (both depend only on ingest) at depth 1
-    assert ops.dag_levels({"ingest", "meshing", "l2cache"}) == [
+    assert list(ops.dag_batches({"ingest", "meshing", "l2cache"})) == [
         ["ingest"],
         ["l2cache", "meshing"],
     ]
+
+
+def test_dag_batches_halts_downstream_when_the_consumer_raises():
+    """The halt is the control flow, not a rule each caller restates: `ts.done` sits after
+    the yield, so a body that raises never resumes the generator."""
+    seen = []
+    with pytest.raises(RuntimeError):
+        for batch in ops.dag_batches({"ingest", "meshing", "l2cache"}):
+            seen.append(batch)
+            raise RuntimeError("stage failed")
+    assert seen == [["ingest"]]  # depth 1 was never marked ready
+
+
+def test_unconfigured_stage_names_the_key_it_wants(cfg):
+    """The key is data on the stage, so the message reads it — a hardcoded mapping goes
+    stale the moment another gated stage is added."""
+    cfg.dataset = {}
+    with pytest.raises(SystemExit, match=r"stage 'meshing'.*no `mesh_config`"):
+        ops.confirm_run(cfg, {"meshing"}, parallel=False, yes=True)
+    cfg.dataset = {"mesh_config": {"max_layer": 6}}
+    assert stages.STAGES["meshing"].applies(cfg)
+    assert stages.STAGES["ingest"].applies(cfg)  # no key = always applies
 
 
 def test_orchestrate_runs_levels_in_order(monkeypatch, cfg):

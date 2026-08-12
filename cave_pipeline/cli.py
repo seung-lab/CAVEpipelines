@@ -286,13 +286,11 @@ def inspect(cfg, layer, index):
     """List a layer's failed indexes; with an index, show that index's pod log."""
     name = manifest.job_name(cfg, layer)
     if index is None:
-        try:
-            s = kube.batch().read_namespaced_job(name, cfg.namespace).status
-        except ApiException as exc:
-            if exc.status == 404:
-                note(f"no job '{name}' in ns '{cfg.namespace}'")
-                return
-            raise
+        job = kube.read_job(cfg.namespace, name)
+        if job is None:
+            note(f"no job '{name}' in ns '{cfg.namespace}'")
+            return
+        s = job.status
         note(
             f"{name}: {s.succeeded or 0} ok, {s.active or 0} active, "
             f"{s.failed or 0} failed pod attempts"
@@ -342,13 +340,10 @@ def pods(cfg, layer):
         table.add_column(col)
     for pod in sorted(
         kube.pods_of(cfg.namespace, name),
-        key=lambda p: int(
-            (p.metadata.annotations or {}).get(
-                "batch.kubernetes.io/job-completion-index", -1
-            )
-        ),
+        # unknown index sorts last, matching `top`; -1 would float it above task 0
+        key=lambda p: (util.pod_index(p) is None, util.pod_index(p) or 0),
     ):
-        ann = pod.metadata.annotations or {}
+        idx = util.pod_index(pod)
         reason = next(
             (
                 c.reason
@@ -358,7 +353,7 @@ def pods(cfg, layer):
             "",
         )
         table.add_row(
-            ann.get("batch.kubernetes.io/job-completion-index", "?"),
+            "?" if idx is None else str(idx),
             pod.status.phase or "?",
             pod.spec.node_name or "-",
             reason or "",
@@ -389,13 +384,10 @@ def describe(cfg, layer):
     """Why a layer isn't progressing: Job counts + conditions, each not-yet-done pod's
     state/reason, and recent Warning events (scheduling, image pulls, OOM)."""
     name = manifest.job_name(cfg, layer)
-    try:
-        job = kube.batch().read_namespaced_job(name, cfg.namespace)
-    except ApiException as exc:
-        if exc.status == 404:
-            note(f"no job '{name}' in ns '{cfg.namespace}'")
-            return
-        raise
+    job = kube.read_job(cfg.namespace, name)
+    if job is None:
+        note(f"no job '{name}' in ns '{cfg.namespace}'")
+        return
     s = job.status
     note(
         f"{name}: {s.succeeded or 0} succeeded, {s.active or 0} active, {s.failed or 0} "
@@ -405,9 +397,8 @@ def describe(cfg, layer):
     for c in s.conditions or []:
         note(f"  {c.type}={c.status} {c.reason or ''}: {c.message or ''}".rstrip(": "))
     for pod in kube.unfinished_pods(cfg.namespace, name):
-        idx = (pod.metadata.annotations or {}).get(
-            "batch.kubernetes.io/job-completion-index", "?"
-        )
+        idx = util.pod_index(pod)
+        idx = "?" if idx is None else idx
         node = pod.spec.node_name or "-"
         note(
             f"  task {idx} [{pod.status.phase}] on {node}: {util.pod_reason(pod) or '-'}"
@@ -418,23 +409,30 @@ def describe(cfg, layer):
         note(f"  ! {e.reason}: {e.message}")
 
 
-@cli.command(help="live per-pod CPU/memory usage in cores/GiB (needs metrics-server)")
+@cli.command(help="live cpu/memory distribution for a layer (needs metrics-server)")
 @_LAYER
 @click.option("-o", "--once", is_flag=True, help="print one snapshot and exit")
 @click.option(
     "-i", "--interval", type=float, default=5.0, help="refresh seconds (default 5)"
 )
+@click.option(
+    "-n",
+    "--rows",
+    type=int,
+    default=util.USAGE_ROWS,
+    help=f"pods per band (default {util.USAGE_ROWS}); 0 lists every pod",
+)
 @pass_cfg
-def top(cfg, layer, once, interval):
-    """Live per-pod usage for the layer, ordered by task index; Ctrl-C to stop."""
+def top(cfg, layer, once, interval, rows):
+    """Percentiles, then the busiest, middle and idlest pods; Ctrl-C to stop."""
     name = manifest.job_name(cfg, layer)
     if once:
-        Console().print(util.usage_table(cfg, name, layer))
+        Console().print(util.usage_view(cfg, name, layer, rows))
         return
     try:
         with Live(console=console, refresh_per_second=4) as live:
             while True:
-                live.update(util.usage_table(cfg, name, layer))
+                live.update(util.usage_view(cfg, name, layer, rows))
                 time.sleep(interval)
     except KeyboardInterrupt:
         pass
@@ -480,7 +478,7 @@ def status(cfg, once, interval):
     if run is None:  # standalone status has no driver to fill the cache — warm it once
         util.try_layer_counts(cfg)  # one clean line on failure, never a remote traceback
     if run is not None:
-        order = [w for level in ops.dag_levels(run.stage_set) for w in level]
+        order = [w for level in ops.dag_batches(run.stage_set) for w in level]
 
         def render():
             run_now = state.get_run(cfg)

@@ -144,7 +144,9 @@ def sample(cfg) -> None:
     with _session(cfg) as s:
         listed = []
         for job in kube.list_jobs(cfg.namespace, cfg.workload):
-            record(s, cfg, job, kube.pods_of(cfg.namespace, job.metadata.name), now)
+            # by uid, not name: a replaced Job's pods outlive the name, and billing them
+            # against this generation both re-prices them and suppresses its own backfill
+            record(s, cfg, job, kube.pods_of_uid(cfg.namespace, job.metadata.uid), now)
             listed.append(job.metadata.uid)
         _close_out_unlisted(s, cfg, listed)
 

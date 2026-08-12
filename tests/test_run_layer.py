@@ -32,6 +32,37 @@ def test_run_layer_attaches_and_stops_on_dead_tasks(
     assert not submitted  # a running layer is attached, never recreated
 
 
+def test_run_layer_replaces_a_stale_job_it_would_otherwise_attach_to(
+    monkeypatch, running_run, make_job, no_cost_sample
+):
+    """A running Job carries the image it was created with, so attaching blind runs the
+    old one — this is how a suspended dev5 Job survived a config bumped to dev6."""
+    stale = make_job(conditions=_CONDS["running"], image="repo/pcg:old", succeeded=0)
+    monkeypatch.setattr(ops, "_read_job", lambda c, layer: stale)
+    submitted = []
+    monkeypatch.setattr(ops, "submit", lambda c, layer: submitted.append(layer))
+    monkeypatch.setattr(
+        ops.util, "job_progress", lambda j, t=None: 1 / 0
+    )  # stop the poll
+    with pytest.raises(ZeroDivisionError):
+        ops.run_layer(running_run, 2)
+    assert submitted == [2]  # rebuilt from the yml, not attached
+
+
+def test_run_layer_refuses_to_discard_a_drifted_job_with_progress(
+    monkeypatch, running_run, make_job, no_cost_sample
+):
+    """Recreating drops completedIndexes, so a Job that has finished work is the
+    operator's call — the driver stops and names the mismatch."""
+    stale = make_job(conditions=_CONDS["running"], image="repo/pcg:old", succeeded=7)
+    monkeypatch.setattr(ops, "_read_job", lambda c, layer: stale)
+    submitted = []
+    monkeypatch.setattr(ops, "submit", lambda c, layer: submitted.append(layer))
+    with pytest.raises(SystemExit, match="image .running=repo/pcg:old"):
+        ops.run_layer(running_run, 2)
+    assert not submitted
+
+
 def test_run_layer_stops_cleanly_when_job_vanishes(
     monkeypatch, running_run, make_job, no_cost_sample
 ):

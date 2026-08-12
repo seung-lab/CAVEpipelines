@@ -42,9 +42,12 @@ class BaseStage:
     deps: frozenset[str] = frozenset()
     build: bool = True
     optional: bool = False  # an optional stage joins a build only when configured
+    # the dataset block this stage needs; None = always applies. Data rather than a
+    # predicate body so an error message can name it instead of restating the mapping.
+    config_key: str | None = None
 
     def applies(self, cfg) -> bool:
-        return True
+        return self.config_key is None or self.config_key in cfg.dataset
 
     def setup(self, cfg, exist_ok: bool = False) -> None:
         return None
@@ -76,8 +79,7 @@ class Meshing(BaseStage):
     name = "meshing"
     deps = frozenset({"ingest"})
 
-    def applies(self, cfg) -> bool:
-        return "mesh_config" in cfg.dataset
+    config_key = "mesh_config"
 
     def setup(self, cfg, exist_ok: bool = False) -> None:
         note("mesh-meta: writing mesh metadata")
@@ -105,8 +107,7 @@ class L2Cache(BaseStage):
     deps = frozenset({"ingest"})
     optional = True  # only part of a build when the dataset declares l2cache_config
 
-    def applies(self, cfg) -> bool:
-        return "l2cache_config" in cfg.dataset
+    config_key = "l2cache_config"
 
     def setup(self, cfg, exist_ok: bool = False) -> None:
         lc = cfg.dataset.get("l2cache_config") or {}
@@ -139,8 +140,7 @@ class CaveRegister(BaseStage):
     deps = frozenset({"ingest", "meshing"})
     optional = True  # joins a build only when the dataset declares cave_config
 
-    def applies(self, cfg) -> bool:
-        return "cave_config" in cfg.dataset
+    config_key = "cave_config"
 
     def setup(self, cfg, secrets_dir, exist_ok: bool = False) -> None:
         cc = cfg.dataset.get("cave_config") or {}

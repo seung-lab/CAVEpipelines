@@ -1,6 +1,7 @@
 """kubernetes client access for the pipeline CLI (exec, jobs, logs, secret)."""
 
 import base64
+import contextlib
 import functools
 import pathlib
 import time
@@ -11,6 +12,11 @@ from kubernetes.client import ApiException
 from kubernetes.stream import stream
 
 from . import note
+
+# A sanity bound, not a fleet-sized wait: delete_job clears pods as one collection and
+# drops the Job in Background, so the name frees at once. (Foreground would hold it for
+# 20+ minutes on a 12,000-pod layer while the GC walks every pod.)
+DELETE_TIMEOUT = 60
 
 
 def _load():
@@ -248,6 +254,32 @@ def pods_of(namespace: str, job_name: str):
     )
 
 
+def pods_of_uid(namespace: str, job_uid: str):
+    """Pods of one Job *generation*.
+
+    The name is reused across generations and Background deletion frees it before the old
+    pods are reaped, so a name lookup can return a previous generation's pods — which cost
+    accounting would then bill against this Job's uid. The controller-uid label is stamped
+    per generation and cannot alias."""
+    return (
+        core()
+        .list_namespaced_pod(
+            namespace, label_selector=f"batch.kubernetes.io/controller-uid={job_uid}"
+        )
+        .items
+    )
+
+
+def read_job(namespace: str, name: str):
+    """The Job, or None when it does not exist — any other ApiException propagates."""
+    try:
+        return batch().read_namespaced_job(name, namespace)
+    except ApiException as exc:
+        if exc.status == 404:
+            return None
+        raise
+
+
 def pod_metrics(namespace: str, job_name: str):
     """Per-pod usage from the metrics API; [] if metrics-server is unavailable."""
     try:
@@ -277,8 +309,102 @@ def job_events(namespace: str, job_name: str):
     )
 
 
+@contextlib.contextmanager
+def tolerate(*statuses: int):
+    """Swallow an ApiException whose status is one of `statuses`; anything else propagates.
+
+    Only for handlers that do nothing but re-raise — a handler that falls back, returns a
+    value, or notes something keeps its `except`, because that behaviour is the point."""
+    try:
+        yield
+    except ApiException as exc:
+        if exc.status not in statuses:
+            raise
+
+
+JOB_TRACKING_FINALIZER = "batch.kubernetes.io/job-tracking"
+
+
+def _release_tracked_pods(namespace: str, name: str) -> int:
+    """Force-clear finalizers on condemned, non-succeeded pods; count freed.
+
+    This is the *suspended-Job* case: the Job controller removes the tracking finalizer
+    only while reconciling, so a suspended Job whose nodes were scaled away leaves the
+    pod objects behind indefinitely. (Deleting a Job instead makes the controller sweep
+    its selector, which clears the rest — nothing to do there.) Succeeded pods are left
+    alone: the finalizer is how their completion is counted, and dropping it early would
+    lose it. Releasing a Failed pod costs its attempt against backoffLimitPerIndex, so
+    this touches only pods already condemned; `pause` spares terminal pods.
+
+    The patch nulls the whole list rather than removing one entry — under the
+    strategic-merge content type the client sends, a filtered list would be *unioned*
+    back and remove nothing. Core Kubernetes puts only the tracking finalizer on Job
+    pods, so there is nothing else here to lose."""
+    freed = 0
+    c = core()
+    for pod in unfinished_pods(namespace, name):
+        meta = pod.metadata
+        if pod.status and pod.status.phase == "Succeeded":
+            continue
+        if not meta.deletion_timestamp:
+            continue
+        if JOB_TRACKING_FINALIZER not in (meta.finalizers or []):
+            continue
+        with tolerate(404):  # already gone between list and patch
+            c.patch_namespaced_pod(
+                meta.name, namespace, {"metadata": {"finalizers": None}}
+            )
+            freed += 1
+    return freed
+
+
+def delete_job_pods(namespace: str, name: str, *, keep_terminal: bool = False):
+    """Drop every pod of a Job in one call, without waiting out any grace period.
+
+    One collection delete, not one request per pod: letting a controller reap them
+    individually is bounded by the garbage collector's rate and takes tens of minutes on
+    a fleet this size. The delete only marks them — see _release_tracked_pods for why the
+    objects then need the tracking finalizer cleared to actually disappear.
+
+    `keep_terminal` spares Succeeded and Failed pods, for the one caller whose Job
+    survives the call (`pause`). They hold no node resources, so keeping them costs
+    nothing, and a Failed pod is the only record of why its task died — which is what
+    `pipeline inspect <layer> <index>` reads. Leaving them also leaves their tally to the
+    Job controller, which still needs it to enforce the per-index retry budget."""
+    kwargs = {
+        "label_selector": f"batch.kubernetes.io/job-name={name}",
+        "grace_period_seconds": 0,
+        "propagation_policy": "Background",
+    }
+    if keep_terminal:
+        kwargs["field_selector"] = "status.phase!=Succeeded,status.phase!=Failed"
+    with tolerate(404):  # no pods to drop
+        core().delete_collection_namespaced_pod(namespace, **kwargs)
+    # only when the Job survives the call: a deleted Job makes the controller sweep its
+    # own selector, so the per-pod patches below would be one request each for nothing
+    if keep_terminal:
+        freed = _release_tracked_pods(namespace, name)
+        if freed:
+            note(f"{name}: released {freed} pods held by the job-tracking finalizer")
+
+
 def delete_job(namespace: str, name: str):
-    batch().delete_namespaced_job(name, namespace, propagation_policy="Foreground")
+    """Delete a Job and its pods without the Foreground GC walk (see DELETE_TIMEOUT).
+
+    Suspend first: clearing the pods frees their indexes, and an unsuspended controller
+    refills parallelism in the window before the Job delete lands — those replacements
+    schedule and bill before the GC reaps them. Dropping the Job before its pods are
+    reaped is safe: a Job's pod selector carries its own controller-uid, so a later Job
+    of the same name never adopts these.
+
+    Suspending is an optimization, never a precondition: admission re-validates the
+    embedded pod template on *any* Job update, so a Job pinned to a ComputeClass that has
+    since been deleted rejects its own suspend (400) and could never be torn down. Losing
+    the suspend only risks a few replacement pods billing until the delete lands."""
+    with tolerate(400, 404, 422):  # rejected by admission, gone, or finished
+        set_suspend(namespace, name, True)
+    delete_job_pods(namespace, name)
+    batch().delete_namespaced_job(name, namespace, propagation_policy="Background")
 
 
 def _wait_deleted(read, name: str, timeout: int) -> None:
@@ -299,23 +425,22 @@ def recreate_job(namespace: str, spec):
     re-submitted (done chunks are then skipped by the per-chunk lock)."""
     name = spec.metadata.name
     b = batch()
-    try:
-        b.delete_namespaced_job(name, namespace, propagation_policy="Foreground")
+    if read_job(namespace, name) is not None:
         note(f"{name}: replacing existing job")
-        _wait_deleted(lambda: b.read_namespaced_job(name, namespace), name, 60)
-    except ApiException as exc:
-        if exc.status != 404:
-            raise
+        with tolerate(404):  # deleted under us; nothing left to wait for
+            delete_job(namespace, name)
+            # the raw read, not read_job: _wait_deleted polls until it *raises* 404, and a
+            # None-returning read would spin until DELETE_TIMEOUT and then SystemExit
+            _wait_deleted(
+                lambda: b.read_namespaced_job(name, namespace), name, DELETE_TIMEOUT
+            )
     b.create_namespaced_job(namespace, spec)
 
 
 def _delete_pod_if_exists(c, namespace, name):
-    try:
+    with tolerate(404):  # never created, or already reaped
         c.delete_namespaced_pod(name, namespace, grace_period_seconds=0)
         _wait_deleted(lambda: c.read_namespaced_pod(name, namespace), name, 30)
-    except ApiException as exc:
-        if exc.status != 404:
-            raise
 
 
 def _pod_log_text(c, name, namespace) -> str:

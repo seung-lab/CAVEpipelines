@@ -143,14 +143,7 @@ def mesh_meta(cfg) -> None:
 
 
 def _read_job(cfg, layer):
-    try:
-        return kube.batch().read_namespaced_job(
-            manifest.job_name(cfg, layer), cfg.namespace
-        )
-    except ApiException as exc:
-        if exc.status == 404:
-            return None
-        raise
+    return kube.read_job(cfg.namespace, manifest.job_name(cfg, layer))
 
 
 def _is_sample(job) -> bool:
@@ -198,9 +191,33 @@ def require_prev_complete(cfg, layer, force=False) -> None:
         )
 
 
+def require_config_unchanged(cfg) -> None:
+    """Refuse to submit against a dataset yaml edited since this process loaded it.
+
+    A stage's setup writes the dataset into the graph from the cfg the driver started with,
+    and nothing re-reads it after — so a mid-run edit reaches neither the graph nor the
+    workers, and the layer builds against values the operator believes they changed. A
+    `mesh_config.mip` edit that silently meshes at the old mip is the case this exists for.
+
+    Only the dataset: pipeline.yml carries the `apply` fields, and checking it here would
+    turn every legitimate `pipeline apply` into a hard stop at the next layer."""
+    # guards the unset field, not a fingerprint_of result: only a Config built outside
+    # load() reaches here, and without this it never matches and every submit dies
+    if not cfg.fingerprint:
+        return
+    if config.fingerprint_of(cfg.dataset_path) == cfg.fingerprint:
+        return
+    raise SystemExit(
+        f"{cfg.dataset_path} changed since this run loaded it, so the values in effect are "
+        f"the old ones — the graph was configured from the version at startup. Stop the "
+        f"driver and `pipeline resume` to pick it up; `pipeline apply` never re-reads it."
+    )
+
+
 def submit(cfg, layer, force=False) -> None:
     """Create one layer's Indexed Job (completions from cg.meta) and ramp parallelism."""
     note(f"submit L{layer} ({cfg.workload})")
+    require_config_unchanged(cfg)
     if (
         cfg.workload == "meshing"
         and layer <= start_layer(cfg)
@@ -403,12 +420,8 @@ def orchestrate(cfg, run_set, parallel=True) -> None:
     a truly-missing upstream surfaces as that stage's own worker failure."""
     if cfg.persistent_util:
         kube.util_pod(cfg.namespace, wait_create=True)  # helm just created it
-    ts = graphlib.TopologicalSorter({w: stages.STAGES[w].deps & run_set for w in run_set})
-    ts.prepare()  # a dependency cycle fails loud here
-    while ts.is_active():
-        ready = list(ts.get_ready())
+    for ready in dag_batches(run_set):  # a raising batch halts downstream stages
         _run_ready(cfg, ready, parallel)
-        ts.done(*ready)  # only on success -> a failed batch halts downstream stages
     note("orchestrate: all workloads complete")
 
 
@@ -504,13 +517,29 @@ def drive(cfg, interactive=False) -> None:
 
 
 def pause(cfg) -> None:
-    """Suspend every non-complete pipeline Job (0 resources, nothing deleted) + mark paused."""
+    """Suspend every non-complete Job and clear its *running* pods + mark paused.
+
+    Terminal pods are kept: `drive` pauses on failure and then points the operator at
+    `pipeline inspect <layer> <index>`, so deleting the Failed pods here would destroy the
+    evidence for the failure being reported."""
     # record intent first so a partial suspend still leaves the run marked paused
     state.set_run_status(cfg, state.PAUSED)
     for job in kube.list_jobs(cfg.namespace):
-        if util.job_state(job) != "complete":
-            kube.set_suspend(cfg.namespace, job.metadata.name, True)
-    note("paused: jobs suspended (0 resources); `pipeline resume` to continue")
+        if util.job_state(job) == "complete":
+            continue
+        name = job.metadata.name
+        # suspend before clearing the pods, or the controller recreates what we delete
+        # 400: admission re-validates the pod template on any Job update, so a Job pinned to
+        # a since-deleted ComputeClass rejects its own suspend — and rejects every
+        # replacement pod too, so it is already drained. 404/422: deleted or finished
+        # between the list and the patch. None may abort the loop and leave later layers
+        # running, which would also mask the failure `drive` paused to report.
+        with kube.tolerate(400, 404, 422):
+            kube.set_suspend(cfg.namespace, name, True)
+        # the suspend alone leaves the drain to the Job controller, one delete per pod:
+        # minutes of paid-for pods on a wide layer, when one collection call ends it
+        kube.delete_job_pods(cfg.namespace, name, keep_terminal=True)
+    note("paused: jobs suspended, running pods cleared; `pipeline resume` to continue")
 
 
 def resume(cfg) -> None:
@@ -596,22 +625,24 @@ def run_workload(cfg_w) -> None:
     note(f"all layers complete ({cfg_w.workload})")
 
 
-def dag_levels(run_set) -> list:
-    """Topological depth levels of run_set, e.g. [['ingest'], ['l2cache', 'meshing']]."""
+def dag_batches(run_set):
+    """Successive DAG-ready batches of run_set, alphabetical within a batch.
+
+    `ts.done` runs only after the consumer's body returns, so a body that raises never
+    resumes the generator and downstream stages are never marked ready — the halt-on-
+    failure rule is the control flow rather than something each caller must remember."""
     ts = graphlib.TopologicalSorter({w: stages.STAGES[w].deps & run_set for w in run_set})
-    ts.prepare()
-    levels = []
+    ts.prepare()  # a dependency cycle fails loud here
     while ts.is_active():
         batch = sorted(ts.get_ready())
-        levels.append(batch)
+        yield batch
         ts.done(*batch)
-    return levels
 
 
 def select_range(cfg, start, end, yes) -> set:
     """The operator's start..end depth of the build DAG -> the run set. Displays the DAG and
     prompts for any unset depth (unless `yes`, which defaults to the full top->bottom range)."""
-    levels = dag_levels(stages.build_set(cfg))
+    levels = list(dag_batches(stages.build_set(cfg)))
     last = len(levels) - 1
     if not yes and (start is None or end is None):
         note(f"build DAG for graph '{cfg.graph_id}':")
@@ -631,14 +662,18 @@ def confirm_run(cfg, run_set, parallel, yes) -> None:
     """Validate the selected stages are configured, preview the run, and confirm — all
     before any mutation."""
     for w in sorted(run_set):
-        if not stages.STAGES[w].applies(cfg):
+        stage = stages.STAGES[w]
+        if not stage.applies(cfg):
+            # read off the stage: a Protocol implementer may satisfy applies() without
+            # declaring a key, and the message must not restate the mapping either way
+            key = getattr(stage, "config_key", None)
             raise SystemExit(
-                f"stage '{w}' is selected but not configured in the dataset "
-                f"(meshing needs `mesh_config`, l2cache needs `l2cache_config`)"
+                f"stage '{w}' is selected but not configured in the dataset"
+                + (f": no `{key}`" if key else "")
             )
     note(f"run: graph '{cfg.graph_id}' ({cfg.source}) -> {sorted(run_set)}")
     cached = util.cached_layer_counts(cfg)
-    for batch in dag_levels(run_set):
+    for batch in dag_batches(run_set):
         tag = " (parallel)" if parallel and len(batch) > 1 else ""
         note(f"  {' + '.join(batch)}{tag}")
         for w in batch:
@@ -669,7 +704,24 @@ def run_layer(cfg, layer) -> None:
             note(f"L{layer} ({cfg.workload}) already complete; skipping")
             return
     if job and util.job_state(job) == "running" and not _is_sample(job):
-        note(f"L{layer} ({cfg.workload}) already running; attaching")
+        # a running Job carries the spec it was created with — image included — so
+        # attaching blind runs whatever the yml said then, not what it says now
+        drift = manifest.immutable_drift(cfg, layer, job)
+        done = (job.status.succeeded or 0) if job.status else 0
+        if drift and done:  # replacing would drop completedIndexes; not ours to discard
+            fields = "; ".join(f"{f} (running={r}, yml={w})" for f, r, w in drift)
+            raise SystemExit(
+                f"L{layer} ({cfg.workload}) is running a Job that no longer matches "
+                f"{cfg.source}: {fields}. It has {done} completed tasks, so it is not "
+                f"replaced automatically — `pipeline delete {layer}` to rebuild it, or "
+                f"put the yml back"
+            )
+        if drift:  # nothing completed yet, so rebuilding costs nothing
+            fields = "; ".join(f"{f} (running={r}, yml={w})" for f, r, w in drift)
+            note(f"L{layer} ({cfg.workload}) differs from {cfg.source}: {fields}")
+            submit(cfg, layer)
+        else:
+            note(f"L{layer} ({cfg.workload}) already running; attaching")
     else:  # absent, failed, or a leftover sample run -> (re)submit replaces it
         submit(cfg, layer)
     while True:

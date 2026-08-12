@@ -3,6 +3,7 @@
 import contextlib
 import dataclasses
 import json
+import math
 import os
 from datetime import UTC, datetime
 
@@ -202,8 +203,13 @@ def job_progress(job, total=None) -> dict:
 
 
 def job_state(job):
-    for c in job.status.conditions or []:
-        if c.type == "Complete" and c.status == "True":
+    # status is None on a freshly created Job: nothing finished, so it reads as running
+    status = getattr(job, "status", None)
+    for c in (status.conditions if status is not None else None) or []:
+        # SuccessCriteriaMet counts: the controller stamps Complete in a later update, and
+        # admission can reject that update forever (a template Autopilot won't re-validate),
+        # stranding a finished layer as "running" and blocking every layer above it.
+        if c.type in ("Complete", "SuccessCriteriaMet") and c.status == "True":
             return "complete"
         if c.type == "Failed" and c.status == "True":
             return "failed"
@@ -425,32 +431,254 @@ def run_breakdown(cfg, rate_table, run_id) -> Table:
     return table
 
 
-def usage_table(cfg, job_name, layer) -> Table:
-    """Per-pod usage for one layer Job, in cores/GiB, ordered by task index."""
-    cpu, mem = manifest.requests_for(cfg.job, layer)
-    caption = f"requests: {cpu:g} cpu | {mem:g}Gi per pod"
-    table = Table(title=f"{job_name} usage", caption=caption)
-    for col, justify in (("pod", "left"), ("cpu", "right"), ("memory", "right")):
-        table.add_column(col, justify=justify)
-    items = kube.pod_metrics(cfg.namespace, job_name)
-    if not items:
-        table.caption = "no metrics (metrics-server unavailable, or no running pods)"
-        return table
+USAGE_ROWS = 10  # pods per band: the highest, middle and lowest by cpu
+_INDEX_KEY = "batch.kubernetes.io/job-completion-index"
 
-    def index_of(item):  # pods are named {job}-{completion index}-{suffix}
-        try:
-            return int(item["metadata"]["name"][len(job_name) + 1 :].split("-")[0])
-        except ValueError:
-            return -1
 
-    for item in sorted(items, key=index_of):
-        usage = item["containers"][0]["usage"]
-        table.add_row(
-            item["metadata"]["name"],
-            f"{costs.parse_cpu(usage['cpu']):.1f}",
-            f"{costs.parse_mem(usage['memory']):.1f}Gi",
+def pod_index(obj):
+    """The Indexed-Job completion index for a pod or a PodMetrics item; None if unknown.
+
+    Label first — the only form metrics-server copies onto a metrics item — then the
+    annotation, then the pod name ({job}-{index}-{suffix})."""
+    meta = obj.get("metadata") or {} if isinstance(obj, dict) else obj.metadata
+    get = meta.get if isinstance(meta, dict) else lambda k: getattr(meta, k, None)
+    for field in ("labels", "annotations"):
+        value = (get(field) or {}).get(_INDEX_KEY)
+        if value is not None:
+            with contextlib.suppress(ValueError):
+                return int(value)
+    with contextlib.suppress(ValueError, IndexError):
+        return int((get("name") or "").rsplit("-", 2)[1])
+    return None
+
+
+def _container_usage(item, container: str) -> dict:
+    """The worker container's usage, or {} when the item carries none.
+
+    Matched by name, not by position: `containers[0]` on a pod with a sidecar measures
+    the wrong process."""
+    conts = item.get("containers") or []
+    if container:
+        for c in conts:
+            if c.get("name") == container:
+                return c.get("usage") or {}
+    return conts[0].get("usage") or {} if len(conts) == 1 else {}
+
+
+def usage_records(items, container: str = "") -> list:
+    """Metrics items -> [{'idx','pod','cpu','mem'}], highest cpu first.
+
+    An item with no usable container usage is dropped, never counted as zero: folding
+    unreported pods in as idle drags the percentiles down and flips the widen/don't
+    verdict this view exists to answer. The index breaks cpu ties, so band membership
+    cannot flicker between frames on identical data."""
+    recs = []
+    for item in items:
+        usage = _container_usage(item, container)
+        if not usage:
+            continue
+        recs.append(
+            {
+                "idx": pod_index(item),
+                "pod": (item.get("metadata") or {}).get("name", "?"),
+                "cpu": costs.parse_cpu(usage.get("cpu")),
+                "mem": costs.parse_mem(usage.get("memory")),
+            }
         )
+    recs.sort(key=lambda r: (-r["cpu"], -1 if r["idx"] is None else r["idx"]))
+    return recs
+
+
+def usage_bands(n: int, k: int = USAGE_ROWS) -> list:
+    """Disjoint, ascending index ranges into a cpu-sorted list: the k highest, the k
+    around the median, the k lowest.
+
+    At or below 3k it returns one range covering everything, so a 20-pod sample lists
+    every pod through the same call — three independent slices would overlap for every
+    n between k and 3k. k <= 0 means every pod."""
+    if k <= 0 or n <= 3 * k:
+        return [range(n)]
+    mid = (n - k) // 2
+    return [range(k), range(mid, mid + k), range(n - k, n)]
+
+
+def _quantile(values, q: float) -> float:
+    """Nearest-rank quantile of an ascending list — always a value some pod reported.
+
+    statistics.quantiles interpolates and raises below two points, so it would report a
+    p90 no pod exhibits and die on a one-pod layer. The rank is ceil(q*n)-1, not int(q*n):
+    the latter is one rank high everywhere, which pins p90 to the maximum on a 10-pod
+    layer and reads a backend-bound layer as saturated."""
+    rank = math.ceil(q * len(values)) - 1
+    return values[min(len(values) - 1, max(0, rank))]
+
+
+# of the request: the band where one spike OOM-kills the task. Distinct from the 0.90
+# quantile below and from the 1.05 over-request threshold in usage_view.
+SATURATED = 0.9
+CPU_PCTS = (("p10", 0.10), ("p50", 0.50), ("p90", 0.90), ("p99", 0.99))
+MEM_PCTS = (("p10", 0.10), ("p50", 0.50), ("p90", 0.90))  # mem reports max, not p99
+
+
+def _pcts(values, req: float, spec: str, labelled) -> str:
+    """`p10 43% p50 …` — each quantile as a percent of a known request, else absolute.
+
+    Label pairs rather than `f"p{int(100 * q)}"`: 0.1 * 100 is 10.000000000000002, and a
+    float landmine in an operator-facing string is not worth the byte."""
+
+    def cell(q):
+        value = _quantile(values, q)
+        return costs.fmt_pct(value, req) if req else format(value, spec)
+
+    return " ".join(f"{label} {cell(q)}" for label, q in labelled)
+
+
+def _usage_summary(recs, billed: float, req_mem: float, procs) -> tuple:
+    """(cpu line, memory line) — percentiles as % of the request, else absolute."""
+    if not recs:
+        return "cpu  -", "mem  -"
+    cpus = sorted(r["cpu"] for r in recs)  # each series sorted on its own: reusing the
+    mems = sorted(r["mem"] for r in recs)  # cpu order yields a non-monotonic mem p50>p90
+    if billed:
+        pinned = sum(1 for v in cpus if v >= SATURATED * billed)
+        cpu_line = (
+            f"cpu  {_pcts(cpus, billed, '.2f', CPU_PCTS)} "
+            f"of {billed:g} billed cores | {pinned:,} pods >=90% | {procs} procs"
+        )
+    else:
+        cpu_line = (
+            f"cpu  {_pcts(cpus, 0, '.2f', CPU_PCTS)} cores | "
+            f"request unknown | {procs} procs"
+        )
+    if req_mem:
+        tight = sum(1 for v in mems if v >= SATURATED * req_mem)
+        mem_line = (
+            f"mem  {_pcts(mems, req_mem, '.1f', MEM_PCTS)} "
+            f"max {mems[-1]:.1f}Gi of {req_mem:g}Gi | "
+            + (f"[red]{tight:,} pods >=90%[/]" if tight else "0 pods >=90%")
+        )
+    else:
+        mem_line = (
+            f"mem  {_pcts(mems, 0, '.1f', MEM_PCTS)} "
+            f"max {mems[-1]:.1f}Gi | request unknown"
+        )
+    return cpu_line, mem_line
+
+
+def _usage_table(recs, billed: float, req_mem: float, rows: int) -> Table:
+    """The banded pod rows. The caption is constant: a caption whose length changes
+    between frames leaves Live unable to erase the taller previous frame."""
+    table = Table(caption="% of request | highest / middle / lowest by cpu")
+    for col in ("task", "cpu", "cpu%", "mem", "mem%"):
+        table.add_column(col, justify="right")
+    table.add_column("pod", justify="left", no_wrap=True, overflow="ellipsis")
+    prev_stop = 0
+    for i, band in enumerate(usage_bands(len(recs), rows)):
+        if i:
+            gap = band.start - prev_stop
+            if gap:
+                table.add_row("…", "", "", "", "", f"{gap:,} pods not shown")
+        for r in recs[band.start : band.stop]:
+            mem_cell = costs.fmt_pct(r["mem"], req_mem)
+            if req_mem and r["mem"] >= SATURATED * req_mem:
+                mem_cell = f"[red]{mem_cell}[/]"
+            table.add_row(
+                "?" if r["idx"] is None else str(r["idx"]),
+                # two decimals: at :.1f, 0.00 (nothing running) and 0.07 (one worker
+                # blocked on Bigtable) both print "0.0" — the distinction being read here
+                f"{r['cpu']:.2f}",
+                costs.fmt_pct(r["cpu"], billed),
+                f"{r['mem']:.1f}Gi",
+                mem_cell,
+                r["pod"],
+            )
+        prev_stop = band.stop
     return table
+
+
+def usage_view(cfg, job_name: str, layer: int, rows: int = USAGE_ROWS) -> Group:
+    """A layer's cpu/memory distribution: percentiles, then the busiest, middle and
+    idlest pods. Fixed height at any fleet size; never raises inside the Live loop."""
+    notes = []
+    try:
+        job = kube.read_job(cfg.namespace, job_name)
+    except Exception:  # noqa: BLE001 - a diagnostic view must not die on an RBAC denial
+        job = None
+    if job is None:
+        notes.append(f"job '{job_name}' not readable - request from the config curve")
+    req_cpu = req_mem = 0.0
+    if job is not None:
+        req_cpu, req_mem = manifest.job_requests(job)
+    if not req_cpu:
+        # the normalized value, not the raw curve: job_spec snaps requests to the
+        # Autopilot grid, so the curve is not what the pods being measured asked for.
+        # SystemExit is not an Exception: requests_for raises it for a missing curve, and
+        # it must not kill a display (the _start_layer precedent).
+        with contextlib.suppress(Exception, SystemExit):
+            req_cpu, req_mem = manifest.normalized_requests(cfg.job, layer)
+    billed = costs.billed_cpu(req_cpu) if req_cpu else 0.0
+    if not req_cpu:
+        notes.append(
+            "no request on the Job template and no resources curve - "
+            "percentages unavailable"
+        )
+    containers = (job.spec.template.spec.containers or []) if job is not None else []
+    container = containers[0].name if containers else ""
+    recs = usage_records(kube.pod_metrics(cfg.namespace, job_name), container)
+    # status is None on a freshly created Job; this runs inside Live, where an
+    # AttributeError kills the frame instead of degrading
+    status = getattr(job, "status", None) if job is not None else None
+    active = (status.active or 0) if status is not None else len(recs)
+    # read off the live pod template, never recomputed from the yml: the question is
+    # whether the value reached the pods, and the yml only restates the belief
+    procs = manifest.job_env(job).get("PCG_N_PROCESSES", "?") if job is not None else "?"
+    state_ = job_state(job) if job is not None else "no job"
+    annotations = (job.metadata.annotations or {}) if job is not None else {}
+    sample = " sample" if annotations.get("sample") else ""
+    head = f"{job_name} [{state_}]{sample} | {len(recs):,} of {active:,} pods reporting"
+    cpu_line, mem_line = _usage_summary(recs, billed, req_mem, procs)
+    if not recs and active:
+        notes.append(
+            f"no metrics for {active:,} active pods - metrics-server unavailable, or "
+            f"every pod is younger than its scrape window"
+        )
+    elif not recs:
+        notes.append("no running pods")
+    elif active > len(recs):
+        # metrics-server needs two scrapes for a cpu rate, so a new pod is absent from
+        # the payload rather than present at zero; the lists are two non-atomic reads
+        notes.append(
+            f"{active - len(recs):,} active pods not reporting yet "
+            f"(starting, or past the scrape window)"
+        )
+    if billed:
+        # never clamped at 100: without a cpu limit a pod bursts into the node's spare
+        # cores as a matter of course. Read the limit off this Job's own template — the
+        # compute class does not imply it, and Autopilot injects limits into the pod
+        # rather than into the template it was created from.
+        res = getattr(containers[0], "resources", None) if containers else None
+        limits = getattr(res, "limits", None) or {}
+        over = sum(1 for r in recs if r["cpu"] > 1.05 * billed)
+        if over:
+            cause = (
+                "a previous Job generation, or a mid-run apply"
+                if limits.get("cpu")
+                else "no cpu limit on this Job's pods"
+            )
+            notes.append(f"{over:,} pods over 105% of the cpu request - {cause}")
+    if sample:  # memory measured at 1 chunk/task must not size a layer that runs 8
+        notes.append(
+            f"sample: 1 chunk per task, the real layer runs "
+            f"{manifest.batch_for(cfg.job, layer)}"
+        )
+    # only the memory line carries markup; head's "[state]" is literal text and would be
+    # eaten as a tag, and Text() renders markup verbatim, so the two cannot share a call
+    lines = [Text(text, no_wrap=True, overflow="ellipsis") for text in (head, cpu_line)]
+    mem_text = Text.from_markup(mem_line, overflow="ellipsis")
+    mem_text.no_wrap = True
+    lines.append(mem_text)
+    lines.append(Text(" | ".join(notes), no_wrap=True, overflow="ellipsis"))
+    return Group(*lines, _usage_table(recs, billed, req_mem, rows))
 
 
 def status_table(cfg, layer_totals=None, run_id="", start_layer=ATOMIC_LAYER) -> Group:

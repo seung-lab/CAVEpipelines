@@ -66,12 +66,18 @@ def _pod(uid, running=True, end=None, start=T0, container=True):
     )
 
 
-def _patch_cluster(monkeypatch, jobs, pods):
-    """Fake only the cluster (no live k8s); the cost db itself is a real SQLite file."""
+def _patch_cluster(monkeypatch, jobs, pods, by_uid=None):
+    """Fake only the cluster (no live k8s); the cost db itself is a real SQLite file.
+
+    `by_uid` maps job uid -> pods when a test needs generations to differ; otherwise every
+    Job sees `pods`."""
     monkeypatch.setattr(
         cost,
         "kube",
-        SimpleNamespace(list_jobs=lambda ns, w: jobs, pods_of=lambda ns, n: pods),
+        SimpleNamespace(
+            list_jobs=lambda ns, w: jobs,
+            pods_of_uid=lambda ns, uid: (by_uid or {}).get(uid, pods),
+        ),
     )
 
 
@@ -91,6 +97,20 @@ def test_sample_records_and_freezes_vanished_pods(cfg, monkeypatch):
     cost.sample(cfg)
     pods = {p.pod_uid: p for p in cost.pods(cfg, "j1")}
     assert pods["p1"].finished_at == pods["p1"].last_seen
+
+
+def test_pods_are_billed_to_their_own_job_generation(cfg, monkeypatch):
+    """Background deletion frees the Job name before its pods are reaped, so a name lookup
+    returns the previous generation's pods. Billing them to the new uid both re-prices them
+    at the new request and inflates succeeded_seen, suppressing the new Job's backfill."""
+    old, new = _job(uid="old"), _job(uid="new")
+    _patch_cluster(monkeypatch, [old], [_pod("stale")], by_uid={"old": [_pod("stale")]})
+    cost.sample(cfg)
+    # the layer is re-submitted: same name, new uid, and "stale" still lingers in the API
+    _patch_cluster(monkeypatch, [new], [], by_uid={"old": [_pod("stale")], "new": []})
+    cost.sample(cfg)
+    assert [p.pod_uid for p in cost.pods(cfg, "old")] == ["stale"]
+    assert cost.pods(cfg, "new") == []  # never adopted by the replacement
 
 
 def test_one_db_scopes_by_graph_and_workload(cfg, monkeypatch):

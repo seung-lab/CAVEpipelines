@@ -574,17 +574,17 @@ def live_usage_table(cfg, job, layer: int):
             kube.pod_metrics(cfg.namespace, job.metadata.name),
             containers[0].name if containers else "",
         )
-        if not recs:
-            return None
         procs = manifest.job_env(job).get("PCG_N_PROCESSES", "?")
         billed = costs.billed_cpu(req_cpu) if req_cpu else 0.0
-        caption = (
-            f"L{layer} only — the running layer | "
-            f"{len(recs):,} pods reporting | {procs} procs"
-        )
+        # metrics-server needs two scrapes before a pod reports, so a layer that just
+        # scaled up answers with nothing; dropping the table would take the block out of
+        # the frame mid-run, and a renderable whose height changes breaks Live's erase
+        reporting = f"{len(recs):,} pods reporting" if recs else "no metrics yet"
+        caption = f"L{layer} only — the running layer | {reporting} | {procs} procs"
         return usage_table(recs, billed, req_mem, procs, caption)
-    except Exception:  # noqa: BLE001 - a usage table must never kill the status frame
-        return None
+    except Exception as exc:  # noqa: BLE001 - never kill the status frame
+        caption = f"L{layer} only — the running layer | usage unavailable: {exc}"
+        return usage_table([], 0.0, 0.0, "?", caption)
 
 
 def _pod_usage_table(recs, billed: float, req_mem: float, rows: int) -> Table:

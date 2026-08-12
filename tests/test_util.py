@@ -97,6 +97,24 @@ def test_status_usage_lines_only_for_the_running_layer(monkeypatch, cfg, render)
     assert asked == [2]  # the running layer's number reaches the caption
 
 
+@pytest.mark.parametrize(
+    "metrics, marker",
+    [
+        (lambda ns, name: [], "no metrics yet"),
+        (lambda ns, name: 1 / 0, "usage unavailable"),
+    ],
+)
+def test_live_usage_table_renders_when_metrics_are_missing(
+    monkeypatch, cfg, render, make_job, metrics, marker
+):
+    """A layer that just scaled up reports nothing for a scrape or two. Returning None
+    would pull the block out of the frame mid-run, and Live cannot erase a taller frame."""
+    monkeypatch.setattr(util.kube, "pod_metrics", metrics)
+    out = render(util.live_usage_table(cfg, make_job(), 3))
+    assert marker in out
+    assert "cpu" in out and "mem" in out  # the rows are present, just dashed
+
+
 def test_status_progress_math(monkeypatch, cfg, render):
     _populate(monkeypatch, _job_row(succeeded=4, chunks=1000, batch=100))
     out = render(util.status_table(cfg))

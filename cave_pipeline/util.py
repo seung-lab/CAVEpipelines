@@ -591,7 +591,9 @@ def layer_ooms(cfg, job) -> int:
             if e.involved_object.kind == "Pod"
             and (e.involved_object.name or "").startswith(prefix)
         )
-    except Exception:  # noqa: BLE001 - a missing count must not kill the status frame
+    # SystemExit too: kube.core() raises it when no kubeconfig resolves, and that is a
+    # BaseException, so a bare `except Exception` lets it kill the frame
+    except (Exception, SystemExit):  # noqa: BLE001 - a missing count is not fatal
         return 0
 
 
@@ -615,7 +617,9 @@ def live_usage_table(cfg, job, layer: int):
         reporting = f"{len(recs):,} pods reporting" if recs else "no metrics yet"
         caption = f"L{layer} only — the running layer | {reporting} | {procs} procs"
         return usage_table(recs, billed, req_mem, caption, layer_ooms(cfg, job))
-    except Exception as exc:  # noqa: BLE001 - never kill the status frame
+    # SystemExit is a BaseException: an unreachable cluster raises it out of kube.core(),
+    # and status must still render the layer rows it already has
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - never kill the status frame
         caption = f"L{layer} only — the running layer | usage unavailable: {exc}"
         return usage_table([], 0.0, 0.0, caption)
 

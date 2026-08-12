@@ -11,7 +11,7 @@ _CONDS = {
 }
 
 
-def test_run_layer_skips_complete_layers(monkeypatch, cfg, make_job):
+def test_run_layer_skips_complete_layers(monkeypatch, cfg, make_job, no_cost_sample):
     job = make_job(conditions=_CONDS["complete"], succeeded=5)
     monkeypatch.setattr(ops, "_read_job", lambda c, layer: job)
     submitted = []

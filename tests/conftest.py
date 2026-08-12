@@ -159,8 +159,10 @@ def running_run(cfg):
 
 @pytest.fixture
 def no_cost_sample(monkeypatch):
-    """Silence cost sampling (it would watch the live cluster)."""
-    monkeypatch.setattr(cost, "sample", lambda c: None)
+    """Silence cost sampling (it would watch the live cluster).
+
+    Mirrors the real signature: a one-arg stub TypeErrors on the `final=True` close-out."""
+    monkeypatch.setattr(cost, "sample", lambda c, final=False: None)
 
 
 @pytest.fixture

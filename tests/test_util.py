@@ -163,6 +163,21 @@ def test_layer_ooms_survives_unreadable_events(monkeypatch, cfg, make_job):
     assert util.layer_ooms(cfg, make_job()) == 0
 
 
+def _no_kubeconfig(*_a, **_k):
+    raise SystemExit("cannot load kube config; set KUBECONFIG or run `gcloud ...`")
+
+
+def test_status_helpers_survive_a_machine_with_no_kubeconfig(
+    monkeypatch, cfg, render, make_job
+):
+    """kube.core() raises SystemExit, a BaseException that `except Exception` misses.
+    Status must still render for an operator whose credentials have not been set up."""
+    monkeypatch.setattr(util.kube, "oom_events", _no_kubeconfig)
+    monkeypatch.setattr(util.kube, "pod_metrics", _no_kubeconfig)
+    assert util.layer_ooms(cfg, make_job()) == 0
+    assert "usage unavailable" in render(util.live_usage_table(cfg, make_job(), 3))
+
+
 def test_usage_table_flags_ooms_without_literal_markup(render):
     """Text(), not markup: a '[red]' tag would print verbatim through Rich."""
     out = render(util.usage_table([], 2.0, 4.0, "cap", ooms=3))

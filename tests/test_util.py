@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from rich.text import Text
 
 from cave_pipeline import cgcache, util
 
@@ -76,6 +77,24 @@ def _job_row(succeeded, chunks, batch, conditions=None):
             completion_time=None,
         ),
     )
+
+
+def test_status_usage_lines_only_for_the_running_layer(monkeypatch, cfg, render):
+    """One metrics call per frame at most: a finished layer has no live pods to describe."""
+    asked = []
+    monkeypatch.setattr(
+        util,
+        "live_usage_table",
+        lambda c, job, layer: asked.append(layer) or Text("USAGE-MARKER"),
+    )
+    done = _job_row(succeeded=4, chunks=100, batch=25, conditions=[_cond("Complete")])
+    _populate(monkeypatch, done)
+    assert "USAGE-MARKER" not in render(util.status_table(cfg))
+    assert asked == []  # complete layer -> no metrics call at all
+
+    _populate(monkeypatch, _job_row(succeeded=1, chunks=100, batch=25))  # running
+    assert "USAGE-MARKER" in render(util.status_table(cfg))
+    assert asked == [2]  # the running layer's number reaches the caption
 
 
 def test_status_progress_math(monkeypatch, cfg, render):
@@ -219,7 +238,7 @@ def test_usage_table_renders_cores_and_gib_by_task_index():
         ],
         "ingest",
     )
-    cells = _cells(util._usage_table(recs, billed=8.0, req_mem=8.0, rows=10))
+    cells = _cells(util._pod_usage_table(recs, billed=8.0, req_mem=8.0, rows=10))
     assert cells["pod"] == ["ingest-l6-11-abc", "ingest-l6-2-xyz"]  # highest cpu first
     assert cells["task"] == ["11", "2"]
     assert cells["cpu"] == ["8.91", "0.25"]
@@ -230,9 +249,9 @@ def test_usage_table_flags_memory_at_the_saturation_mark():
     """The red mem cell is the OOM warning; without it a pod at 95% of its request reads
     the same as one at 10%."""
     recs = util.usage_records([_metric("hot", "1", "7.6Gi", idx=0)], "ingest")
-    assert "[red]" in _cells(util._usage_table(recs, 8.0, 8.0, 10))["mem%"][0]
+    assert "[red]" in _cells(util._pod_usage_table(recs, 8.0, 8.0, 10))["mem%"][0]
     recs = util.usage_records([_metric("cool", "1", "1Gi", idx=0)], "ingest")
-    assert "[red]" not in _cells(util._usage_table(recs, 8.0, 8.0, 10))["mem%"][0]
+    assert "[red]" not in _cells(util._pod_usage_table(recs, 8.0, 8.0, 10))["mem%"][0]
 
 
 def test_usage_table_counts_the_pods_it_elides_and_survives_a_missing_index():
@@ -240,7 +259,9 @@ def test_usage_table_counts_the_pods_it_elides_and_survives_a_missing_index():
     must render rather than raise."""
     items = [_metric(f"p{i}", "1", "1Gi", idx=i) for i in range(100)]
     items[0]["metadata"].pop("labels")  # scraped before the label landed
-    cells = _cells(util._usage_table(util.usage_records(items, "ingest"), 8.0, 8.0, 2))
+    cells = _cells(
+        util._pod_usage_table(util.usage_records(items, "ingest"), 8.0, 8.0, 2)
+    )
     assert any("pods not shown" in c for c in cells["pod"])
     assert "?" in cells["task"]  # unknown index, not a crash
 
@@ -264,16 +285,18 @@ def _view_text(group):
     return "\n".join(r.plain for r in group.renderables if hasattr(r, "plain"))
 
 
-def test_usage_view_parses_its_memory_markup(monkeypatch, cfg):
-    """Text() renders markup verbatim, so a [red] tag built into the summary would print
-    as literal characters in the one line that flags OOM risk."""
+def test_usage_view_flags_saturated_memory_without_literal_markup(
+    monkeypatch, cfg, render
+):
+    """The OOM flag is a cell style, not a markup tag: Text() renders markup verbatim, so
+    a "[red]" built into a string would print as literal characters."""
     monkeypatch.setattr(util.kube, "read_job", lambda ns, n: _fake_job())
     monkeypatch.setattr(
         util.kube, "pod_metrics", lambda ns, n: [_metric("a", "1", "2900Mi", idx=0)]
     )
-    text = _view_text(util.usage_view(cfg, "ingest-l3", 3))
-    assert "[red]" not in text and "[/]" not in text
-    assert "pods >=90%" in text  # the signal itself survived the markup parse
+    out = render(util.usage_view(cfg, "ingest-l3", 3))
+    assert "[red]" not in out and "[/]" not in out
+    assert "pods >=90%" in out  # the signal itself is still on the view
 
 
 def test_usage_view_keeps_the_job_state_brackets_literal(monkeypatch, cfg):

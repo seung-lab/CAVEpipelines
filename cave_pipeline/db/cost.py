@@ -8,6 +8,9 @@ A sample writes absolute cluster state (not deltas), so concurrent samplers of o
 converge — sampling is best-effort and never blocks the actual run.
 """
 
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
 from sqlalchemy import select, update
@@ -19,6 +22,12 @@ from .models import CostBase, Job, Pod
 
 DEFAULT_URL = "sqlite:///costs/cost.db"
 _CLASS_KEY = "cloud.google.com/compute-class"
+SAMPLE_INTERVAL = 30.0  # matches the driver's poll; a display needs no fresher
+
+_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cost-sample")
+_lock = threading.Lock()
+_last: dict[tuple[str, str], float] = {}
+_inflight: dict[tuple[str, str], object] = {}
 
 
 def _session(cfg):
@@ -138,17 +147,44 @@ def _close_out_unlisted(s, cfg, listed) -> None:
 
 
 @best_effort
-def sample(cfg) -> None:
-    """Record the workload's Jobs + pods right now; best-effort, never raises."""
+def sample(cfg, *, final: bool = False) -> None:
+    """Record the workload's Jobs + pods right now; best-effort, never raises.
+
+    Steady state lists unfinished pods only: a Job retains every Succeeded pod until GC, so
+    the full list grows with completions while those rows are already final here. A pod that
+    succeeds between samples is absent from the next one and _freeze_gone stops it at
+    last_seen; `final` re-reads the whole generation when a layer ends, overwriting that
+    estimate with the pod's true terminated timestamp."""
     now = datetime.now(UTC).timestamp()
     with _session(cfg) as s:
         listed = []
         for job in kube.list_jobs(cfg.namespace, cfg.workload):
             # by uid, not name: a replaced Job's pods outlive the name, and billing them
             # against this generation both re-prices them and suppresses its own backfill
-            record(s, cfg, job, kube.pods_of_uid(cfg.namespace, job.metadata.uid), now)
+            pods = kube.pods_of_uid(cfg.namespace, job.metadata.uid, unfinished=not final)
+            record(s, cfg, job, pods, now)
             listed.append(job.metadata.uid)
         _close_out_unlisted(s, cfg, listed)
+
+
+def sample_async(cfg, min_interval: float = SAMPLE_INTERVAL) -> None:
+    """Sample off the caller's thread, at most once per `min_interval` per graph+workload.
+
+    A display must not pay for accounting: a sample lists every live pod (tens of MB at
+    fleet scale) while the table renders from rows already written. One worker and an
+    in-flight check keep a slow sample from queueing behind the next frame; NullPool gives
+    the worker its own SQLite connection and WAL lets it write under a live reader."""
+    key = (cfg.graph_id, cfg.workload)
+    now = time.monotonic()
+    with _lock:
+        running = _inflight.get(key)
+        if running is not None and not running.done():
+            return
+        last = _last.get(key)
+        if last is not None and now - last < min_interval:
+            return
+        _last[key] = now
+        _inflight[key] = _pool.submit(sample, cfg)
 
 
 def jobs(cfg, run_id, workload=None) -> list[Job]:

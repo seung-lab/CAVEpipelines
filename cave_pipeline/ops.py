@@ -746,6 +746,7 @@ def run_layer(cfg, layer) -> None:
                 f"re-run `pipeline deploy --oneshot` to resume (finished layers skip)"
             )
         if p["state"] == "complete":
+            cost.sample(cfg, final=True)  # true finish times over the interim freezes
             note(f"L{layer} ({cfg.workload}) complete")
             return
         time.sleep(ONESHOT_POLL_SEC)

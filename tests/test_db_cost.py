@@ -76,13 +76,30 @@ def _patch_cluster(monkeypatch, jobs, pods, by_uid=None):
         "kube",
         SimpleNamespace(
             list_jobs=lambda ns, w: jobs,
-            pods_of_uid=lambda ns, uid: (by_uid or {}).get(uid, pods),
+            pods_of_uid=lambda ns, uid, unfinished=False: (by_uid or {}).get(uid, pods),
         ),
     )
 
 
 def _db_file(cfg):
     return cfg.database["cost"].removeprefix("sqlite:///")
+
+
+def test_steady_sample_lists_unfinished_pods_and_final_lists_all(cfg, monkeypatch):
+    """A Job retains Succeeded pods until GC, so the unfiltered list grows with every
+    completed task; only the end-of-layer pass needs their terminated timestamps."""
+    asked = []
+    monkeypatch.setattr(
+        cost,
+        "kube",
+        SimpleNamespace(
+            list_jobs=lambda ns, w: [_job()],
+            pods_of_uid=lambda ns, uid, unfinished=False: asked.append(unfinished) or [],
+        ),
+    )
+    cost.sample(cfg)
+    cost.sample(cfg, final=True)
+    assert asked == [True, False]
 
 
 def test_sample_records_and_freezes_vanished_pods(cfg, monkeypatch):

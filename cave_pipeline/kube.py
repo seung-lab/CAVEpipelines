@@ -254,20 +254,21 @@ def pods_of(namespace: str, job_name: str):
     )
 
 
-def pods_of_uid(namespace: str, job_uid: str):
+def pods_of_uid(namespace: str, job_uid: str, *, unfinished: bool = False):
     """Pods of one Job *generation*.
 
     The name is reused across generations and Background deletion frees it before the old
     pods are reaped, so a name lookup can return a previous generation's pods — which cost
     accounting would then bill against this Job's uid. The controller-uid label is stamped
-    per generation and cannot alias."""
-    return (
-        core()
-        .list_namespaced_pod(
-            namespace, label_selector=f"batch.kubernetes.io/controller-uid={job_uid}"
-        )
-        .items
-    )
+    per generation and cannot alias.
+
+    `unfinished` drops Succeeded pods server-side. A Job retains them until GC, so the full
+    list grows with every completed task (100+ MB on a 1.5M-chunk layer) while those rows
+    are already final in the cost DB — see db.cost.sample."""
+    kwargs = {"label_selector": f"batch.kubernetes.io/controller-uid={job_uid}"}
+    if unfinished:
+        kwargs["field_selector"] = "status.phase!=Succeeded"
+    return core().list_namespaced_pod(namespace, **kwargs).items
 
 
 def read_job(namespace: str, name: str):

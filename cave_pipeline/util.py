@@ -5,6 +5,7 @@ import dataclasses
 import json
 import math
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
 import yaml
@@ -516,56 +517,77 @@ def _quantile(values, q: float) -> float:
 # of the request: the band where one spike OOM-kills the task. Distinct from the 0.90
 # quantile below and from the 1.05 over-request threshold in usage_view.
 SATURATED = 0.9
-CPU_PCTS = (("p10", 0.10), ("p50", 0.50), ("p90", 0.90), ("p99", 0.99))
-MEM_PCTS = (("p10", 0.10), ("p50", 0.50), ("p90", 0.90))  # mem reports max, not p99
+PCTS = ((0.10, "p10"), (0.50, "p50"), (0.90, "p90"))  # peak is its own column
 
 
-def _pcts(values, req: float, spec: str, labelled) -> str:
-    """`p10 43% p50 …` — each quantile as a percent of a known request, else absolute.
-
-    Label pairs rather than `f"p{int(100 * q)}"`: 0.1 * 100 is 10.000000000000002, and a
-    float landmine in an operator-facing string is not worth the byte."""
-
-    def cell(q):
-        value = _quantile(values, q)
-        return costs.fmt_pct(value, req) if req else format(value, spec)
-
-    return " ".join(f"{label} {cell(q)}" for label, q in labelled)
+def _cell(value: float, req: float, spec: str) -> str:
+    """A quantile as a percent of a known request, else absolute."""
+    return costs.fmt_pct(value, req) if req else format(value, spec)
 
 
-def _usage_summary(recs, billed: float, req_mem: float, procs) -> tuple:
-    """(cpu line, memory line) — percentiles as % of the request, else absolute."""
+def usage_table(recs, billed: float, req_mem: float, procs, caption: str) -> Table:
+    """cpu/memory distribution, one row per resource.
+
+    Peak is p99 for cpu but the true max for memory: a pod dies at its memory peak, so the
+    number that predicts an OOM is the largest one, not a quantile that smooths it away."""
+    table = Table(caption=caption, caption_justify="left")
+    table.add_column("resource")
+    for _, label in PCTS:
+        table.add_column(label, justify="right")
+    # the header carries the definition so the caption need not spend a line on it
+    for col in ("p99/max", "request", "pods >=90%"):
+        table.add_column(col, justify="right")
     if not recs:
-        return "cpu  -", "mem  -"
+        table.add_row("cpu", *["-"] * 6)
+        table.add_row("mem", *["-"] * 6)
+        return table
     cpus = sorted(r["cpu"] for r in recs)  # each series sorted on its own: reusing the
     mems = sorted(r["mem"] for r in recs)  # cpu order yields a non-monotonic mem p50>p90
-    if billed:
-        pinned = sum(1 for v in cpus if v >= SATURATED * billed)
-        cpu_line = (
-            f"cpu  {_pcts(cpus, billed, '.2f', CPU_PCTS)} "
-            f"of {billed:g} billed cores | {pinned:,} pods >=90% | {procs} procs"
-        )
-    else:
-        cpu_line = (
-            f"cpu  {_pcts(cpus, 0, '.2f', CPU_PCTS)} cores | "
-            f"request unknown | {procs} procs"
-        )
-    if req_mem:
-        tight = sum(1 for v in mems if v >= SATURATED * req_mem)
-        mem_line = (
-            f"mem  {_pcts(mems, req_mem, '.1f', MEM_PCTS)} "
-            f"max {mems[-1]:.1f}Gi of {req_mem:g}Gi | "
-            + (f"[red]{tight:,} pods >=90%[/]" if tight else "0 pods >=90%")
-        )
-    else:
-        mem_line = (
-            f"mem  {_pcts(mems, 0, '.1f', MEM_PCTS)} "
-            f"max {mems[-1]:.1f}Gi | request unknown"
-        )
-    return cpu_line, mem_line
+    table.add_row(
+        "cpu",
+        *[_cell(_quantile(cpus, q), billed, ".2f") for q, _ in PCTS],
+        _cell(_quantile(cpus, 0.99), billed, ".2f"),
+        f"{billed:g} vCPU" if billed else "?",  # vCPU: "1 cores" reads as a bug
+        f"{sum(1 for v in cpus if v >= SATURATED * billed):,}" if billed else "?",
+    )
+    tight = sum(1 for v in mems if v >= SATURATED * req_mem) if req_mem else 0
+    table.add_row(
+        "mem",
+        *[_cell(_quantile(mems, q), req_mem, ".1f") for q, _ in PCTS],
+        f"{mems[-1]:.1f}Gi",
+        f"{req_mem:g}Gi" if req_mem else "?",
+        # a style, not markup: Text() renders markup verbatim and would print the tag
+        Text(f"{tight:,}", style="red") if tight else ("0" if req_mem else "?"),
+    )
+    return table
 
 
-def _usage_table(recs, billed: float, req_mem: float, rows: int) -> Table:
+def live_usage_table(cfg, job, layer: int):
+    """Usage table for the one running Job, or None when metrics are unavailable.
+
+    Requests come off the live template, never the yml curve: the question is what the
+    pods being measured actually asked for. One metrics call, no pod list."""
+    try:
+        req_cpu, req_mem = manifest.job_requests(job)
+        containers = job.spec.template.spec.containers or []
+        recs = usage_records(
+            kube.pod_metrics(cfg.namespace, job.metadata.name),
+            containers[0].name if containers else "",
+        )
+        if not recs:
+            return None
+        procs = manifest.job_env(job).get("PCG_N_PROCESSES", "?")
+        billed = costs.billed_cpu(req_cpu) if req_cpu else 0.0
+        caption = (
+            f"L{layer} only — the running layer | "
+            f"{len(recs):,} pods reporting | {procs} procs"
+        )
+        return usage_table(recs, billed, req_mem, procs, caption)
+    except Exception:  # noqa: BLE001 - a usage table must never kill the status frame
+        return None
+
+
+def _pod_usage_table(recs, billed: float, req_mem: float, rows: int) -> Table:
     """The banded pod rows. The caption is constant: a caption whose length changes
     between frames leaves Live unable to erase the taller previous frame."""
     table = Table(caption="% of request | highest / middle / lowest by cpu")
@@ -636,7 +658,6 @@ def usage_view(cfg, job_name: str, layer: int, rows: int = USAGE_ROWS) -> Group:
     annotations = (job.metadata.annotations or {}) if job is not None else {}
     sample = " sample" if annotations.get("sample") else ""
     head = f"{job_name} [{state_}]{sample} | {len(recs):,} of {active:,} pods reporting"
-    cpu_line, mem_line = _usage_summary(recs, billed, req_mem, procs)
     if not recs and active:
         notes.append(
             f"no metrics for {active:,} active pods - metrics-server unavailable, or "
@@ -671,14 +692,12 @@ def usage_view(cfg, job_name: str, layer: int, rows: int = USAGE_ROWS) -> Group:
             f"sample: 1 chunk per task, the real layer runs "
             f"{manifest.batch_for(cfg.job, layer)}"
         )
-    # only the memory line carries markup; head's "[state]" is literal text and would be
-    # eaten as a tag, and Text() renders markup verbatim, so the two cannot share a call
-    lines = [Text(text, no_wrap=True, overflow="ellipsis") for text in (head, cpu_line)]
-    mem_text = Text.from_markup(mem_line, overflow="ellipsis")
-    mem_text.no_wrap = True
-    lines.append(mem_text)
+    # head's "[state]" is literal text that markup would eat as a tag, so it stays a
+    # plain Text even though the usage lines below it do not
+    lines = [Text(head, no_wrap=True, overflow="ellipsis")]
+    lines.append(usage_table(recs, billed, req_mem, procs, f"{procs} procs"))
     lines.append(Text(" | ".join(notes), no_wrap=True, overflow="ellipsis"))
-    return Group(*lines, _usage_table(recs, billed, req_mem, rows))
+    return Group(*lines, _pod_usage_table(recs, billed, req_mem, rows))
 
 
 def status_table(cfg, layer_totals=None, run_id="", start_layer=ATOMIC_LAYER) -> Group:
@@ -688,15 +707,35 @@ def status_table(cfg, layer_totals=None, run_id="", start_layer=ATOMIC_LAYER) ->
 
     `start_layer` is passed in, not read off `cfg`: a caller rendering several stages
     holds one Config whose `job` was merged for a single workload."""
-    jobs_by_layer = {
-        int((j.metadata.labels or {}).get("layer", "0")): j
-        for j in kube.list_jobs(cfg.namespace, cfg.workload)
-    }
+    # the three cluster reads are independent, and each is seconds at fleet scale: hold
+    # node_summary in flight across the job list and the metrics fetch so the frame costs
+    # the slowest one, not their sum
+    pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="status")
     try:
-        n_nodes, spot, cpu, gib = kube.node_summary()
-        nodes = f"{n_nodes} nodes | {spot} spot | {cpu:g} cpu, {gib:.0f}Gi"
-    except Exception:  # noqa: BLE001 - node list may be RBAC-denied; not essential
-        nodes = "nodes ?"
+        nodes_future = pool.submit(kube.node_summary)
+        jobs_by_layer = {
+            int((j.metadata.labels or {}).get("layer", "0")): j
+            for j in kube.list_jobs(cfg.namespace, cfg.workload)
+        }
+        # layers are gated, so the first running one is the only one
+        live_layer, live = next(
+            (
+                (n, j)
+                for n, j in sorted(jobs_by_layer.items())
+                if job_state(j) == "running"
+            ),
+            (0, None),
+        )
+        usage_future = (
+            pool.submit(live_usage_table, cfg, live, live_layer) if live else None
+        )
+        try:
+            n_nodes, spot, cpu, gib = nodes_future.result()
+            nodes = f"{n_nodes} nodes | {spot} spot | {cpu:g} cpu, {gib:.0f}Gi"
+        except Exception:  # noqa: BLE001 - node list may be RBAC-denied; not essential
+            nodes = "nodes ?"
+    finally:
+        pool.shutdown(wait=False)
     # node_summary changes every refresh; keep it one non-wrapping line so the table
     # height stays constant — a title that wraps differently per frame leaves rich's
     # Live unable to erase the taller previous frame (the stacked-header bug).
@@ -752,7 +791,8 @@ def status_table(cfg, layer_totals=None, run_id="", start_layer=ATOMIC_LAYER) ->
             elapsed(job),
             cost_cell,
         )
-    return Group(header, table)
+    usage = usage_future.result() if usage_future is not None else None
+    return Group(header, table, *([usage] if usage is not None else []))
 
 
 _GLYPH = {

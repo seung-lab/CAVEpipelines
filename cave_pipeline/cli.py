@@ -6,6 +6,7 @@ Indexed Jobs. Layers are operator-gated: submit one, watch it Complete, submit t
 next (a layer's writes are non-idempotent).
 """
 
+import contextlib
 import dataclasses
 import functools
 import logging
@@ -72,6 +73,18 @@ def cli(ctx, config_name, graph_id, verbose):
     ctx.obj = (config_name, graph_id)  # loaded lazily by pass_cfg: --help needs no config
 
 
+def _short_path(path: str) -> str:
+    """A path relative to the cwd when it sits under it — the absolute prefix of a repo
+    path is context the operator already has, and it pushes the real fields off the line."""
+    if not path:
+        return "none"
+    with contextlib.suppress(ValueError):  # different drive: no relative form exists
+        rel = os.path.relpath(path)
+        if not rel.startswith(".."):
+            return rel
+    return path
+
+
 def pass_cfg(fn):
     """Pass the loaded Config as the handler's first argument.
 
@@ -87,16 +100,16 @@ def pass_cfg(fn):
             if graph_id:
                 cfg.graph_id = graph_id
             ctx_id = (
-                f"graph: {cfg.graph_id}, workload: {cfg.workload}, "
-                f"dataset: {cfg.dataset_path or 'none'}"
+                f"config {_short_path(cfg.source)} | graph {cfg.graph_id} | "
+                f"workload {cfg.workload} | dataset {_short_path(cfg.dataset_path)}"
             )
             if newly_selected:  # announce the session lock loudly
                 note(
-                    f"config: {cfg.source} ({ctx_id}) — session config; "
-                    f"every command uses it until `pipeline reset`"
+                    f"{ctx_id}\nsession config — every command uses it until "
+                    f"`pipeline reset`"
                 )
             else:
-                note(f"config: {cfg.source} ({ctx_id})")
+                note(ctx_id)
             ctx.obj = cfg
         return ctx.invoke(fn, ctx.obj, *args, **kwargs)
 
@@ -491,7 +504,7 @@ def status(cfg, once, interval):
             current = state.states(cfg)
             for w in order:
                 if current.get(w) == state.RUNNING:
-                    cost.sample(dataclasses.replace(cfg, workload=w))
+                    cost.sample_async(dataclasses.replace(cfg, workload=w))
             return util.run_view(
                 cfg, run_now, order, current, util.cached_layer_counts(cfg)
             )
@@ -499,7 +512,7 @@ def status(cfg, once, interval):
         order = [cfg.workload]
 
         def render():
-            cost.sample(cfg)
+            cost.sample_async(cfg)
             return util.status_table(
                 cfg, util.cached_layer_counts(cfg), start_layer=cfg.job.start_layer
             )

@@ -16,6 +16,18 @@ from rich.console import Console
 console = Console(stderr=True)
 
 
+class DropTransientRetries(logging.Filter):
+    """Drop urllib3's connection-retry warnings; a real failure still raises ApiException.
+
+    Must be a *handler* filter, on two counts: kubernetes' Configuration resets the
+    urllib3 logger's level to WARNING whenever one is constructed, and a logger filter
+    is not applied to records propagated from children like urllib3.connectionpool.
+    """
+
+    def filter(self, record) -> bool:
+        return not (record.name.startswith("urllib3") and record.levelno < logging.ERROR)
+
+
 class ConsoleHandler(logging.Handler):
     """Log through the shared Console so messages interleave with a live display."""
 

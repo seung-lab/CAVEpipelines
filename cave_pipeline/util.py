@@ -819,7 +819,7 @@ def run_view(cfg, run, order, stage_states, layer_totals=None) -> Group:
     )
     head = f"{cfg.graph_id}  {glyphs}  ({run.status})"
     if run.status == state.RUNNING and not pid_alive(run.pid):
-        head += "  [red](driver not running — re-run deploy to resume)[/]"
+        head += "  [red](driver not running)[/]"
     rate_table = costs.load_table()
     parts = [head]
     for w in order:

@@ -33,7 +33,7 @@ from . import (
 )
 from .db import cost, state
 from .distribution import run_and_exit
-from .term import ConsoleHandler, console
+from .term import ConsoleHandler, DropTransientRetries, console
 
 
 @click.group(help=__doc__, context_settings={"help_option_names": ["-h", "--help"]})
@@ -61,10 +61,12 @@ from .term import ConsoleHandler, console
 def cli(ctx, config_name, graph_id, verbose):
     # Root stays at NOTE so -v doesn't unleash urllib3/kubernetes HTTP body dumps
     # (unreadable multi-KB single lines); -v only deepens our own logger.
-    logging.basicConfig(level=NOTE, format="%(message)s", handlers=[ConsoleHandler()])
-    # kubernetes' urllib3 logs transient connection retries (RemoteDisconnected) at
-    # WARNING; they recover, so drop them — a real failure still raises ApiException.
-    logging.getLogger("urllib3").setLevel(logging.ERROR)
+    handler = ConsoleHandler()
+    # kubernetes' urllib3 logs transient connection retries (IncompleteRead on a
+    # fleet-sized pod list) at WARNING; they recover, so drop them at the sink —
+    # setting the urllib3 level cannot work, see term.DropTransientRetries.
+    handler.addFilter(DropTransientRetries())
+    logging.basicConfig(level=NOTE, format="%(message)s", handlers=[handler])
     if verbose:
         log.setLevel(logging.DEBUG)
     ctx.obj = (config_name, graph_id)  # loaded lazily by pass_cfg: --help needs no config

@@ -1,3 +1,4 @@
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -5,6 +6,20 @@ from click.testing import CliRunner
 from kubernetes.client import ApiException
 
 from cave_pipeline import cli, ops
+from cave_pipeline.term import DropTransientRetries
+
+
+def _record(name, level):
+    return logging.LogRecord(name, level, __file__, 1, "msg", None, None)
+
+
+def test_transient_retries_dropped_from_urllib3_children_only():
+    """Must hold on a *child* logger: kubernetes' Configuration resets the urllib3 level on
+    construction, and a logger filter never sees records propagated up from a child."""
+    keep = DropTransientRetries().filter
+    assert not keep(_record("urllib3.connectionpool", logging.WARNING))
+    assert keep(_record("urllib3.connectionpool", logging.ERROR))  # real failures survive
+    assert keep(_record("pipeline", logging.WARNING))  # our own output is untouched
 
 
 def run_cmd(command, argv, cfg):

@@ -63,6 +63,7 @@ which lives in `dataset.yml` (read only by `setup`; workers read graph meta from
 | `pipeline scale <layer> <n>` | resize the running layer's workers (set Job parallelism) anytime |
 | `pipeline apply` | reconcile running layers to the edited `pipeline.yml` in place — resize pods (cpu/memory) + set parallelism (from `ramp.max`), no restart or progress loss; any other field change is skipped here — the driver resubmits that layer on its next pass |
 | `pipeline sample <layer> <n>` | run N scattered chunks (one per pod) to size CPU/memory before a full run |
+| `pipeline image-preflight [image]` | check a PCG image against the [image contract](#2-image) by reading it from Docker Hub, in seconds and without creating anything; defaults to `images.pcg`, and runs by itself before `deploy`, `resume`, `setup`, `mesh-meta`, `submit` and `sample` |
 | `pipeline status` | live progress until Ctrl-C (`-o` one snapshot, `-i` interval). A recorded `--oneshot`/`--all-layers` run shows a per-stage DAG view (running stage → full table, done → one-line summary, dead driver → red warning); otherwise the configured workload's per-layer table: done, %, active, retries, failed, elapsed, cost, nodes |
 | `pipeline inspect <layer> [index]` | list a layer's failed indexes; with an index, that pod's log |
 | `pipeline pods <layer>` | the layer's pods: index, phase, node, scheduling reason |
@@ -86,7 +87,7 @@ non-idempotent).
 
 ## Requirements
 
-- gcloud SDK, Terraform (>= 1.6), Helm (>= 3.13), kubectl (>= 1.30), Python (>= 3.12)
+- gcloud SDK, Terraform (>= 1.6), Helm (>= 3.13), kubectl (>= 1.30), Python (>= 3.11)
 - An existing Bigtable instance (co-locate it in the cluster region for low latency).
 
 ```shell
@@ -142,11 +143,17 @@ caveconnectome/pcgl2cache:<tag>       # l2cache
 
 Pin the tags in `pipeline.yml` (`images:`).
 
-**Requires `pychunkedgraph` >= v3.2.0.dev6** — `pipeline` refuses an older tag. Images before
-v3.2.0 predate the worker entrypoint this pipeline drives (the Indexed-Job env contract, incl.
-`PCG_N_PROCESSES`); dev4 honors it for ingest, dev5 for the meshing stitch, and dev6 bundles a
-`cave-pipeline` whose harness actually emits the variable. Anything older sizes a process pool
-from the node's cores, so the pod CFS-throttles itself.
+**The PCG image must follow the image contract** for ingest and meshing
+([`contract.py`](cave_pipeline/contract.py), clauses in [`preflight/clauses.py`](cave_pipeline/preflight/clauses.py)):
+public on Docker Hub; `pychunkedgraph` under `/app`; entrypoints exiting through `os._exit`; a
+harness whose env reads and keys line up with what the Job sets; setups accepting the
+operator's arguments and reading the mounted dataset. `pipeline image-preflight [image]` reads
+the image from the registry, in memory: a pass prints nothing, a broken image lists every
+violation and ends on a `FAIL` verdict. The same check runs before `deploy`, `resume`, `setup`,
+`mesh-meta`, `submit` and `sample`, so a broken image stops before any pod starts; no tag or
+package version is ever read. When Docker Hub cannot serve the image (its anonymous pull limit,
+say), the command stops `UNCHECKED` and says why. It cannot see runtime faults, dataset content,
+or images outside Docker Hub.
 
 ## 3. Config + deploy
 

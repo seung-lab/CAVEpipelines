@@ -105,6 +105,24 @@ def test_orchestrate_parallel_partial_failure_reports_and_finishes_siblings(
     assert "l2cache" in ran  # a failing sibling never aborts the healthy one
 
 
+def test_a_batch_whose_image_was_edited_mid_run_is_checked_again(monkeypatch, cfg):
+    """The yml is re-read per DAG batch, so an images.pcg edited since the driver's own check
+    must not reach a Job unchecked; an unchanged image is not read twice."""
+    checked = []
+    monkeypatch.setattr(
+        ops.preflight.Preflight, "require", lambda self: checked.append(self.image)
+    )
+    monkeypatch.setattr(ops, "run_workload", lambda cfg_w: None)
+    unchanged = dataclasses.replace(cfg, workload="ingest")
+    monkeypatch.setattr(ops, "_phase_cfg", lambda c, w: unchanged)
+    ops._run_ready(cfg, ["ingest"], parallel=False)
+    assert checked == []
+    edited = dataclasses.replace(unchanged, images=config.Images(pcg="repo/pcg:edited"))
+    monkeypatch.setattr(ops, "_phase_cfg", lambda c, w: edited)
+    ops._run_ready(cfg, ["ingest"], parallel=False)
+    assert checked == ["repo/pcg:edited"]
+
+
 def test_run_workload_records_complete_then_failed(monkeypatch, cfg, stub_layer_counts):
     monkeypatch.setattr(ops, "setup", lambda c, exist_ok=False: None)
     stub_layer_counts({2: 1})

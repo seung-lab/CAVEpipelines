@@ -58,6 +58,18 @@ def test_setup_runs_pipeline_ingest_setup(monkeypatch, cfg):
     ]
 
 
+def test_a_refused_image_stops_deploy_before_helm(monkeypatch, cfg):
+    """The check comes first, so a broken image never reaches helm, a prompt or a pod."""
+
+    def refuse(self):
+        raise SystemExit("image-preflight: breaks the PCG image contract")
+
+    monkeypatch.setattr(cli.preflight.Preflight, "require", refuse)
+    monkeypatch.setattr(ops, "deploy_infra", lambda c, s: pytest.fail("helm ran"))
+    res = run_cmd(cli.deploy, [], cfg)
+    assert res.exit_code == 1 and "breaks the PCG image contract" in res.output
+
+
 def test_setup_enables_raw_when_agglomeration_present(monkeypatch, cfg):
     cfg.dataset["ingest_config"] = {"AGGLOMERATION": "gs://b/agg"}
     seen = _capture_run_with_dataset(monkeypatch)

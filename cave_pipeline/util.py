@@ -15,6 +15,7 @@ from rich.text import Text
 
 from . import cgcache, config, costs, kube, manifest, note
 from .config import ATOMIC_LAYER
+from .contract import STANDARD
 from .db import cost, state
 
 # Cold ChunkedGraph init fits in 30s with headroom; the warm cg-cache server pays it
@@ -73,13 +74,13 @@ def run_with_dataset(cfg, name, argv):
     """Apply the graph's dataset ConfigMap, then run argv in a fresh one-shot pod.
 
     Always one-shot: a new pod mounts the just-applied ConfigMap immediately, while
-    a running pod's mount would lag the kubelet sync by 60-90s. The key stays
-    `dataset.yml`, matching the in-pod PCG_DATASET default."""
+    a running pod's mount would lag the kubelet sync by 60-90s. The key is the contract's
+    dataset file, so the mount lands where the in-pod PCG_DATASET default reads."""
     cm = manifest.dataset_configmap_name(cfg.graph_id)
     kube.apply_configmap(
         cfg.namespace,
         cm,
-        {"dataset.yml": yaml.safe_dump(cfg.dataset)},
+        {STANDARD.dataset_file: yaml.safe_dump(cfg.dataset)},
         {"pipeline": "dataset", "graph": cfg.graph_id},
     )
     note(f"{name}: dataset configmap '{cm}' applied")
@@ -609,7 +610,7 @@ def live_usage_table(cfg, job, layer: int):
             kube.pod_metrics(cfg.namespace, job.metadata.name),
             containers[0].name if containers else "",
         )
-        procs = manifest.job_env(job).get("PCG_N_PROCESSES", "?")
+        procs = manifest.job_env(job).get(STANDARD.worker_env.n_processes, "?")
         billed = costs.billed_cpu(req_cpu) if req_cpu else 0.0
         # metrics-server needs two scrapes before a pod reports, so a layer that just
         # scaled up answers with nothing; dropping the table would take the block out of
@@ -690,7 +691,8 @@ def usage_view(cfg, job_name: str, layer: int, rows: int = USAGE_ROWS) -> Group:
     active = (status.active or 0) if status is not None else len(recs)
     # read off the live pod template, never recomputed from the yml: the question is
     # whether the value reached the pods, and the yml only restates the belief
-    procs = manifest.job_env(job).get("PCG_N_PROCESSES", "?") if job is not None else "?"
+    n_processes = STANDARD.worker_env.n_processes
+    procs = manifest.job_env(job).get(n_processes, "?") if job is not None else "?"
     state_ = job_state(job) if job is not None else "no job"
     annotations = (job.metadata.annotations or {}) if job is not None else {}
     sample = " sample" if annotations.get("sample") else ""

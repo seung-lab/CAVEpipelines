@@ -6,10 +6,11 @@ readme = "README.md"
 license = "MPL-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "CAVEconnectome" }]
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
@@ -50,7 +51,12 @@ requires = ["setuptools>=77", "setuptools_scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["cave_pipeline", "cave_pipeline.db", "cave_pipeline.distribution"]
+packages = [
+    "cave_pipeline",
+    "cave_pipeline.db",
+    "cave_pipeline.distribution",
+    "cave_pipeline.preflight",
+]
 
 [tool.setuptools.package-data]
 cave_pipeline = ["rates.csv"]
@@ -64,7 +70,7 @@ line-length = 90
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["--strict-markers", "--strict-config"]
-# only our own deprecations are fatal: deps are lower-bounded across a 3.12-3.14 matrix,
+# only our own deprecations are fatal: deps are lower-bounded across a 3.11-3.14 matrix,
 # so an unscoped rule reds the build on an upstream release. Last match wins.
 filterwarnings = [
     "default",

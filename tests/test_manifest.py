@@ -1,7 +1,7 @@
 import pytest
 from kubernetes import client
 
-from cave_pipeline import cgcache, config, manifest
+from cave_pipeline import cgcache, config, contract, manifest
 
 
 def _job(cfg, layer=2, chunks=100, completions=5, parallelism=3, **kw):
@@ -295,7 +295,8 @@ def test_job_name_is_dns_safe_for_underscore_workloads(cfg):
 
 def test_command_for_routes_per_workload(cfg):
     cfg.workload = "ingest"
-    assert manifest.command_for(cfg) == manifest.INGEST_COMMAND  # built-in -> its command
+    # a contract workload -> the command the contract names
+    assert manifest.command_for(cfg) == contract.WORKLOADS["ingest"].worker_argv()
     cfg.workload = "migrate_cleanup"  # the cleanup pass is the migrate worker + --clean
     assert manifest.command_for(cfg) == manifest.MIGRATE_COMMAND + ["--clean"]
     cfg.workload = "l2cache"  # built-in default ...

@@ -8,11 +8,10 @@ from kubernetes import client
 
 from . import cgcache, note
 from . import config as cfgmod
+from .contract import STANDARD, WORKLOADS
 from .costs import GP_MAX, billed_cpu, normalize_requests, parse_cpu, parse_mem
 from .packing import fill_node
 
-INGEST_COMMAND = ["python", "-m", "pychunkedgraph.pipeline.ingest"]
-MESHING_COMMAND = ["python", "-m", "pychunkedgraph.pipeline.meshing"]
 MIGRATE_COMMAND = ["python", "-m", "pychunkedgraph.pipeline.migrate"]
 L2CACHE_COMMAND = ["python", "-m", "pcgl2cache.pipeline.l2cache"]
 SPOT_SELECTOR = {"cloud.google.com/gke-spot": "true"}
@@ -153,10 +152,8 @@ def dataset_configmap_name(graph_id: str) -> str:
 
 
 def command_for(cfg):
-    if cfg.workload == "ingest":
-        return INGEST_COMMAND
-    if cfg.workload == "meshing":
-        return MESHING_COMMAND
+    if cfg.workload in WORKLOADS:
+        return WORKLOADS[cfg.workload].worker_argv()
     if cfg.workload == "migrate":
         return MIGRATE_COMMAND
     if cfg.workload == "migrate_cleanup":
@@ -191,7 +188,7 @@ def _env_from():
     ]
 
 
-def _extra_env(cfg):
+def extra_env(cfg):
     """Operator env from pipeline.yml ``env:`` — injected into worker + util containers.
     Unset keys are skipped: container env overrides the ConfigMap, so injecting an
     empty value would clobber vars published there (e.g. BIGTABLE_*)."""
@@ -254,6 +251,7 @@ def job_spec(
         node_selector["topology.kubernetes.io/zone"] = cfg.zone
 
     requests = layer_requests(cfg.job, layer)
+    names = STANDARD.worker_env
     container = client.V1Container(
         name=cfg.workload.replace("_", "-"),
         image=cfg.image(),
@@ -261,17 +259,17 @@ def job_spec(
         env=[
             client.V1EnvVar(name=k, value=v)
             for k, v in (
-                ("PCG_GRAPH_ID", cfg.graph_id),
-                ("PCG_LAYER", str(layer)),
-                ("PCG_PERM_SEED", str(cfg.job.perm_seed)),
-                ("PCG_BATCH_SIZE", str(batch_size)),
+                (names.graph_id, cfg.graph_id),
+                (names.layer, str(layer)),
+                (names.perm_seed, str(cfg.job.perm_seed)),
+                (names.batch_size, str(batch_size)),
                 # the builder's pool size: the pod's own cpu. Left to itself the pool uses
                 # mp.cpu_count() (= os.cpu_count(), the *node*) and oversubscribes the pod.
-                ("PCG_N_PROCESSES", str(layer_processes(cfg.job, layer))),
+                (names.n_processes, str(layer_processes(cfg.job, layer))),
             )
         ]
         + _l2cache_env(cfg)
-        + _extra_env(cfg),
+        + extra_env(cfg),
         env_from=_env_from(),
         # requests only: Autopilot bills them and a cpu limit would forfeit the burst into
         # a node's spare cores for nothing. The pod-billed classes admit a template without
@@ -374,7 +372,7 @@ def immutable_drift(cfg, layer: int, job) -> list:
     selector = spec.template.spec.node_selector or {}
     annotations = job.metadata.annotations or {}
     checks = [
-        ("perm_seed", env.get("PCG_PERM_SEED"), str(cfg.job.perm_seed)),
+        ("perm_seed", env.get(STANDARD.worker_env.perm_seed), str(cfg.job.perm_seed)),
         ("batch_size", annotations.get("batch_size"), str(batch_for(cfg.job, layer))),
         # the gate and the factor, never PCG_N_PROCESSES: the product also tracks
         # job.resources, which `apply` edits live and must not read as drift
@@ -400,7 +398,7 @@ def immutable_drift(cfg, layer: int, job) -> list:
             min(cfg.job.max_failed_tasks, spec.completions),
         ),
     ]
-    for var in _l2cache_env(cfg) + _extra_env(cfg):  # workload + operator env vars
+    for var in _l2cache_env(cfg) + extra_env(cfg):  # workload + operator env vars
         checks.append((f"env:{var.name}", env.get(var.name), var.value))
     return [(field, run, want) for field, run, want in checks if str(run) != str(want)]
 
@@ -416,7 +414,7 @@ def oneshot_pod_spec(
     volumes = [_secrets_volume(cfg)]
     if dataset_configmap:
         mounts.insert(
-            0, client.V1VolumeMount(name="datasets", mount_path="/app/datasets")
+            0, client.V1VolumeMount(name="datasets", mount_path=STANDARD.dataset_dir)
         )
         volumes.insert(
             0,
@@ -429,7 +427,7 @@ def oneshot_pod_spec(
         name="util",
         image=image or cfg.image(),
         command=argv,
-        env=_extra_env(cfg),
+        env=extra_env(cfg),
         env_from=_env_from(),
         resources=client.V1ResourceRequirements(requests=UTIL_REQUESTS),
         volume_mounts=mounts,
@@ -465,10 +463,10 @@ def helm_values(cfg, secret_data=None) -> dict:
                 "name": cfgmod.ENV_CONFIGMAP,
                 "namespace": cfg.namespace,
                 "vars": {
-                    "BIGTABLE_PROJECT": cfg.bigtable.project,
-                    "BIGTABLE_INSTANCE": cfg.bigtable.instance,
+                    STANDARD.pod_env.bigtable_project: cfg.bigtable.project,
+                    STANDARD.pod_env.bigtable_instance: cfg.bigtable.instance,
                     # ADC: all Google clients (Bigtable + buckets) use the mounted key
-                    "GOOGLE_APPLICATION_CREDENTIALS": "/root/.cloudvolume/secrets/google-secret.json",
+                    STANDARD.pod_env.credentials: "/root/.cloudvolume/secrets/google-secret.json",
                 },
             }
         ],

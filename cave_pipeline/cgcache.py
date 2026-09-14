@@ -4,23 +4,26 @@ The persistent util pod runs SERVER_SRC as its container command: it imports
 ChunkedGraph once, then answers meta probes over a unix socket. Probes exec the
 stdlib-only CLIENT_SRC; the one-shot path (no util pod) runs ONESHOT_SRC inline.
 
-These ship as source strings because the util pod runs the PCG image, which lacks
-the `pipeline` package. This module imports nothing from `pipeline`, so both `util`
-and `manifest` import it without a cycle. op/gid/socket/timeout pass as argv (never
-interpolated), so the snippets are static and injection-free.
+These ship as source strings because an image need not carry cave-pipeline (pcgv2 does
+not) and never carries this operator's dependencies, so in-image code cannot import this
+operator's modules. This module imports only `contract`, so both `util` and `manifest`
+import it without a cycle. op/gid/socket/timeout pass as argv (never interpolated), and
+the probe class is the contract's constant, so the snippets are static and injection-free.
 """
+
+from .contract import STANDARD
 
 CG_SOCK = "/tmp/cg-cache.sock"
 
 # The two meta probes, defined once and embedded in both the server and the one-shot
 # snippet. A fresh ChunkedGraph per call re-reads meta, so the mutable mesh block is
 # never stale; the output reproduces the standalone snippet's stdout (parsers unchanged).
-_OPS_SRC = """
-from pychunkedgraph.graph import ChunkedGraph
+_OPS_SRC = f"""
+from {STANDARD.probe.module} import {STANDARD.probe.name}
 
 
 def run_op(op, gid):
-    cg = ChunkedGraph(graph_id=gid)
+    cg = {STANDARD.probe.name}(graph_id=gid)
     if op == "counts":
         return " ".join(str(int(c)) for c in cg.meta.layer_chunk_counts) + "\\n"
     if op == "mesh":

@@ -10,56 +10,6 @@ def _write(dirpath, name, content):
     (dirpath / name).write_text(yaml.safe_dump(content))
 
 
-FINAL = config._FINAL
-
-
-@pytest.mark.parametrize(
-    "image, version",
-    [
-        ("caveconnectome/pychunkedgraph:v3.2.0", (3, 2, 0, FINAL, 0)),
-        ("caveconnectome/pychunkedgraph:3.2.0", (3, 2, 0, FINAL, 0)),  # v optional
-        ("caveconnectome/pychunkedgraph:v3.2", (3, 2, 0, FINAL, 0)),  # patch -> 0
-        ("caveconnectome/pychunkedgraph:v3.2.0.dev4", (3, 2, 0, 0, 4)),
-        ("caveconnectome/pychunkedgraph:v3.2.0rc1", (3, 2, 0, 3, 1)),  # no separator
-        ("caveconnectome/pychunkedgraph:v3.10.0", (3, 10, 0, FINAL, 0)),  # not lexical
-        ("localhost:5000/pcg:v4.0.0", (4, 0, 0, FINAL, 0)),  # port is not the tag
-        ("caveconnectome/pychunkedgraph:vNewIngest6", ()),
-        ("caveconnectome/pychunkedgraph:latest", ()),
-        ("caveconnectome/pychunkedgraph", ()),  # untagged
-        ("caveconnectome/pychunkedgraph@sha256:abc123", ()),  # digest-pinned
-        ("localhost:5000/pcg", ()),  # port, still untagged
-    ],
-)
-def test_image_version_reads_the_tag(image, version):
-    assert config.image_version(image) == version
-
-
-def test_prerelease_ordering_puts_dev_below_its_release():
-    """dev5 < dev6 < rc1 < the 3.2.0 release — the floor sits between dev5 and dev6."""
-    tags = ["v3.2.0.dev5", "v3.2.0.dev6", "v3.2.0rc1", "v3.2.0", "v3.2.1"]
-    versions = [config.image_version(f"repo/pcg:{t}") for t in tags]
-    assert versions == sorted(versions)
-
-
-@pytest.mark.parametrize(
-    "tag",
-    [
-        "vNewIngest6",  # the tag that ran 2h and built nothing
-        "latest",
-        "v3.1.9",
-        "v2.22.0.dev8",  # newer by date, older by version
-        "v3.2.0.dev3",  # clears the entrypoint bar, still pools on the node's cores
-        "v3.2.0.dev4",  # ingest pools fixed, meshing stitch still single-process
-        "v3.2.0.dev5",  # both pools fixed, but pins a harness emitting n_threads
-        "v3.2.0.dev0",
-    ],
-)
-def test_load_rejects_a_pcg_image_below_the_floor(tmp_path, tag):
-    _write(tmp_path, "pipeline.yml", {**BASE, "images": {"pcg": f"repo/pcg:{tag}"}})
-    with pytest.raises(SystemExit, match=config.MIN_PCG_IMAGE):
-        config.load(str(tmp_path / "pipeline.yml"))
-
-
 @pytest.mark.parametrize("bad", ["", "   ", None])
 def test_load_rejects_an_empty_graph_id(tmp_path, bad):
     """Present-but-empty clears the presence check, then the `graph=` selector it feeds
@@ -174,14 +124,6 @@ def test_start_layer_applies_only_to_its_own_workload(tmp_path):
 def test_start_layer_defaults_to_the_atomic_layer(tmp_path):
     _write(tmp_path, "pipeline.yml", BASE)
     assert config.load(str(tmp_path / "pipeline.yml")).job.start_layer == 2
-
-
-@pytest.mark.parametrize(
-    "tag", ["v3.2.0.dev6", "v3.2.0.dev7", "v3.2.0rc1", "v3.2.0", "v3.3.0", "v4.0.0"]
-)
-def test_load_accepts_the_floor_and_above(tmp_path, tag):
-    _write(tmp_path, "pipeline.yml", {**BASE, "images": {"pcg": f"repo/pcg:{tag}"}})
-    assert config.load(str(tmp_path / "pipeline.yml")).images.pcg == f"repo/pcg:{tag}"
 
 
 def test_load_defaults_and_bigtable_injection(tmp_path):

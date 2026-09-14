@@ -12,7 +12,6 @@ through to `setup`.
 import contextlib
 import hashlib
 import os
-import re
 from dataclasses import dataclass, field, fields
 
 import yaml
@@ -20,12 +19,6 @@ import yaml
 CONFIG_DIR = "config"
 ENV_CONFIGMAP = "pcg-env"
 ATOMIC_LAYER = 2  # supervoxels; every graph is built from here up
-# v3.2.0 added the worker entrypoint and the PCG_* env contract; .dev4 made the ingest
-# pools honor PCG_N_PROCESSES, .dev5 the meshing stitch pool, and .dev6 bundles a
-# cave-pipeline whose harness actually emits that variable (dev5 pinned one that still
-# emitted n_threads, so every pod died on KeyError). Older images either ignore the
-# contract or size a pool from the node's cores — both only fail once pods are burning.
-MIN_PCG_IMAGE = "v3.2.0.dev6"
 # builders block on Bigtable at ~6% of a core, so one worker per vCPU idles the pod
 PROCESSES_PER_VCPU = 2
 # Pod-billed classes. "" is the default class, requested by omitting the selector — there is
@@ -139,36 +132,6 @@ class Config:
 
     def image(self) -> str:
         return self.images.l2cache if self.workload == "l2cache" else self.images.pcg
-
-
-# every published 3.2 image is a pre-release, so the ordering has to rank them:
-# dev < alpha < beta < rc < the final release that follows them.
-_STAGE_RANK = {"dev": 0, "a": 1, "alpha": 1, "b": 2, "beta": 2, "rc": 3, "c": 3}
-_FINAL = max(_STAGE_RANK.values()) + 1
-_VERSION_RE = re.compile(
-    r"v?(\d+)\.(\d+)(?:\.(\d+))?(?:[._-]?(dev|alpha|beta|rc|a|b|c)\.?(\d+)?)?",
-    re.IGNORECASE,
-)
-
-
-def image_version(image: str) -> tuple:
-    """Sortable (major, minor, patch, stage, stage_no) from an image tag, or ().
-
-    A digest-pinned, untagged, or non-numeric reference yields (), which sorts below
-    every real version — so an unreadable tag fails the floor check like an old one."""
-    last = image.rpartition("/")[2]  # a registry host may carry a :port
-    tag = image.rpartition(":")[2] if ":" in last else ""
-    match = _VERSION_RE.match(tag)
-    if not match:
-        return ()
-    major, minor, patch, stage, stage_no = match.groups()
-    return (
-        int(major),
-        int(minor),
-        int(patch or 0),
-        _STAGE_RANK.get((stage or "").lower(), _FINAL),
-        int(stage_no or 0),
-    )
 
 
 _WORKLOADS = ("ingest", "l2cache", "meshing", "migrate", "migrate_cleanup")
@@ -287,19 +250,6 @@ def load(name: str | None = None, workload: str | None = None) -> Config:
     image = (raw.get("images") or {}).get("pcg")
     if not image:
         raise SystemExit(f"{path}: images.pcg is required")
-    version = image_version(image)
-    if not version:
-        raise SystemExit(
-            f"{path}: images.pcg '{image}' carries no version tag; pipeline requires "
-            f"pychunkedgraph >= {MIN_PCG_IMAGE}. A floating (`latest`) or digest-pinned "
-            f"reference cannot be checked, and the wrong image fails inside the pod."
-        )
-    if version < image_version(f":{MIN_PCG_IMAGE}"):
-        raise SystemExit(
-            f"{path}: images.pcg '{image}' is older than {MIN_PCG_IMAGE}, which "
-            f"pipeline requires — earlier images lack the worker entrypoint, or size "
-            f"their process pools from the node's cores and CFS-throttle every pod."
-        )
     # a present-but-empty yaml key parses to None; _block/_value resolve that to the
     # field's declared default, so a default is never written twice
     bt = _block(Bigtable, raw.get("bigtable"))

@@ -24,12 +24,15 @@ from rich.table import Table
 from . import (
     NOTE,
     config,
+    contract,
     costs,
     kube,
     log,
     manifest,
     note,
     ops,
+    preflight,
+    stages,
     util,
 )
 from .db import cost, state
@@ -85,33 +88,35 @@ def _short_path(path: str) -> str:
     return path
 
 
-def pass_cfg(fn):
-    """Pass the loaded Config as the handler's first argument.
+def _config(ctx) -> config.Config:
+    """The session Config, loaded on first use and cached on ctx.obj; tests inject a
+    prebuilt one via CliRunner(...).invoke(command, obj=cfg)."""
+    if not isinstance(ctx.obj, config.Config):
+        name, graph_id = ctx.obj or (None, None)
+        newly_selected = name and not config.stored()
+        cfg = config.resolve(name)
+        if graph_id:
+            cfg.graph_id = graph_id
+        ctx_id = (
+            f"config {_short_path(cfg.source)} | graph {cfg.graph_id} | "
+            f"workload {cfg.workload} | dataset {_short_path(cfg.dataset_path)}"
+        )
+        if newly_selected:  # announce the session lock loudly
+            note(
+                f"{ctx_id}\nsession config — every command uses it until `pipeline reset`"
+            )
+        else:
+            note(ctx_id)
+        ctx.obj = cfg
+    return ctx.obj
 
-    Loading is lazy (post --help) and cached on ctx.obj; tests inject a prebuilt
-    Config via CliRunner(...).invoke(command, obj=cfg)."""
+
+def pass_cfg(fn):
+    """Pass the loaded Config as the handler's first argument, loaded lazily (post --help)."""
 
     @click.pass_context
     def wrap(ctx, *args, **kwargs):
-        if not isinstance(ctx.obj, config.Config):
-            name, graph_id = ctx.obj or (None, None)
-            newly_selected = name and not config.stored()
-            cfg = config.resolve(name)
-            if graph_id:
-                cfg.graph_id = graph_id
-            ctx_id = (
-                f"config {_short_path(cfg.source)} | graph {cfg.graph_id} | "
-                f"workload {cfg.workload} | dataset {_short_path(cfg.dataset_path)}"
-            )
-            if newly_selected:  # announce the session lock loudly
-                note(
-                    f"{ctx_id}\nsession config — every command uses it until "
-                    f"`pipeline reset`"
-                )
-            else:
-                note(ctx_id)
-            ctx.obj = cfg
-        return ctx.invoke(fn, ctx.obj, *args, **kwargs)
+        return ctx.invoke(fn, _config(ctx), *args, **kwargs)
 
     return functools.update_wrapper(wrap, fn)
 
@@ -171,6 +176,9 @@ def deploy(
     if oneshot and cfg.workload in ("migrate", "migrate_cleanup"):
         raise SystemExit(f"'{cfg.workload}' is not part of a build; use --all-layers")
     parallel = not sequential
+    # before any prompt or cluster mutation; a --oneshot range is still unchosen here
+    workloads = stages.build_set(cfg) if oneshot else {cfg.workload}
+    preflight.Preflight.for_config(cfg, workloads).require()
     run_set = None
     if oneshot:
         run_set = ops.select_range(cfg, start, end, yes)  # DAG + start/end prompt
@@ -231,6 +239,7 @@ def purge(cfg):
 )
 @pass_cfg
 def setup(cfg, exists):
+    preflight.Preflight.for_config(cfg, {cfg.workload}).require()
     ops.setup(cfg, exist_ok=exists)
 
 
@@ -239,6 +248,7 @@ def setup(cfg, exists):
 )
 @pass_cfg
 def mesh_meta(cfg):
+    preflight.Preflight.for_config(cfg, {"meshing"}).require()
     ops.mesh_meta(cfg)
 
 
@@ -252,6 +262,7 @@ def mesh_meta(cfg):
 )
 @pass_cfg
 def submit(cfg, layer, force=False):
+    preflight.Preflight.for_config(cfg, {cfg.workload}).require()
     ops.submit(cfg, layer, force=force)
 
 
@@ -276,7 +287,25 @@ def apply(cfg):
 @click.argument("count", type=int)
 @pass_cfg
 def sample(cfg, layer, count):
+    preflight.Preflight.for_config(cfg, {cfg.workload}).require()
     ops.sample(cfg, layer, count)
+
+
+@cli.command(
+    "image-preflight",
+    help="check a PCG image against the image contract (default: the config's images.pcg)",
+)
+@click.argument("image", required=False)
+@click.pass_context
+def image_preflight(ctx, image):
+    """Read IMAGE from Docker Hub and check every contract clause for every contract
+    workload; with no IMAGE, the session config's images.pcg, allowing its `env:` block."""
+    workloads = tuple(contract.WORKLOADS)
+    if image:
+        check = preflight.Preflight(image, workloads)
+    else:
+        check = preflight.Preflight.for_config(_config(ctx), workloads)
+    check.require()
 
 
 @cli.command(help="delete the layer's Job and pods")

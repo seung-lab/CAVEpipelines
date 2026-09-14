@@ -218,6 +218,22 @@ def test_resume_drives_a_stalled_run(monkeypatch, cfg, running_run, drive_env):
     assert driven == [True]
 
 
+def test_a_refused_image_stops_resume_before_any_job_is_unsuspended(
+    monkeypatch, cfg, running_run
+):
+    """drive unsuspends every Job on entry, so a resume fixing a bad image would restart its
+    pods on it unless the check comes first."""
+    state.set_run_pid(cfg, 2**31 - 1)  # dead pid -> stalled, resumable
+
+    def refuse(self):
+        raise SystemExit("image-preflight: breaks the PCG image contract")
+
+    monkeypatch.setattr(ops.preflight.Preflight, "require", refuse)
+    monkeypatch.setattr(ops, "drive", lambda c, interactive=False: pytest.fail("drove"))
+    with pytest.raises(SystemExit, match="breaks the PCG image contract"):
+        ops.resume(cfg)
+
+
 def test_run_ready_surfaces_a_pause_not_a_failure(monkeypatch, cfg, stub_layer_counts):
     monkeypatch.setattr(
         ops, "_phase_cfg", lambda c, w: dataclasses.replace(c, workload=w)

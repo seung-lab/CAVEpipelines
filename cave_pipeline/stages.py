@@ -13,9 +13,8 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from . import note, util
+from .contract import EXIST_OK_FLAG, RAW_FLAG, WORKLOADS
 
-INGEST_SETUP = ["python", "-m", "pychunkedgraph.pipeline.ingest.setup"]
-MESHING_SETUP = ["python", "-m", "pychunkedgraph.pipeline.meshing.setup"]
 MIGRATE_SETUP = ["python", "-m", "pychunkedgraph.pipeline.migrate.setup"]
 L2CACHE_SETUP = ["python", "-m", "pcgl2cache.pipeline.l2cache.setup"]
 
@@ -64,11 +63,12 @@ class Ingest(BaseStage):
 
     def setup(self, cfg, exist_ok: bool = False) -> None:
         note(f"setup ({self.name})")
-        argv = INGEST_SETUP + [cfg.graph_id]
+        flags = []
         if cfg.dataset.get("ingest_config", {}).get("AGGLOMERATION"):
-            argv.append("--raw")  # an agglomeration source implies the raw input path
+            flags.append(RAW_FLAG)  # an agglomeration source implies the raw input path
         if exist_ok:
-            argv.append("--exist-ok")
+            flags.append(EXIST_OK_FLAG)
+        argv = WORKLOADS[self.name].setup_argv(cfg.graph_id, flags=tuple(flags))
         note(util.run_with_dataset(cfg, "setup", argv) or "setup done")
         util.invalidate_layer_counts(
             cfg
@@ -83,7 +83,7 @@ class Meshing(BaseStage):
 
     def setup(self, cfg, exist_ok: bool = False) -> None:
         note("mesh-meta: writing mesh metadata")
-        argv = MESHING_SETUP + [cfg.graph_id]
+        argv = WORKLOADS[self.name].setup_argv(cfg.graph_id)
         note(util.run_with_dataset(cfg, "mesh-meta", argv) or "mesh metadata written")
 
     def top_layer(self, cfg, counts) -> int:

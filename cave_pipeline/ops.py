@@ -19,7 +19,7 @@ import click
 import yaml
 from kubernetes.client import ApiException
 
-from . import config, costs, kube, manifest, note, stages, util
+from . import config, costs, kube, manifest, note, preflight, stages, util
 from .db import cost, state
 
 HELM_CHART = "helm"
@@ -563,12 +563,18 @@ def resume(cfg) -> None:
         raise SystemExit(
             f"a driver (pid {run.pid}) is already running; `pipeline pause` first"
         )
+    # before drive unsuspends any Job, which would restart pods on the image being replaced
+    preflight.Preflight.for_config(cfg, run.stage_set).require()
     drive(cfg, interactive=True)
 
 
 def _run_ready(cfg, ready, parallel) -> None:
     """Run a batch of ready workloads — concurrently when parallel, else serially."""
     cfgs = {w: _phase_cfg(cfg, w) for w in ready}
+    for w, cfg_w in cfgs.items():
+        # the yml is re-read per batch, and the driver's own check covered only its image
+        if cfg_w.images.pcg != cfg.images.pcg:
+            preflight.Preflight.for_config(cfg_w, {w}).require()
     if not parallel or len(ready) == 1:
         for w in ready:
             run_workload(cfgs[w])

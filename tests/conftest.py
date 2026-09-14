@@ -9,7 +9,7 @@ from rich.console import Console
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-from cave_pipeline import config, manifest, util
+from cave_pipeline import config, manifest, preflight, util
 from cave_pipeline.db import base, cost, models, state
 
 
@@ -29,6 +29,13 @@ def _isolate_config_dir(monkeypatch, tmp_path):
     resolve() writes CONFIG_DIR/.current, so unpatched it selects a session config in the
     real config/. That file is the whole session state, so a per-test dir isolates it."""
     monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
+
+
+@pytest.fixture(autouse=True)
+def _no_image_reads(monkeypatch):
+    """Spending commands read their image from Docker Hub first; no test may reach it.
+    test_preflight checks the clauses through `violations`, against in-memory images."""
+    monkeypatch.setattr(preflight.Preflight, "require", lambda self: None)
 
 
 @pytest.fixture

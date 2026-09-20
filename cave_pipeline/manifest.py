@@ -6,7 +6,7 @@ import re
 
 from kubernetes import client
 
-from . import cgcache, note
+from . import cgcache, gke, note
 from . import config as cfgmod
 from .contract import STANDARD, WORKLOADS
 from .costs import GP_MAX, billed_cpu, normalize_requests, parse_cpu, parse_mem
@@ -14,19 +14,11 @@ from .packing import fill_node
 
 MIGRATE_COMMAND = ["python", "-m", "pychunkedgraph.pipeline.migrate"]
 L2CACHE_COMMAND = ["python", "-m", "pcgl2cache.pipeline.l2cache"]
-SPOT_SELECTOR = {"cloud.google.com/gke-spot": "true"}
-# Selectable built-ins; they take gke-spot alongside the class, while a custom class
-# carries spot in its own priorities and GKE rejects a pod pinning both. The default class
-# is not here — it is requested by omitting the selector.
-BUILTIN_COMPUTE_CLASSES = frozenset(
-    {"Balanced", "Scale-Out", "Performance", "Accelerator"}
-)
-SPOT_TOLERATION = {
-    "key": "cloud.google.com/gke-spot",
-    "operator": "Equal",
-    "value": "true",
-    "effect": "NoSchedule",
-}
+# All three are GKE's, so `gke` defines them; the names stay bound here because callers and
+# tests import them from this module.
+SPOT_SELECTOR = gke.SPOT_SELECTOR
+BUILTIN_COMPUTE_CLASSES = gke.BUILTIN_COMPUTE_CLASSES
+SPOT_TOLERATION = gke.SPOT_TOLERATION
 UTIL_REQUESTS = {"cpu": "250m", "memory": "1Gi"}  # cheapest that still imports PCG
 # Autopilot caps Spot pods at 25s and defaults to it. A worker cannot finish a chunk in
 # any grace period, so the wait only slows every teardown and preemption; the chunk's
@@ -237,7 +229,7 @@ def job_spec(
     # omit `spot` provisions on-demand.
     compute_class = cfg.job.compute_class
     if compute_class and compute_class not in BUILTIN_COMPUTE_CLASSES:
-        node_selector = {"cloud.google.com/compute-class": compute_class}
+        node_selector = {gke.COMPUTE_CLASS_LABEL: compute_class}
         note(
             f"compute class '{compute_class}' is not built-in: the gke-spot selector is "
             f"dropped, so spot must come from `spot: true` in its own spec.priorities"
@@ -245,7 +237,7 @@ def job_spec(
     else:
         node_selector = dict(SPOT_SELECTOR)
         if compute_class:
-            node_selector["cloud.google.com/compute-class"] = compute_class
+            node_selector[gke.COMPUTE_CLASS_LABEL] = compute_class
     # optional: co-locate workers in one zone (e.g. Bigtable's) for lower latency
     if cfg.zone:
         node_selector["topology.kubernetes.io/zone"] = cfg.zone
@@ -386,7 +378,7 @@ def immutable_drift(cfg, layer: int, job) -> list:
         ),
         (
             "compute_class",
-            selector.get("cloud.google.com/compute-class", ""),
+            selector.get(gke.COMPUTE_CLASS_LABEL, ""),
             cfg.job.compute_class,
         ),
         ("zone", selector.get("topology.kubernetes.io/zone", ""), cfg.zone),
@@ -453,9 +445,7 @@ def helm_values(cfg, secret_data=None) -> dict:
             {
                 "name": cfg.workload_identity.service_account,
                 "namespace": cfg.namespace,
-                "annotations": {
-                    "iam.gke.io/gcp-service-account": cfg.workload_identity.gsa_email
-                },
+                "annotations": {gke.GSA_ANNOTATION: cfg.workload_identity.gsa_email},
             }
         ],
         "env": [

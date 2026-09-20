@@ -16,13 +16,13 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select, update
 
-from .. import kube
+from .. import gke, kube
 from ..costs import parse_cpu, parse_mem
 from .base import best_effort, session
 from .models import CostBase, Job, Pod
 
 DEFAULT_URL = "sqlite:///costs/cost.db"
-_CLASS_KEY = "cloud.google.com/compute-class"
+_CLASS_KEY = gke.COMPUTE_CLASS_LABEL
 SAMPLE_INTERVAL = 30.0  # matches the driver's poll; a display needs no fresher
 
 _pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cost-sample")

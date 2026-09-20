@@ -10,15 +10,11 @@ which Kubernetes garbage-collects. This is an estimate, not the invoice.
 import math
 
 from . import rates
+from .gke import CPU_STEP, GENERAL_CLASS, GP_MAX, GP_MIN, MEM_PER_CPU
 
-_GENERAL = "general-purpose"  # GKE default compute class (empty compute_class maps here)
-
-# Autopilot billing grid for the default (general-purpose) class — platform facts,
-# per cloud.google.com/kubernetes-engine/docs/concepts/autopilot-resource-requests
-CPU_STEP = 0.25  # non-bursting clusters round CPU requests UP to this
-MEM_PER_CPU = (1.0, 6.5)  # billable memory:cpu window, GiB per vCPU
-GP_MIN = (0.25, 0.5)  # smallest billable pod (vCPU, GiB)
-GP_MAX = (30.0, 110.0)  # class ceiling; above needs a different compute class
+# The grid is GKE's, so `gke` defines it; these names stay bound here because callers import
+# them from this module.
+_GENERAL = GENERAL_CLASS
 _MEM_UNITS = {
     "Ki": 2**10,
     "Mi": 2**20,

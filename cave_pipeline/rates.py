@@ -12,6 +12,8 @@ import os
 import sys
 import urllib.request
 
+from . import gke
+
 _CSV = os.path.join(os.path.dirname(__file__), "rates.csv")
 _RATE_FIELDS = [
     "cpu_on_demand",
@@ -20,8 +22,8 @@ _RATE_FIELDS = [
     "mem_spot",
     "cluster_fee_hr",
 ]
-_GKE_SERVICE = "CCD8-9BF1-090E"  # Kubernetes Engine (Cloud Billing Catalog API)
-_CLUSTER_FEE_HR = 0.10  # flat Autopilot cluster-management fee (published constant)
+_GKE_SERVICE = gke.BILLING_SERVICE
+_CLUSTER_FEE_HR = gke.CLUSTER_FEE_HR
 
 
 def load() -> dict:

@@ -26,9 +26,9 @@ behind it, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## The end-to-end flow
 
-1. **Cluster** (once) — `terraform apply` creates the Autopilot cluster and the
-   worker service account ([§1](#1-cluster--terraform)); the worker images come
-   from Docker Hub ([§2](#2-image)).
+1. **Cluster** (once) — `terraform apply` creates the Autopilot cluster, the
+   worker service account and its key ([§1](#1-cluster--terraform)); the worker
+   images come from Docker Hub ([§2](#2-image)).
 2. **Config + deploy** — copy the two yamls in `config/`, fill in the graph,
    Bigtable, and identity, then `pipeline deploy` ([§3](#3-config--deploy)).
 3. **Run** — submit each layer and watch it to completion: `pipeline submit 2`,
@@ -46,7 +46,7 @@ behind it, see [ARCHITECTURE.md](ARCHITECTURE.md).
 | [cave_pipeline/](cave_pipeline/) | the **`pipeline` CLI** (Python, kubernetes client) — the operator entry point |
 | [config/](config/) | all run configs — `-c` is the path to a pipeline yaml, its `dataset:` key names the dataset yaml relative to it; any number of projects side by side — see [config/README.md](config/README.md) |
 | [secrets/](secrets/) | local secret files (gitignored); `secret_files:` in `pipeline.yml` picks which to load |
-| [terraform/](terraform/) | the GKE Autopilot cluster + Workload-Identity service account |
+| [terraform/](terraform/) | the GKE Autopilot cluster, the Workload-Identity service account, and its key — written to `secrets/` and revoked by `terraform destroy` |
 | [helm/](helm/) | the helm chart for static infra (service account, ConfigMaps, an optional spot util pod); the `pipeline` CLI renders its values and runs helm |
 
 **Single-source config.** `pipeline.yml` holds everything except the graph definition,
@@ -131,6 +131,11 @@ worker_service_account     = "cave-pipeline-worker@<proj>.iam.gserviceaccount.co
 
 Run the `kubernetes_cluster_context` command to point `kubectl` at the cluster, and
 put `worker_service_account` into `pipeline.yml` (`workload_identity.gsa_email`).
+
+That context is for `kubectl` alone. The `pipeline` CLI authenticates as the worker
+service account using the key terraform wrote, named by `secret_files` and found beside
+the config — so a run survives the operator's own login expiring, and needs no `gcloud`
+session of its own.
 
 ## 2. Image
 

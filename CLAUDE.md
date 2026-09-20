@@ -98,6 +98,16 @@ run_id and deleting Stage rows, detaching cost accounting from the running Job.
 Segfaults leave no core (`ulimit -c` 0, apport keeps nothing); `journalctl | grep traps:` has the
 kernel record.
 
+**A 401 mid-run is the driver's token, not your login.** The driver authenticates as the worker
+GSA from the key `secret_files` names, and the kubernetes client re-mints it through
+`Configuration.refresh_api_key_hook` before every request. Clear that hook and a pinned token
+dies about an hour in, failing every later call — the kubeconfig's `kubectl` context is
+irrelevant either way.
+
+**Vendor facts live in `gke.py`.** Label keys, the Workload-Identity annotation, the Autopilot
+billing grid and the billing-catalog ids are defined there and re-exported where callers already
+import them; `kube`, `costs` and `manifest` spell no `cloud.google.com` literal of their own.
+
 ## Config gotchas
 
 - **Image compatibility is the contract, never a version.** `preflight` reads `images.pcg` from

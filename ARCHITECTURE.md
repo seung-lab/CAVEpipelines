@@ -119,6 +119,11 @@ the foreground driver is the simplest thing that satisfies the actual need, paus
   before propagating — Jobs never keep burning behind a dead driver.
 - **Stall detection.** The state db records the driver's pid; a run still marked `running`
   whose pid is dead is reported as stalled, and `resume` can adopt it.
+- **Identity.** The driver authenticates as the worker service account, from the key
+  `secret_files` names, rather than as whoever ran `gcloud auth login`. A user credential is
+  subject to reauth, which needs a TTY and a person, so a long run would die partway through a
+  layer. The token is re-minted on every request, since one lasts about an hour and a run does
+  not; the pods already run as this same account, so nothing new is granted.
 
 **How long a paused run lives.** Indefinitely — a paused run is lost only if the operator deletes
 it. The Job spec sets no `ttlSecondsAfterFinished` or `activeDeadlineSeconds`, and a *suspended*

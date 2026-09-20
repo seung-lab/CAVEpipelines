@@ -23,6 +23,62 @@ def _core_returning(batches):
     )
 
 
+def _loaded(monkeypatch, token):
+    """Run `_load` against a kubeconfig double, returning the Configuration it made default."""
+
+    def fake_load(client_configuration=None, **_):
+        client_configuration.host = "https://cluster.example"
+        client_configuration.refresh_api_key_hook = lambda _conf: None
+
+    monkeypatch.setattr(kube.kube_config, "load_kube_config", fake_load)
+    made = {}
+    monkeypatch.setattr(
+        kube.client.Configuration,
+        "set_default",
+        staticmethod(lambda conf: made.__setitem__("conf", conf)),
+    )
+    kube.authenticate_with(token)
+    try:
+        kube._load()
+    finally:
+        kube.authenticate_with(None)
+    return made.get("conf")
+
+
+def test_load_makes_the_kubeconfig_default_when_no_identity_is_set(monkeypatch):
+    """Without this the default carries no host, and every later call is unroutable."""
+    conf = _loaded(monkeypatch, None)
+    assert conf is not None and conf.host == "https://cluster.example"
+
+
+def test_load_installs_the_token(monkeypatch):
+    """The identity reaches the client under the one key it reads."""
+    conf = _loaded(monkeypatch, lambda: "abc123")
+    assert conf.api_key["BearerToken"] == "Bearer abc123"
+
+
+def test_every_request_carries_a_freshly_minted_token():
+    """A token expires inside an hour and a run does not, so a pinned one fails every later call."""
+    minted = iter(["first", "second", "third"])
+    kube.authenticate_with(lambda: next(minted))
+    try:
+        conf = kube.client.Configuration()
+        kube._authenticated(conf)
+        assert conf.get_api_key_with_prefix("BearerToken") == "Bearer second"
+        assert conf.get_api_key_with_prefix("BearerToken") == "Bearer third"
+    finally:
+        kube.authenticate_with(None)
+
+
+def test_a_request_after_the_identity_is_cleared_does_not_raise():
+    """The hook outlives the identity that installed it, and must not break someone's request."""
+    kube.authenticate_with(lambda: "only")
+    conf = kube.client.Configuration()
+    kube._authenticated(conf)
+    kube.authenticate_with(None)
+    assert conf.get_api_key_with_prefix("BearerToken") == "Bearer only"
+
+
 def test_util_pod_waits_through_pending(monkeypatch, no_sleep):
     fake = _core_returning([[_pod("Pending")], [_pod("Pending")], [_pod("Running")]])
     monkeypatch.setattr(kube, "core", lambda: fake)

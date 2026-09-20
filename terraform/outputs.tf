@@ -13,6 +13,11 @@ output "worker_service_account" {
   description = "GSA the pipeline pods impersonate via Workload Identity (annotate the KSA with this)"
 }
 
+output "worker_key_path" {
+  value       = local_sensitive_file.worker_key.filename
+  description = "worker key on disk; the driver authenticates with it as GOOGLE_APPLICATION_CREDENTIALS"
+}
+
 output "kubernetes_cluster_name" {
   value       = google_container_cluster.cluster.name
   description = "GKE Autopilot cluster name"

@@ -184,7 +184,7 @@ build needs `mesh_config`), while l2cache is **optional** — it joins the build
 - `max_layer` — highest layer to mesh and stitch to.
 - `max_error` — marching-cubes simplification error.
 - `minishard_bits` — sharded-mesh minishard bits per layer, `{layer: bits}`.
-- `dynamic_mesh_dir` — directory for post-edit dynamic meshes. Use `dynamic` on `main`; on `pcgv3` the graph id is appended automatically (default `dynamic_<graph_id>`).
+- `dynamic_mesh_dir` — Set `dynamic` explicitly. PCG will default to `dynamic_<graph_id>` but clients (ngl, cv) don't support it yet.
 
 ### `l2cache_config` (l2cache, optional)
 Its presence adds the optional l2cache stage to the build DAG and configures the worker:

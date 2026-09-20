@@ -12,7 +12,7 @@ from kubernetes import config as kube_config
 from kubernetes.client import ApiException
 from kubernetes.stream import stream
 
-from . import note
+from . import gke, note
 
 # A sanity bound, not a fleet-sized wait: delete_job clears pods as one collection and
 # drops the Job in Background, so the name frees at once. (Foreground would hold it for
@@ -20,9 +20,57 @@ from . import note
 DELETE_TIMEOUT = 60
 
 
+#: Where the client reads its bearer token, and the value carries its own prefix. Setting
+#: `authorization` instead writes a key nothing consults, and the request then goes out with the
+#: kubeconfig's credential while appearing to carry ours.
+_BEARER = "BearerToken"
+
+#: Hands out a live bearer token, or None to use whatever the kubeconfig carries. A callable
+#: rather than a token, because a token expires inside an hour and a run does not.
+_token = None
+
+
+def authenticate_with(token) -> None:
+    """Authenticate every later call with bearer tokens from `token`, or with the kubeconfig.
+
+    The cached clients are dropped, so an identity set after one was built still takes effect.
+    """
+    global _token  # one process drives as one identity
+    _token = token
+    batch.cache_clear()
+    core.cache_clear()
+    custom.cache_clear()
+
+
+def _refresh(conf) -> None:
+    """Write a live token onto `conf`. The client calls this before reading the key.
+
+    A Configuration outlives the identity that installed the hook, so a cleared source leaves
+    the key as it stands rather than raising inside someone else's request.
+    """
+    if _token is not None:
+        conf.api_key[_BEARER] = f"Bearer {_token()}"
+
+
+def _authenticated(conf) -> bool:
+    """Authenticate `conf` from `_token`. False when no source is set.
+
+    The hook is replaced rather than cleared: the client consults it before every request, so it
+    is both what would otherwise re-run the kubeconfig's own credential and the only place a
+    token that expires mid-run can be renewed. A pinned string outlives its token by minutes and
+    then fails every call with 401.
+    """
+    if _token is None:
+        return False
+    conf.refresh_api_key_hook = _refresh
+    _refresh(conf)
+    return True
+
+
 def _load():
+    conf = client.Configuration()
     try:
-        kube_config.load_kube_config()
+        kube_config.load_kube_config(client_configuration=conf)
     except Exception:  # noqa: BLE001 - any unusable kubeconfig falls through to in-cluster
         try:
             kube_config.load_incluster_config()
@@ -31,6 +79,11 @@ def _load():
                 "cannot load kube config; set KUBECONFIG or run "
                 "`gcloud container clusters get-credentials <cluster>`"
             )
+        return
+    # Unconditional: the loader fills `conf` rather than the global default, so skipping this
+    # when no token is installed leaves the default with no host and every call unroutable.
+    _authenticated(conf)
+    client.Configuration.set_default(conf)
 
 
 # cached: a fresh ApiClient per call would re-read kubeconfig and re-handshake
@@ -151,7 +204,7 @@ def node_summary():
 
     nodes = core().list_node().items
     labels = [n.metadata.labels or {} for n in nodes]
-    spot = sum(1 for lbl in labels if lbl.get("cloud.google.com/gke-spot") == "true")
+    spot = sum(1 for lbl in labels if lbl.get(gke.SPOT_LABEL) == "true")
     alloc = [(n.status.allocatable or {}) if n.status else {} for n in nodes]
     cpu = sum(parse_cpu(a.get("cpu")) for a in alloc)
     gib = sum(parse_mem(a.get("memory")) for a in alloc)

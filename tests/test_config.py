@@ -346,6 +346,38 @@ def test_resource_curves_and_workload_merge(tmp_path):
     assert cfg.job.resources.overrides[9] == config.Override(cpu=30, memory=None)
 
 
+def test_credentials_finds_the_key_however_deep_the_config_nests(tmp_path):
+    """A nested config resolves the same key a top-level one does."""
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    (secrets / "google-secret-proj.json").write_text("{}")
+    nested = tmp_path / "config" / "wclee"
+    nested.mkdir(parents=True)
+    _write(
+        nested,
+        "pipeline.yml",
+        {**BASE, "secret_files": {"google-secret.json": "google-secret-proj.json"}},
+    )
+    cfg = config.load(str(nested / "pipeline.yml"))
+    assert cfg.credentials() == str(secrets / "google-secret-proj.json")
+
+
+def test_credentials_is_empty_when_the_key_is_not_on_disk(tmp_path):
+    """A declared name with no file is no credential, never a path that cannot be opened."""
+    _write(
+        tmp_path,
+        "pipeline.yml",
+        {**BASE, "secret_files": {"google-secret.json": "absent.json"}},
+    )
+    assert config.load(str(tmp_path / "pipeline.yml")).credentials() == ""
+
+
+def test_credentials_is_empty_when_no_key_is_declared(tmp_path):
+    """Nothing to authenticate with, so the caller leaves the environment alone."""
+    _write(tmp_path, "pipeline.yml", BASE)
+    assert config.load(str(tmp_path / "pipeline.yml")).credentials() == ""
+
+
 def test_image_selects_by_workload(cfg):
     cfg.workload = "ingest"
     assert cfg.image() == cfg.images.pcg  # any non-l2cache workload -> the pcg image

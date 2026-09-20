@@ -26,6 +26,7 @@ from . import (
     config,
     contract,
     costs,
+    gke,
     kube,
     log,
     manifest,
@@ -107,8 +108,19 @@ def _config(ctx) -> config.Config:
             )
         else:
             note(ctx_id)
+        _authenticate(cfg)
         ctx.obj = cfg
     return ctx.obj
+
+
+def _authenticate(cfg) -> None:
+    """Drive the cluster as the graph's own worker service account, when it has a key.
+
+    Wired at the config boundary because this is the one place that knows both which graph is
+    loaded and that a cluster is about to be reached. With no key the kubeconfig is left alone,
+    so a machine that never had one behaves exactly as before.
+    """
+    kube.authenticate_with(gke.token_source(cfg.credentials()))
 
 
 def pass_cfg(fn):

@@ -4,7 +4,23 @@ terraform {
       source  = "hashicorp/google"
       version = "~> 7.0"
     }
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.5"
+    }
   }
+}
+
+variable "key_path" {
+  type        = string
+  default     = ""
+  description = "where the worker key is written, relative to this directory; defaults to ../secrets/google-secret-<project_id>.json, which is what a pipeline config's secret_files names"
+}
+
+locals {
+  # Per project, never a bare google-secret.json: that directory already holds one key per
+  # project, and a shared name would have this workspace overwrite another project's.
+  key_path = coalesce(var.key_path, "") != "" ? var.key_path : "../secrets/google-secret-${var.project_id}.json"
 }
 
 

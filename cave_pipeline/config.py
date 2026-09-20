@@ -133,6 +133,28 @@ class Config:
     def image(self) -> str:
         return self.images.l2cache if self.workload == "l2cache" else self.images.pcg
 
+    def credentials(self) -> str:
+        """This graph's worker key on disk, or "" when it is not there.
+
+        The same file `secret_files` mounts into every pod, so the driver and its pods are one
+        identity. Terraform writes it and `terraform destroy` revokes it. Resolved beside
+        `config_dir` rather than the cwd: a driver outlives the shell that started it.
+        """
+        name = self.secret_files.get("google-secret.json", "")
+        if not name:
+            return ""
+        # config_dir nests per dataset (config/, config/wclee/), so the repo root is however
+        # many levels up the secrets directory turns out to be; terraform writes it there.
+        node = os.path.dirname(os.path.abspath(self.config_dir))
+        while True:
+            path = os.path.join(node, "secrets", name)
+            if os.path.isfile(path):
+                return path
+            parent = os.path.dirname(node)
+            if parent == node:
+                return ""
+            node = parent
+
 
 _WORKLOADS = ("ingest", "l2cache", "meshing", "migrate", "migrate_cleanup")
 

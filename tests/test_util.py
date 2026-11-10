@@ -1,11 +1,15 @@
+import http.server
 import textwrap
+import threading
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
+import yaml
 from rich.text import Text
 
-from cave_pipeline import cgcache, util
+from cave_pipeline import cgcache, contract, manifest, stages, util
 
 
 def test_ceil_div_completions():
@@ -511,36 +515,138 @@ def test_query_meta_routes_persistent_to_cache_client(monkeypatch, cfg):
     monkeypatch.setattr(util.kube, "exec_cmd", _exec)
     monkeypatch.setattr(
         util.kube,
-        "run_oneshot",
-        lambda *a, **k: pytest.fail("persistent path must not use a one-shot pod"),
+        "run_task",
+        lambda *a, **k: pytest.fail("the warm probe must not start a task job"),
     )
     assert util._query_meta(cfg, "counts", "g") == "100 50 1\n"
     assert cgcache.CLIENT_SRC in seen["argv"]  # the warm-server client, not the server
 
 
-def test_query_meta_routes_oneshot_when_not_persistent(monkeypatch, cfg):
+def _capture_task(monkeypatch) -> dict[str, object]:
+    """Record the task Job the runner submits, failing on any exec into the util pod."""
+    seen = {}
+    monkeypatch.setattr(util.kube, "run_task", lambda ns, job: seen.update(job=job) or "")
+    monkeypatch.setattr(
+        util.kube, "exec_cmd", lambda *a, **k: pytest.fail("exec'd into the util pod")
+    )
+    return seen
+
+
+def test_query_meta_runs_a_pcg_task_when_not_persistent(monkeypatch, cfg):
     cfg.persistent_util = False
     cfg.workload = "l2cache"  # the cg-meta probe still reads the graph in the PCG image
-    seen = {}
-    monkeypatch.setattr(
-        util.manifest,
-        "oneshot_pod_spec",
-        lambda c, name, argv, image=None: ("spec", argv, image),
-    )
+    seen = _capture_task(monkeypatch)
+    util._query_meta(cfg, "mesh", "g")
+    container = seen["job"].spec.template.spec.containers[0]
+    assert cgcache.ONESHOT_SRC in container.command  # the inline import snippet
+    assert container.image == cfg.images.pcg  # graph read pins PCG, not the l2cache image
 
-    def _oneshot(ns, spec):
-        seen["argv"], seen["image"] = spec[1], spec[2]
-        return "yes\n"
 
-    monkeypatch.setattr(util.kube, "run_oneshot", _oneshot)
-    monkeypatch.setattr(
-        util.kube,
-        "exec_cmd",
-        lambda *a, **k: pytest.fail("one-shot path must not exec into the util pod"),
-    )
-    assert util._query_meta(cfg, "mesh", "g") == "yes\n"
-    assert cgcache.ONESHOT_SRC in seen["argv"]  # the inline import snippet
-    assert seen["image"] == cfg.images.pcg  # graph read pins PCG, not the l2cache image
+def test_l2cache_setup_runs_in_its_image_even_with_a_util_pod(monkeypatch, cfg):
+    """The util pod runs PCG's image, which lacks pcgl2cache; setup never execs there."""
+    cfg.persistent_util = True
+    cfg.workload = "l2cache"
+    cfg.dataset["l2cache_config"] = {"table_id": "l2cache_g", "cv_path": "gs://b/ws"}
+    seen = _capture_task(monkeypatch)
+    stages.STAGES["l2cache"].setup(cfg)
+    assert seen["job"].spec.template.spec.containers[0].image == cfg.images.l2cache
+    assert seen["job"].metadata.name == "l2cache-setup"
+
+
+INFO = b'{"data_dir": "gs://b/ws"}'
+
+
+class _InfoServer(http.server.BaseHTTPRequestHandler):
+    """A graphene server answering every GET with `body`, recording what it was asked."""
+
+    asked: ClassVar[list[tuple[str, str]]] = []
+    body: ClassVar[bytes] = INFO
+
+    def do_GET(self):
+        self.asked.append((self.path, self.headers["Authorization"]))
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(self.body)))
+        self.end_headers()
+        self.wfile.write(self.body)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture
+def info_server(monkeypatch, cfg, tmp_path):
+    """An l2cache cfg whose graphene server is `_InfoServer`, holding the pods' token;
+    yields the ConfigMap setup applies, its fields None until it does."""
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _InfoServer)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    (tmp_path / "secrets").mkdir()
+    (tmp_path / "secrets" / "cave.json").write_text('{"token": "abc"}')
+    cfg.config_dir = str(tmp_path / "config")  # secrets/ resolves beside it
+    cfg.secret_files = {"cave-secret.json": "cave.json"}
+    cfg.workload = "l2cache"
+    host = f"127.0.0.1:{server.server_port}"
+    cfg.dataset["l2cache_config"] = {
+        "table_id": "l2cache_g",
+        "cv_path": f"graphene://middleauth+http://{host}/segmentation/table/g",
+    }
+    applied = SimpleNamespace(name=None, data=None, labels=None)
+
+    def apply(namespace, name, data, labels):
+        applied.name, applied.data, applied.labels = name, data, labels
+
+    monkeypatch.setattr(util.kube, "apply_configmap", apply)
+    _capture_task(monkeypatch)
+    _InfoServer.asked, _InfoServer.body = [], INFO
+    yield applied
+    server.shutdown()
+    server.server_close()
+
+
+def test_l2cache_setup_saves_the_info_its_jobs_mount(cfg, info_server):
+    stages.STAGES["l2cache"].setup(cfg)
+    assert _InfoServer.asked == [("/segmentation/table/g/info", "Bearer abc")]
+    assert info_server.data == {manifest.L2CACHE_INFO_KEY: INFO.decode()}
+    key, value = manifest.GRAPH_CONFIGMAP_SELECTOR.split("=")
+    assert info_server.labels[key] == value  # the selector undeploy deletes by
+    pod = manifest.job_spec(cfg, 2, 10, 10, 1).spec.template.spec
+    volume = next(v for v in pod.volumes if v.config_map)
+    assert volume.config_map.name == info_server.name
+    env = {e.name: e.value for e in pod.containers[0].env}
+    assert env["L2CACHE_CV_INFO"] == manifest.L2CACHE_INFO_PATH
+
+
+def test_l2cache_setup_never_saves_a_page_that_is_not_json(cfg, info_server):
+    """A sign-in or error page served with 200 must never become every pod's info."""
+    _InfoServer.body = b"<html>sign in</html>"
+    with pytest.raises(SystemExit, match="cannot read"):
+        stages.STAGES["l2cache"].setup(cfg)
+    assert info_server.name is None
+
+
+def test_l2cache_setup_stops_with_no_cave_token(monkeypatch, cfg, tmp_path):
+    """The info needs the pods' token, so setup stops before saving any."""
+    cfg.config_dir = str(tmp_path / "config")
+    cfg.secret_files = {"cave-secret.json": "cave.json"}  # named, but never written
+    cv = "graphene://https://h/segmentation/table/g"
+    cfg.dataset["l2cache_config"] = {"table_id": "l2cache_g", "cv_path": cv}
+    monkeypatch.setattr(util.kube, "apply_configmap", lambda *a: pytest.fail("saved"))
+    with pytest.raises(SystemExit, match="no CAVE token"):
+        util.apply_l2cache_info(cfg)
+
+
+def test_a_dataset_task_mounts_the_configmap_it_applied(monkeypatch, cfg):
+    applied = {}
+
+    def apply(namespace, name, data, labels):
+        applied.update(name=name, data=data)
+
+    monkeypatch.setattr(util.kube, "apply_configmap", apply)
+    seen = _capture_task(monkeypatch)
+    util.run_task(cfg, "setup", ["python", "-c", "pass"], dataset=True)
+    volume = next(v for v in seen["job"].spec.template.spec.volumes if v.config_map)
+    assert volume.config_map.name == applied["name"]
+    saved = applied["data"][contract.STANDARD.dataset_file]
+    assert yaml.safe_load(saved) == cfg.dataset
 
 
 def test_runs_table_lists_newest_first_and_filters_by_graph(cfg, seed_cost, render):

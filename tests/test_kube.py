@@ -139,23 +139,67 @@ def test_secret_data_missing_file_raises(tmp_path):
         "847 144 18 4 1\n",  # a client variant that already decodes
     ],
 )
-def test_run_oneshot_returns_decoded_text(monkeypatch, log_return, no_sleep):
-    # the log must come back as text regardless of client return shape — never a
-    # str(bytes) "b'...'" repr, which silently breaks every consumer
-    def absent_delete(name, ns, **kw):
-        raise kube.ApiException(status=404, reason="Not Found")
-
-    fake = SimpleNamespace(
-        delete_namespaced_pod=absent_delete,
-        create_namespaced_pod=lambda ns, spec: None,
-        read_namespaced_pod_status=lambda name, ns: SimpleNamespace(
-            status=SimpleNamespace(phase="Succeeded")
-        ),
-        read_namespaced_pod_log=lambda name, ns, **kw: log_return,
+def test_run_task_returns_the_newest_pods_log_as_text(monkeypatch, log_return, no_sleep):
+    # the log must come back as text regardless of client return shape, never a
+    # str(bytes) "b'...'" repr, which silently breaks every consumer; and from the pod
+    # the Job reran after a preemption, not the evicted one
+    cluster = _TaskCluster(
+        "Complete", [("evicted", "preempted\n"), ("rerun", log_return)]
     )
-    monkeypatch.setattr(kube, "core", lambda: fake)
-    spec = SimpleNamespace(metadata=SimpleNamespace(name="layer-counts-xyz"))
-    assert kube.run_oneshot("ns", spec) == "847 144 18 4 1\n"
+    cluster.attach(monkeypatch)
+    assert kube.run_task("ns", _TASK) == "847 144 18 4 1\n"
+    assert cluster.deleted == [_TASK.metadata.name]  # never left behind
+
+
+def test_run_task_raises_with_the_log_when_the_job_fails(monkeypatch, no_sleep):
+    cluster = _TaskCluster("Failed", [("only", "Traceback: setup broke\n")])
+    cluster.attach(monkeypatch)
+    with pytest.raises(SystemExit, match="setup broke"):
+        kube.run_task("ns", _TASK)
+    assert cluster.deleted == [_TASK.metadata.name]
+
+
+_TASK = SimpleNamespace(metadata=SimpleNamespace(name="ingest-layer-counts"))
+
+
+class _TaskCluster:
+    """Batch and core APIs for one task Job ending in `state`, its pods oldest first."""
+
+    def __init__(self, state, pods):
+        self.state, self.created, self.deleted = state, None, []
+        self.logs = dict(pods)
+        self.pods = [
+            SimpleNamespace(metadata=SimpleNamespace(name=name, creation_timestamp=at))
+            for at, (name, _) in enumerate(pods)
+        ]
+
+    def attach(self, monkeypatch):
+        monkeypatch.setattr(kube, "batch", lambda: self)
+        monkeypatch.setattr(kube, "core", lambda: self)
+
+    def read_namespaced_job(self, name, ns):
+        if self.created is None:  # recreate_job's look for a leftover
+            raise kube.ApiException(status=404, reason="Not Found")
+        condition = SimpleNamespace(type=self.state, status="True")
+        return SimpleNamespace(status=SimpleNamespace(conditions=[condition]))
+
+    def create_namespaced_job(self, ns, spec):
+        self.created = spec
+
+    def patch_namespaced_job(self, name, ns, body):
+        pass
+
+    def delete_namespaced_job(self, name, ns, **kw):
+        self.deleted.append(name)
+
+    def list_namespaced_pod(self, ns, **kw):
+        return SimpleNamespace(items=self.pods)
+
+    def read_namespaced_pod_log(self, name, ns, **kw):
+        return self.logs[name]
+
+    def delete_collection_namespaced_pod(self, ns, **kw):
+        pass
 
 
 def test_tolerate_swallows_only_the_named_statuses():

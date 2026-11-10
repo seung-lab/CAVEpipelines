@@ -3,6 +3,7 @@ helm values (dicts, rendered to YAML by helm — not client objects)."""
 
 import hashlib
 import re
+from urllib.parse import urlsplit
 
 from kubernetes import client
 
@@ -20,15 +21,38 @@ SPOT_SELECTOR = gke.SPOT_SELECTOR
 BUILTIN_COMPUTE_CLASSES = gke.BUILTIN_COMPUTE_CLASSES
 SPOT_TOLERATION = gke.SPOT_TOLERATION
 UTIL_REQUESTS = {"cpu": "250m", "memory": "1Gi"}  # cheapest that still imports PCG
+
+#: A spot preemption reruns the pod without spending a retry: the platform's doing, never
+#: the task's. Every Job the operator renders carries it.
+IGNORE_PREEMPTION = client.V1PodFailurePolicyRule(
+    action="Ignore",
+    on_pod_conditions=[
+        client.V1PodFailurePolicyOnPodConditionsPattern(
+            type="DisruptionTarget", status="True"
+        )
+    ],
+)
+
+#: How long a finished task Job outlives its run when the CLI dies before deleting it.
+TASK_TTL_SECONDS = 3600
 # Autopilot caps Spot pods at 25s and defaults to it. A worker cannot finish a chunk in
 # any grace period, so the wait only slows every teardown and preemption; the chunk's
 # lock expires on its own and a retry redoes it.
 GRACE_SECONDS = 5
 
 
-def job_name(cfg, layer: int) -> str:
+def _workload_dns(cfg) -> str:
     # DNS-1123: migrate_cleanup's underscore is invalid in Job/container names
-    return f"{cfg.workload.replace('_', '-')}-l{layer}"
+    return cfg.workload.replace("_", "-")
+
+
+def job_name(cfg, layer: int) -> str:
+    return f"{_workload_dns(cfg)}-l{layer}"
+
+
+def task_name(cfg, name: str) -> str:
+    """A task Job's name, per workload: stages set up in parallel never share one."""
+    return f"{_workload_dns(cfg)}-{name}"
 
 
 def _curve_value(curve, layer: int) -> float:
@@ -132,15 +156,34 @@ def job_env(job) -> dict:
     return {e.name: e.value for e in env if e.value is not None}
 
 
-def dataset_configmap_name(graph_id: str) -> str:
+#: The label each of a graph's ConfigMaps carries, and undeploy's selector for it.
+GRAPH_CONFIGMAP_LABEL = ("pipeline", "dataset")
+GRAPH_CONFIGMAP_SELECTOR = "=".join(GRAPH_CONFIGMAP_LABEL)
+
+
+def graph_configmap_labels(graph_id: str) -> dict[str, str]:
+    return dict([GRAPH_CONFIGMAP_LABEL], graph=graph_id)
+
+
+def _graph_configmap_name(kind: str, graph_id: str) -> str:
     """DNS-safe per-graph ConfigMap name; the raw id lives in the `graph` label."""
+    prefix = f"pcg-{kind}-"
     safe = re.sub(r"-+", "-", re.sub(r"[^a-z0-9-]", "-", graph_id.lower())).strip("-")
-    budget = 63 - len("pcg-dataset-") - 7  # keep room for the "-xxxxxx" disambiguator
+    budget = 63 - len(prefix) - 7  # keep room for the "-xxxxxx" disambiguator
     changed = safe != graph_id or len(safe) > budget
     safe = safe[:budget].rstrip("-")
     if changed:  # sanitized or truncated ids could collide without the hash
         safe = f"{safe}-{hashlib.sha1(graph_id.encode()).hexdigest()[:6]}"
-    return f"pcg-dataset-{safe}"
+    return f"{prefix}{safe}"
+
+
+def dataset_configmap_name(graph_id: str) -> str:
+    return _graph_configmap_name("dataset", graph_id)
+
+
+def l2cache_info_configmap_name(graph_id: str) -> str:
+    """The ConfigMap holding the graph's saved graphene info, which l2cache Jobs mount."""
+    return _graph_configmap_name("l2cache-info", graph_id)
 
 
 def command_for(cfg):
@@ -191,6 +234,49 @@ def extra_env(cfg):
     ]
 
 
+#: Where an l2cache pod reads the graphene info setup saved, and the ConfigMap key for it.
+L2CACHE_INFO_DIR = "/etc/l2cache"
+L2CACHE_INFO_KEY = "info.json"
+L2CACHE_INFO_PATH = f"{L2CACHE_INFO_DIR}/{L2CACHE_INFO_KEY}"
+
+
+#: The graphene paths CloudVolume documents, `table`, `api/v<N>` and legacy `<N>`; each
+#: serves its info at `/<modality>/table/<id>/info`.
+GRAPHENE_PATH = re.compile(r"/(\w+)/(?:table|api/v[\d.]+|[\d.]+)/([\w.-]+)/?")
+
+
+def l2cache_info_url(cfg) -> str:
+    """The PCG server's info URL for the l2cache volume, or "" for a volume on any other
+    scheme, whose info no PCG server serves.
+
+    A graphene path outside `GRAPHENE_PATH` stops here, where every pod's CloudVolume
+    would otherwise misread it."""
+    cv = (cfg.dataset.get("l2cache_config") or {}).get("cv_path") or ""
+    if not cv.startswith("graphene://"):
+        return ""
+    url = urlsplit(cv.removeprefix("graphene://").replace("middleauth+", ""))
+    path = GRAPHENE_PATH.fullmatch(url.path)
+    if url.scheme not in ("http", "https") or not url.netloc or not path:
+        raise SystemExit(
+            f"l2cache_config.cv_path {cv!r} is not a graphene path CloudVolume reads"
+        )
+    modality, table = path.groups()
+    return f"{url.scheme}://{url.netloc}/{modality}/table/{table}/info"
+
+
+def l2cache_info_volume(cfg) -> client.V1Volume | None:
+    """The saved graphene info an l2cache Job mounts, so no pod asks the server for it.
+
+    Optional: a pod missing it fails on the absent file, where a required volume would
+    hold every pod in ContainerCreating, billed and silent."""
+    if cfg.workload != "l2cache" or not l2cache_info_url(cfg):
+        return None
+    source = client.V1ConfigMapVolumeSource(
+        name=l2cache_info_configmap_name(cfg.graph_id), optional=True
+    )
+    return client.V1Volume(name="l2cache-info", config_map=source)
+
+
 def _l2cache_env(cfg):
     """The l2cache worker's config from ``l2cache_config`` (graphene cv + cache table);
     the snapshot timestamp is read worker-side off the cache table (recorded at setup,
@@ -201,6 +287,7 @@ def _l2cache_env(cfg):
     pairs = {
         "L2CACHE_CV_PATH": lc.get("cv_path"),
         "L2CACHE_TABLE_ID": lc.get("table_id"),
+        "L2CACHE_CV_INFO": L2CACHE_INFO_PATH if l2cache_info_volume(cfg) else None,
     }
     return [client.V1EnvVar(name=k, value=str(v)) for k, v in pairs.items() if v]
 
@@ -244,6 +331,15 @@ def job_spec(
 
     requests = layer_requests(cfg.job, layer)
     names = STANDARD.worker_env
+    mounts, volumes = [_secrets_mount()], [_secrets_volume(cfg)]
+    info = l2cache_info_volume(cfg)
+    if info:
+        mounts.append(
+            client.V1VolumeMount(
+                name=info.name, mount_path=L2CACHE_INFO_DIR, read_only=True
+            )
+        )
+        volumes.append(info)
     container = client.V1Container(
         name=cfg.workload.replace("_", "-"),
         image=cfg.image(),
@@ -267,7 +363,7 @@ def job_spec(
         # a node's spare cores for nothing. The pod-billed classes admit a template without
         # limits — only a class naming a machineFamily requires them.
         resources=client.V1ResourceRequirements(requests=requests),
-        volume_mounts=[_secrets_mount()],
+        volume_mounts=mounts,
     )
     template = client.V1PodTemplateSpec(
         metadata=client.V1ObjectMeta(labels={"pipeline": cfg.workload}),
@@ -277,7 +373,7 @@ def job_spec(
             node_selector=node_selector,
             tolerations=_spot_tolerations(),
             containers=[container],
-            volumes=[_secrets_volume(cfg)],
+            volumes=volumes,
             termination_grace_period_seconds=GRACE_SECONDS,
         ),
     )
@@ -314,14 +410,7 @@ def job_spec(
             max_failed_indexes=min(cfg.job.max_failed_tasks, completions),
             pod_failure_policy=client.V1PodFailurePolicy(
                 rules=[
-                    client.V1PodFailurePolicyRule(
-                        action="Ignore",
-                        on_pod_conditions=[
-                            client.V1PodFailurePolicyOnPodConditionsPattern(
-                                type="DisruptionTarget", status="True"
-                            )
-                        ],
-                    ),
+                    IGNORE_PREEMPTION,
                     client.V1PodFailurePolicyRule(
                         action="FailIndex",
                         on_exit_codes=client.V1PodFailurePolicyOnExitCodesRequirement(
@@ -395,13 +484,17 @@ def immutable_drift(cfg, layer: int, job) -> list:
     return [(field, run, want) for field, run, want in checks if str(run) != str(want)]
 
 
-def oneshot_pod_spec(
-    cfg, name: str, argv: list, dataset_configmap=None, image=None
-) -> client.V1Pod:
-    """A transient pod (setup / meta read) on a spot node; the CLI deletes it after.
-    Runs the active workload's image by default; `image` overrides it for a cross-workload
-    op (the cg-meta probe always reads the graph in the PCG image). The dataset mount is
-    opt-in — only setup/mesh-meta read the file."""
+#: A task Job's label key; never `pipeline`, so layer listings, costs and pauses skip it.
+TASK_LABEL = "pipeline-task"
+
+
+def task_job_spec(
+    cfg, name: str, argv: list[str], dataset_configmap=None, image=None
+) -> client.V1Job:
+    """A one-off task (setup, mesh-meta, a probe) as a single-pod Job on a spot node.
+
+    It runs the workload's image unless `image` pins another; a preemption reruns the pod,
+    any other failure fails the Job, and the dataset mount is opt-in."""
     mounts = [_secrets_mount()]
     volumes = [_secrets_volume(cfg)]
     if dataset_configmap:
@@ -416,7 +509,7 @@ def oneshot_pod_spec(
             ),
         )
     container = client.V1Container(
-        name="util",
+        name="task",
         image=image or cfg.image(),
         command=argv,
         env=extra_env(cfg),
@@ -424,17 +517,28 @@ def oneshot_pod_spec(
         resources=client.V1ResourceRequirements(requests=UTIL_REQUESTS),
         volume_mounts=mounts,
     )
-    return client.V1Pod(
-        api_version="v1",
-        kind="Pod",
-        metadata=client.V1ObjectMeta(name=name, labels={"pipeline": "util"}),
-        spec=client.V1PodSpec(
-            restart_policy="Never",
-            service_account_name=cfg.workload_identity.service_account,
-            node_selector=SPOT_SELECTOR,
-            tolerations=_spot_tolerations(),
-            containers=[container],
-            volumes=volumes,
+    labels = {TASK_LABEL: name, "graph": cfg.graph_id}
+    return client.V1Job(
+        api_version="batch/v1",
+        kind="Job",
+        metadata=client.V1ObjectMeta(name=task_name(cfg, name), labels=labels),
+        spec=client.V1JobSpec(
+            completions=1,
+            parallelism=1,
+            backoff_limit=0,
+            ttl_seconds_after_finished=TASK_TTL_SECONDS,
+            pod_failure_policy=client.V1PodFailurePolicy(rules=[IGNORE_PREEMPTION]),
+            template=client.V1PodTemplateSpec(
+                metadata=client.V1ObjectMeta(labels=labels),
+                spec=client.V1PodSpec(
+                    restart_policy="Never",
+                    service_account_name=cfg.workload_identity.service_account,
+                    node_selector=SPOT_SELECTOR,
+                    tolerations=_spot_tolerations(),
+                    containers=[container],
+                    volumes=volumes,
+                ),
+            ),
         ),
     )
 

@@ -57,7 +57,7 @@ which lives in `dataset.yml` (read only by `setup`; workers read graph meta from
 | command | does |
 |---|---|
 | `pipeline deploy` | install the static infra + credentials Secret. `--setup`/`--submit-l2` chain setup + layer 2; `--oneshot` runs the build DAG (`--from`/`--to` depth, `--sequential`, `--yes`); `--all-layers` runs the configured workload — see [§3](#3-config--deploy) |
-| `pipeline setup` | create the graph table + meta (one-shot pod; raw agglomeration auto-enabled from `ingest_config.AGGLOMERATION`; `--exists` skips if the graph already exists) |
+| `pipeline setup` | create the graph table + meta (a single-pod Job in the workload's image; raw agglomeration auto-enabled from `ingest_config.AGGLOMERATION`; `--exists` skips if the graph already exists) |
 | `pipeline mesh-meta` | write the graph's mesh metadata once (meshing only, after ingest reaches root) |
 | `pipeline submit <layer>` | submit (or re-submit) the layer's Indexed Job; ramp parallelism (refuses if the layer below is not 100% — `--force` to override) |
 | `pipeline scale <layer> <n>` | resize the running layer's workers (set Job parallelism) anytime |
@@ -329,8 +329,9 @@ capture the main levers — operators mainly right-size requests and keep the de
   automatically. The CLI snaps every layer to the cheapest valid Autopilot request (≥ 250m/512Mi,
   1:1–1:6.5 cpu:mem) and clamps to the general-purpose ceiling (with a warning) instead of silently
   billing a pricier class — see [config/README.md](config/README.md).
-- **Scale to zero between layers** — `persistent_util: false` runs setup/meta in a one-shot pod (no
-  warm server), so the cluster idles at zero nodes when no Job is running (no pods = no compute cost).
+- **Scale to zero between layers** — `persistent_util: false` drops the warm probe server, so meta
+  probes run as task Jobs like setup always does, and the cluster idles at zero nodes when no Job
+  is running (no pods = no compute cost).
 - **System logs only** — the cluster ships only system logs to Cloud Logging (terraform
   `logging_config`); pod stdout stays on the kubelet, so chunk pods do not bill ~$0.50/GiB of
   log ingestion; `pipeline inspect` / `kubectl logs` still work.

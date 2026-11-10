@@ -6,7 +6,6 @@ inheriting it. Rendering (container command, job labels) stays in `manifest`; th
 imports only `util`/`note`, so `manifest` stays free of a `manifest -> stages` import cycle.
 """
 
-import json
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -69,7 +68,7 @@ class Ingest(BaseStage):
         if exist_ok:
             flags.append(EXIST_OK_FLAG)
         argv = WORKLOADS[self.name].setup_argv(cfg.graph_id, flags=tuple(flags))
-        note(util.run_with_dataset(cfg, "setup", argv) or "setup done")
+        note(util.run_task(cfg, "setup", argv, dataset=True) or "setup done")
         util.invalidate_layer_counts(
             cfg
         )  # graph may have changed; recompute on next read
@@ -84,7 +83,9 @@ class Meshing(BaseStage):
     def setup(self, cfg, exist_ok: bool = False) -> None:
         note("mesh-meta: writing mesh metadata")
         argv = WORKLOADS[self.name].setup_argv(cfg.graph_id)
-        note(util.run_with_dataset(cfg, "mesh-meta", argv) or "mesh metadata written")
+        note(
+            util.run_task(cfg, "mesh-meta", argv, dataset=True) or "mesh metadata written"
+        )
 
     def top_layer(self, cfg, counts) -> int:
         max_layer = (cfg.dataset.get("mesh_config") or {}).get("max_layer")
@@ -129,7 +130,9 @@ class L2Cache(BaseStage):
                 "--cave-service",
                 cave[2],
             ]
-        note(util.run_workload(cfg, "setup", argv) or "l2cache setup done")
+        note(util.run_task(cfg, "setup", argv) or "l2cache setup done")
+        # after the task, whose CAVE registration can be what makes the info readable
+        util.apply_l2cache_info(cfg)
 
     def top_layer(self, cfg, counts) -> int:
         return 2
@@ -158,8 +161,9 @@ class CaveRegister(BaseStage):
         # best-effort: post and log the response; never block the deploy (on failure,
         # register manually). token from the deploy secrets dir (the cave-secret file).
         try:
-            secret = Path(secrets_dir) / cfg.secret_files["cave-secret.json"]
-            token = json.loads(secret.read_text())["token"]
+            token = util.cave_token(
+                Path(secrets_dir) / cfg.secret_files["cave-secret.json"]
+            )
             req = urllib.request.Request(
                 url, method="POST", headers={"Authorization": f"Bearer {token}"}
             )
@@ -183,7 +187,7 @@ class Migrate(BaseStage):
     def setup(self, cfg, exist_ok: bool = False) -> None:
         note(f"setup ({self.name})")  # migrate reads everything from Bigtable
         argv = MIGRATE_SETUP + [cfg.graph_id]
-        note(util.run_workload(cfg, "setup", argv) or "setup done")
+        note(util.run_task(cfg, "setup", argv) or "setup done")
         util.invalidate_layer_counts(cfg)
 
 

@@ -517,10 +517,29 @@ def recreate_job(namespace: str, spec):
     b.create_namespaced_job(namespace, spec)
 
 
-def _delete_pod_if_exists(c, namespace, name):
-    with tolerate(404):  # never created, or already reaped
-        c.delete_namespaced_pod(name, namespace, grace_period_seconds=0)
-        _wait_deleted(lambda: c.read_namespaced_pod(name, namespace), name, 30)
+def job_state(job):
+    # status is None on a freshly created Job: nothing finished, so it reads as running
+    status = getattr(job, "status", None)
+    for c in (status.conditions if status is not None else None) or []:
+        # SuccessCriteriaMet counts: the controller stamps Complete in a later update,
+        # and admission can reject that update forever (a template Autopilot won't
+        # re-validate), stranding a finished layer as "running" and blocking every layer
+        # above it.
+        if c.type in ("Complete", "SuccessCriteriaMet") and c.status == "True":
+            return "complete"
+        if c.type == "Failed" and c.status == "True":
+            return "failed"
+    return "running"
+
+
+def _last_pod_log(namespace: str, job_name: str) -> str:
+    """The log of the newest pod a Job ran: after a preemption, the rerun's, not the
+    evicted pod's. Empty when the Job never got a pod."""
+    pods = pods_of(namespace, job_name)
+    if not pods:
+        return ""
+    newest = max(pods, key=lambda pod: pod.metadata.creation_timestamp)
+    return _pod_log_text(core(), newest.metadata.name, namespace)
 
 
 def _pod_log_text(c, name, namespace) -> str:
@@ -532,31 +551,33 @@ def _pod_log_text(c, name, namespace) -> str:
     return data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else str(data)
 
 
-def run_oneshot(namespace: str, pod_spec) -> str:
-    """Create a one-shot pod, wait for it to finish, return its stdout, then delete it."""
-    c = core()
-    name = pod_spec.metadata.name
-    _delete_pod_if_exists(c, namespace, name)
-    c.create_namespaced_pod(namespace, pod_spec)
+def run_task(namespace: str, job_spec) -> str:
+    """Run a single-pod task Job to its end, return its pod's log, then delete the Job.
+
+    The Job reruns a preempted pod itself, so the wait spans reruns, and the log is the
+    newest pod's."""
+    name = job_spec.metadata.name
+    recreate_job(namespace, job_spec)
     note(f"{name}: running")
-    phase = "Pending"
+    state = "running"
     try:
         for _ in range(600):  # allow time for an Autopilot node to be provisioned
-            phase = c.read_namespaced_pod_status(name, namespace).status.phase
-            if phase in ("Succeeded", "Failed"):
+            state = job_state(read_job(namespace, name))
+            if state != "running":
                 break
             time.sleep(2)
-        if phase not in ("Succeeded", "Failed"):
+        if state == "running":
             raise SystemExit(
-                f"one-shot pod '{name}' still {phase} after 20m (deleting it); "
+                f"task '{name}' still running after 20m (deleting it); "
                 f"check capacity/quota: kubectl get events -n {namespace}"
             )
-        log = _pod_log_text(c, name, namespace)
-        if phase != "Succeeded":
-            raise SystemExit(f"{name} {phase}:\n{log}")
+        log = _last_pod_log(namespace, name)
+        if state != "complete":
+            raise SystemExit(f"{name} {state}:\n{log}")
         return log
     finally:
-        _delete_pod_if_exists(c, namespace, name)
+        with tolerate(404):  # already reaped
+            delete_job(namespace, name)
 
 
 def set_parallelism(namespace: str, name: str, parallelism: int):

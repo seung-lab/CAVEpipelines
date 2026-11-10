@@ -6,9 +6,10 @@ from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
+import yaml
 from rich.text import Text
 
-from cave_pipeline import cgcache, manifest, stages, util
+from cave_pipeline import cgcache, contract, manifest, stages, util
 
 
 def test_ceil_div_completions():
@@ -620,6 +621,32 @@ def test_l2cache_setup_never_saves_a_page_that_is_not_json(cfg, info_server):
     with pytest.raises(SystemExit, match="cannot read"):
         stages.STAGES["l2cache"].setup(cfg)
     assert info_server.name is None
+
+
+def test_l2cache_setup_stops_with_no_cave_token(monkeypatch, cfg, tmp_path):
+    """The info needs the pods' token, so setup stops before saving any."""
+    cfg.config_dir = str(tmp_path / "config")
+    cfg.secret_files = {"cave-secret.json": "cave.json"}  # named, but never written
+    cv = "graphene://https://h/segmentation/table/g"
+    cfg.dataset["l2cache_config"] = {"table_id": "l2cache_g", "cv_path": cv}
+    monkeypatch.setattr(util.kube, "apply_configmap", lambda *a: pytest.fail("saved"))
+    with pytest.raises(SystemExit, match="no CAVE token"):
+        util.apply_l2cache_info(cfg)
+
+
+def test_a_dataset_task_mounts_the_configmap_it_applied(monkeypatch, cfg):
+    applied = {}
+
+    def apply(namespace, name, data, labels):
+        applied.update(name=name, data=data)
+
+    monkeypatch.setattr(util.kube, "apply_configmap", apply)
+    seen = _capture_task(monkeypatch)
+    util.run_task(cfg, "setup", ["python", "-c", "pass"], dataset=True)
+    volume = next(v for v in seen["job"].spec.template.spec.volumes if v.config_map)
+    assert volume.config_map.name == applied["name"]
+    saved = applied["data"][contract.STANDARD.dataset_file]
+    assert yaml.safe_load(saved) == cfg.dataset
 
 
 def test_runs_table_lists_newest_first_and_filters_by_graph(cfg, seed_cost, render):

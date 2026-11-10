@@ -69,7 +69,7 @@ class Ingest(BaseStage):
         if exist_ok:
             flags.append(EXIST_OK_FLAG)
         argv = WORKLOADS[self.name].setup_argv(cfg.graph_id, flags=tuple(flags))
-        note(util.run_with_dataset(cfg, "setup", argv) or "setup done")
+        note(util.run_task(cfg, "setup", argv, dataset=True) or "setup done")
         util.invalidate_layer_counts(
             cfg
         )  # graph may have changed; recompute on next read
@@ -84,7 +84,9 @@ class Meshing(BaseStage):
     def setup(self, cfg, exist_ok: bool = False) -> None:
         note("mesh-meta: writing mesh metadata")
         argv = WORKLOADS[self.name].setup_argv(cfg.graph_id)
-        note(util.run_with_dataset(cfg, "mesh-meta", argv) or "mesh metadata written")
+        note(
+            util.run_task(cfg, "mesh-meta", argv, dataset=True) or "mesh metadata written"
+        )
 
     def top_layer(self, cfg, counts) -> int:
         max_layer = (cfg.dataset.get("mesh_config") or {}).get("max_layer")
@@ -129,7 +131,7 @@ class L2Cache(BaseStage):
                 "--cave-service",
                 cave[2],
             ]
-        note(util.run_workload(cfg, "setup", argv) or "l2cache setup done")
+        note(util.run_task(cfg, "setup", argv) or "l2cache setup done")
 
     def top_layer(self, cfg, counts) -> int:
         return 2
@@ -183,7 +185,7 @@ class Migrate(BaseStage):
     def setup(self, cfg, exist_ok: bool = False) -> None:
         note(f"setup ({self.name})")  # migrate reads everything from Bigtable
         argv = MIGRATE_SETUP + [cfg.graph_id]
-        note(util.run_workload(cfg, "setup", argv) or "setup done")
+        note(util.run_task(cfg, "setup", argv) or "setup done")
         util.invalidate_layer_counts(cfg)
 
 

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from rich.text import Text
 
-from cave_pipeline import cgcache, util
+from cave_pipeline import cgcache, stages, util
 
 
 def test_ceil_div_completions():
@@ -511,36 +511,42 @@ def test_query_meta_routes_persistent_to_cache_client(monkeypatch, cfg):
     monkeypatch.setattr(util.kube, "exec_cmd", _exec)
     monkeypatch.setattr(
         util.kube,
-        "run_oneshot",
-        lambda *a, **k: pytest.fail("persistent path must not use a one-shot pod"),
+        "run_task",
+        lambda *a, **k: pytest.fail("the warm probe must not start a task job"),
     )
     assert util._query_meta(cfg, "counts", "g") == "100 50 1\n"
     assert cgcache.CLIENT_SRC in seen["argv"]  # the warm-server client, not the server
 
 
-def test_query_meta_routes_oneshot_when_not_persistent(monkeypatch, cfg):
+def _capture_task(monkeypatch) -> dict[str, object]:
+    """Record the task Job the runner submits, failing on any exec into the util pod."""
+    seen = {}
+    monkeypatch.setattr(util.kube, "run_task", lambda ns, job: seen.update(job=job) or "")
+    monkeypatch.setattr(
+        util.kube, "exec_cmd", lambda *a, **k: pytest.fail("exec'd into the util pod")
+    )
+    return seen
+
+
+def test_query_meta_runs_a_pcg_task_when_not_persistent(monkeypatch, cfg):
     cfg.persistent_util = False
     cfg.workload = "l2cache"  # the cg-meta probe still reads the graph in the PCG image
-    seen = {}
-    monkeypatch.setattr(
-        util.manifest,
-        "oneshot_pod_spec",
-        lambda c, name, argv, image=None: ("spec", argv, image),
-    )
+    seen = _capture_task(monkeypatch)
+    util._query_meta(cfg, "mesh", "g")
+    container = seen["job"].spec.template.spec.containers[0]
+    assert cgcache.ONESHOT_SRC in container.command  # the inline import snippet
+    assert container.image == cfg.images.pcg  # graph read pins PCG, not the l2cache image
 
-    def _oneshot(ns, spec):
-        seen["argv"], seen["image"] = spec[1], spec[2]
-        return "yes\n"
 
-    monkeypatch.setattr(util.kube, "run_oneshot", _oneshot)
-    monkeypatch.setattr(
-        util.kube,
-        "exec_cmd",
-        lambda *a, **k: pytest.fail("one-shot path must not exec into the util pod"),
-    )
-    assert util._query_meta(cfg, "mesh", "g") == "yes\n"
-    assert cgcache.ONESHOT_SRC in seen["argv"]  # the inline import snippet
-    assert seen["image"] == cfg.images.pcg  # graph read pins PCG, not the l2cache image
+def test_l2cache_setup_runs_in_its_image_even_with_a_util_pod(monkeypatch, cfg):
+    """The util pod runs PCG's image, which lacks pcgl2cache; setup never execs there."""
+    cfg.persistent_util = True
+    cfg.workload = "l2cache"
+    cfg.dataset["l2cache_config"] = {"table_id": "l2cache_g", "cv_path": "gs://b/ws"}
+    seen = _capture_task(monkeypatch)
+    stages.STAGES["l2cache"].setup(cfg)
+    assert seen["job"].spec.template.spec.containers[0].image == cfg.images.l2cache
+    assert seen["job"].metadata.name == "l2cache-setup"
 
 
 def test_runs_table_lists_newest_first_and_filters_by_graph(cfg, seed_cost, render):

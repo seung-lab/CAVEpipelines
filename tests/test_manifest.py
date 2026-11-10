@@ -248,21 +248,43 @@ def test_batch_size_halves_per_layer(cfg, container_env):
     assert deep["metadata"]["annotations"]["batch_size"] == "1"  # floored, never 0
 
 
-def test_oneshot_pod_is_spot_oneshot(cfg):
-    pod = client.ApiClient().sanitize_for_serialization(
-        manifest.oneshot_pod_spec(cfg, "setup", ["python", "-c", "x"])
+def _task(cfg, **kw) -> dict[str, object]:
+    return client.ApiClient().sanitize_for_serialization(
+        manifest.task_job_spec(cfg, "setup", ["python", "-c", "x"], **kw)
     )
-    assert pod["kind"] == "Pod"
-    assert pod["spec"]["restartPolicy"] == "Never"
-    assert pod["spec"]["nodeSelector"]["cloud.google.com/gke-spot"] == "true"
-    mounts = {m["mountPath"] for m in pod["spec"]["containers"][0]["volumeMounts"]}
+
+
+def test_task_job_is_one_spot_pod_that_survives_preemption(cfg):
+    job = _task(cfg)
+    spec = job["spec"]
+    assert (spec["completions"], spec["parallelism"], spec["backoffLimit"]) == (1, 1, 0)
+    assert spec["ttlSecondsAfterFinished"] == manifest.TASK_TTL_SECONDS
+    (rule,) = spec["podFailurePolicy"]["rules"]  # a preemption reruns, nothing else does
+    assert rule["action"] == "Ignore"
+    assert rule["onPodConditions"][0]["type"] == "DisruptionTarget"
+    pod = spec["template"]["spec"]
+    assert pod["restartPolicy"] == "Never"
+    assert pod["nodeSelector"]["cloud.google.com/gke-spot"] == "true"
+    mounts = {m["mountPath"] for m in pod["containers"][0]["volumeMounts"]}
     assert "/root/.cloudvolume/secrets" in mounts
     assert "/app/datasets" not in mounts  # dataset mount is opt-in (setup/mesh-meta)
-    pod = client.ApiClient().sanitize_for_serialization(
-        manifest.oneshot_pod_spec(cfg, "setup", ["x"], dataset_configmap="pcg-dataset-g")
-    )
-    vols = {v["name"]: v for v in pod["spec"]["volumes"]}
+    assert "pipeline" not in job["metadata"]["labels"]  # never listed as a layer
+    vols = _task(cfg, dataset_configmap="pcg-dataset-g")["spec"]["template"]["spec"]
+    vols = {v["name"]: v for v in vols["volumes"]}
     assert vols["datasets"]["configMap"]["name"] == "pcg-dataset-g"
+
+
+def test_task_job_runs_its_workloads_image_unless_pinned(cfg):
+    cfg.workload = "l2cache"
+    image = _task(cfg)["spec"]["template"]["spec"]["containers"][0]["image"]
+    assert image == cfg.images.l2cache  # the image holding pcgl2cache
+    pinned = _task(cfg, image=cfg.images.pcg)  # a probe reads the graph in PCG's image
+    assert pinned["spec"]["template"]["spec"]["containers"][0]["image"] == cfg.images.pcg
+
+
+def test_task_job_name_is_per_workload_and_dns_safe(cfg):
+    cfg.workload = "migrate_cleanup"  # raw "_" violates DNS-1123, API would 422
+    assert _task(cfg)["metadata"]["name"] == "migrate-cleanup-setup"
 
 
 def test_dataset_configmap_name_is_dns_safe_and_distinct():
@@ -319,7 +341,7 @@ def test_l2cache_job_injects_cache_config_env(cfg, container_env):
     assert "L2CACHE_CV_PATH" not in container_env(_job(cfg))
 
 
-def test_env_injected_into_job_and_oneshot(cfg, container_env):
+def test_env_injected_into_job_and_task(cfg, container_env):
     cfg.env = {"TASK_SIZE": "1", "PROCESS_MULTIPLIER": "5", "BIGTABLE_PROJECT": None}
     job = manifest.job_spec(cfg, layer=2, chunks=100, completions=1, parallelism=1)
     job_env = container_env(job)
@@ -327,10 +349,9 @@ def test_env_injected_into_job_and_oneshot(cfg, container_env):
     assert job_env["PCG_GRAPH_ID"] == cfg.graph_id  # alongside the built-in PCG_* vars
     # unset keys must be skipped, not injected as "None" (would override the ConfigMap)
     assert "BIGTABLE_PROJECT" not in job_env
-    pod = manifest.oneshot_pod_spec(cfg, "u", ["python", "-c", "pass"])
-    pod_env = container_env(pod)  # a Pod nests one level shallower than a Job
-    assert pod_env["TASK_SIZE"] == "1"
-    assert "PCG_LAYER" not in pod_env  # a probe pod is not a layer worker
+    task_env = container_env(manifest.task_job_spec(cfg, "u", ["python", "-c", "pass"]))
+    assert task_env["TASK_SIZE"] == "1"
+    assert "PCG_LAYER" not in task_env  # a task is not a layer worker
 
 
 def test_helm_values_carry_secret(cfg):

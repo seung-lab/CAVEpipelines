@@ -27,29 +27,20 @@ def run_cmd(command, argv, cfg):
     return CliRunner().invoke(command, argv, obj=cfg, catch_exceptions=False)
 
 
-def _capture_run_workload(monkeypatch):
+def _capture_run_task(monkeypatch):
     seen = {}
     monkeypatch.setattr(
         cli.util,
-        "run_workload",
-        lambda c, name, argv, **kw: seen.update(name=name, argv=argv) or "",
-    )
-    return seen
-
-
-def _capture_run_with_dataset(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(
-        cli.util,
-        "run_with_dataset",
-        lambda c, name, argv: seen.update(name=name, argv=argv) or "",
+        "run_task",
+        lambda c, name, argv, **kw: seen.update(name=name, argv=argv, **kw) or "",
     )
     return seen
 
 
 def test_setup_runs_pipeline_ingest_setup(monkeypatch, cfg):
-    seen = _capture_run_with_dataset(monkeypatch)  # ingest setup reads the dataset
+    seen = _capture_run_task(monkeypatch)
     run_cmd(cli.setup, [], cfg)
+    assert seen["dataset"]  # ingest setup reads the dataset
     assert seen["argv"] == [
         "python",
         "-m",
@@ -72,13 +63,13 @@ def test_a_refused_image_stops_deploy_before_helm(monkeypatch, cfg):
 
 def test_setup_enables_raw_when_agglomeration_present(monkeypatch, cfg):
     cfg.dataset["ingest_config"] = {"AGGLOMERATION": "gs://b/agg"}
-    seen = _capture_run_with_dataset(monkeypatch)
+    seen = _capture_run_task(monkeypatch)
     run_cmd(cli.setup, [], cfg)
     assert seen["argv"][-1] == "--raw"  # presence of the source enables the raw path
 
 
 def test_setup_exists_flag_passes_exist_ok(monkeypatch, cfg):
-    seen = _capture_run_with_dataset(monkeypatch)
+    seen = _capture_run_task(monkeypatch)
     run_cmd(cli.setup, ["--exists"], cfg)
     assert "--exist-ok" in seen["argv"]  # resume-safe create reaches the worker
     seen.clear()
@@ -88,7 +79,7 @@ def test_setup_exists_flag_passes_exist_ok(monkeypatch, cfg):
 
 def test_setup_runs_migrate_setup_for_migrate_workload(monkeypatch, cfg):
     cfg.workload = "migrate"
-    seen = _capture_run_workload(monkeypatch)
+    seen = _capture_run_task(monkeypatch)
     run_cmd(cli.setup, [], cfg)
     assert seen["argv"] == [
         "python",
@@ -107,7 +98,7 @@ def test_setup_l2cache_creates_table_and_registers_cave(monkeypatch, cfg):
         "cave_dataset": "ds",
         "cave_service": "pychunkedgraph",
     }
-    seen = _capture_run_workload(monkeypatch)
+    seen = _capture_run_task(monkeypatch)
     run_cmd(cli.setup, [], cfg)
     assert seen["argv"] == [
         "python",
@@ -131,14 +122,14 @@ def test_setup_l2cache_skips_cave_when_unconfigured(monkeypatch, cfg):
         "table_id": "g",
         "cv_path": "graphene://h/seg/table/g",
     }
-    seen = _capture_run_workload(monkeypatch)
+    seen = _capture_run_task(monkeypatch)
     run_cmd(cli.setup, [], cfg)
     assert "--cave-host" not in seen["argv"]
 
 
 def test_setup_dispatches_meshing_to_mesh_meta(monkeypatch, cfg):
     cfg.workload = "meshing"  # meshing's setup is mesh-meta, never ingest.setup
-    seen = _capture_run_with_dataset(monkeypatch)
+    seen = _capture_run_task(monkeypatch)
     run_cmd(cli.setup, [], cfg)
     assert seen["argv"] == [
         "python",
@@ -149,7 +140,7 @@ def test_setup_dispatches_meshing_to_mesh_meta(monkeypatch, cfg):
 
 
 def test_mesh_meta_runs_pipeline_meshing_setup(monkeypatch, cfg):
-    seen = _capture_run_with_dataset(monkeypatch)  # mesh meta reads mesh_config
+    seen = _capture_run_task(monkeypatch)  # mesh meta reads mesh_config
     run_cmd(cli.mesh_meta, [], cfg)
     assert seen["name"] == "mesh-meta"
     assert seen["argv"] == [
@@ -162,7 +153,7 @@ def test_mesh_meta_runs_pipeline_meshing_setup(monkeypatch, cfg):
 
 def test_graph_id_flag_overrides_config(monkeypatch, cfg):
     monkeypatch.setattr(cli.config, "load", lambda name, workload=None: cfg)
-    seen = _capture_run_with_dataset(monkeypatch)
+    seen = _capture_run_task(monkeypatch)
     CliRunner().invoke(
         cli.cli, ["-g", "other_graph", "mesh-meta"], catch_exceptions=False
     )

@@ -17,6 +17,7 @@ from . import cgcache, config, costs, kube, manifest, note
 from .config import ATOMIC_LAYER
 from .contract import STANDARD
 from .db import cost, state
+from .kube import job_state
 
 # Cold ChunkedGraph init fits in 30s with headroom; the warm cg-cache server pays it
 # once at boot, so every later probe returns well within this.
@@ -27,21 +28,14 @@ def ceil_div(a, b):
     return -(-a // b)
 
 
-def run_workload(cfg, name, argv, timeout=300):
-    """Run the active workload's command in its image (cfg.image()): the warm util pod
-    if one is deployed (logs streamed live), else a one-shot pod (log on completion)."""
-    if cfg.persistent_util:
-        pod = kube.util_pod(cfg.namespace)
-        note(f"{name}: in util pod")
-        return kube.exec_cmd(
-            cfg.namespace,
-            pod,
-            argv,
-            timeout=timeout,
-            on_line=lambda ln: note(f"  [{name}] {ln}"),
-        )
-    note(f"{name}: in one-shot pod")
-    return kube.run_oneshot(cfg.namespace, manifest.oneshot_pod_spec(cfg, name, argv))
+def run_task(cfg, name, argv, *, dataset=False, image=None):
+    """Run one stage task as a single-pod Job in `image`, else the workload's own, and
+    return its log; `dataset` first applies and mounts the graph's dataset ConfigMap."""
+    configmap = _apply_dataset(cfg, name) if dataset else None
+    job = manifest.task_job_spec(
+        cfg, name, argv, dataset_configmap=configmap, image=image
+    )
+    return kube.run_task(cfg.namespace, job)
 
 
 def _query_meta(cfg, op, gid, quiet=False) -> str:
@@ -62,20 +56,17 @@ def _query_meta(cfg, op, gid, quiet=False) -> str:
             cfg.namespace, pod, argv, timeout=CG_TIMEOUT + 5, on_line=echo
         )
     if not quiet:
-        note(f"{name}: in one-shot pod")
+        note(f"{name}: in a task job")
     argv = ["python", "-u", "-c", cgcache.ONESHOT_SRC, op, gid]
-    # the probe reads the ChunkedGraph, so it runs in the PCG image whatever workload we're in
-    return kube.run_oneshot(
-        cfg.namespace, manifest.oneshot_pod_spec(cfg, name, argv, image=cfg.images.pcg)
-    )
+    # the probe reads the ChunkedGraph, so it runs in the PCG image whatever the workload
+    return run_task(cfg, name, argv, image=cfg.images.pcg)
 
 
-def run_with_dataset(cfg, name, argv):
-    """Apply the graph's dataset ConfigMap, then run argv in a fresh one-shot pod.
+def _apply_dataset(cfg, name) -> str:
+    """Apply the graph's dataset ConfigMap; return its name for a new task pod to mount.
 
-    Always one-shot: a new pod mounts the just-applied ConfigMap immediately, while
-    a running pod's mount would lag the kubelet sync by 60-90s. The key is the contract's
-    dataset file, so the mount lands where the in-pod PCG_DATASET default reads."""
+    A running pod's mount would lag the kubelet sync by 60-90s, so only a new pod reads
+    it fresh; the key is the contract's dataset file, which PCG_DATASET defaults to."""
     cm = manifest.dataset_configmap_name(cfg.graph_id)
     kube.apply_configmap(
         cfg.namespace,
@@ -84,9 +75,7 @@ def run_with_dataset(cfg, name, argv):
         {"pipeline": "dataset", "graph": cfg.graph_id},
     )
     note(f"{name}: dataset configmap '{cm}' applied")
-    return kube.run_oneshot(
-        cfg.namespace, manifest.oneshot_pod_spec(cfg, name, argv, dataset_configmap=cm)
-    )
+    return cm
 
 
 def _counts_cache(cfg) -> str:
@@ -202,20 +191,6 @@ def job_progress(job, total=None) -> dict:
         "dead": count_indexes(getattr(s, "failed_indexes", None)),
         "state": job_state(job),
     }
-
-
-def job_state(job):
-    # status is None on a freshly created Job: nothing finished, so it reads as running
-    status = getattr(job, "status", None)
-    for c in (status.conditions if status is not None else None) or []:
-        # SuccessCriteriaMet counts: the controller stamps Complete in a later update, and
-        # admission can reject that update forever (a template Autopilot won't re-validate),
-        # stranding a finished layer as "running" and blocking every layer above it.
-        if c.type in ("Complete", "SuccessCriteriaMet") and c.status == "True":
-            return "complete"
-        if c.type == "Failed" and c.status == "True":
-            return "failed"
-    return "running"
 
 
 def _pod_terminated(pod):

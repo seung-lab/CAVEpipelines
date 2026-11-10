@@ -20,15 +20,38 @@ SPOT_SELECTOR = gke.SPOT_SELECTOR
 BUILTIN_COMPUTE_CLASSES = gke.BUILTIN_COMPUTE_CLASSES
 SPOT_TOLERATION = gke.SPOT_TOLERATION
 UTIL_REQUESTS = {"cpu": "250m", "memory": "1Gi"}  # cheapest that still imports PCG
+
+#: A spot preemption reruns the pod without spending a retry: the platform's doing, never
+#: the task's. Every Job the operator renders carries it.
+IGNORE_PREEMPTION = client.V1PodFailurePolicyRule(
+    action="Ignore",
+    on_pod_conditions=[
+        client.V1PodFailurePolicyOnPodConditionsPattern(
+            type="DisruptionTarget", status="True"
+        )
+    ],
+)
+
+#: How long a finished task Job outlives its run when the CLI dies before deleting it.
+TASK_TTL_SECONDS = 3600
 # Autopilot caps Spot pods at 25s and defaults to it. A worker cannot finish a chunk in
 # any grace period, so the wait only slows every teardown and preemption; the chunk's
 # lock expires on its own and a retry redoes it.
 GRACE_SECONDS = 5
 
 
-def job_name(cfg, layer: int) -> str:
+def _workload_dns(cfg) -> str:
     # DNS-1123: migrate_cleanup's underscore is invalid in Job/container names
-    return f"{cfg.workload.replace('_', '-')}-l{layer}"
+    return cfg.workload.replace("_", "-")
+
+
+def job_name(cfg, layer: int) -> str:
+    return f"{_workload_dns(cfg)}-l{layer}"
+
+
+def task_name(cfg, name: str) -> str:
+    """A task Job's name, per workload: stages set up in parallel never share one."""
+    return f"{_workload_dns(cfg)}-{name}"
 
 
 def _curve_value(curve, layer: int) -> float:
@@ -314,14 +337,7 @@ def job_spec(
             max_failed_indexes=min(cfg.job.max_failed_tasks, completions),
             pod_failure_policy=client.V1PodFailurePolicy(
                 rules=[
-                    client.V1PodFailurePolicyRule(
-                        action="Ignore",
-                        on_pod_conditions=[
-                            client.V1PodFailurePolicyOnPodConditionsPattern(
-                                type="DisruptionTarget", status="True"
-                            )
-                        ],
-                    ),
+                    IGNORE_PREEMPTION,
                     client.V1PodFailurePolicyRule(
                         action="FailIndex",
                         on_exit_codes=client.V1PodFailurePolicyOnExitCodesRequirement(
@@ -395,13 +411,17 @@ def immutable_drift(cfg, layer: int, job) -> list:
     return [(field, run, want) for field, run, want in checks if str(run) != str(want)]
 
 
-def oneshot_pod_spec(
-    cfg, name: str, argv: list, dataset_configmap=None, image=None
-) -> client.V1Pod:
-    """A transient pod (setup / meta read) on a spot node; the CLI deletes it after.
-    Runs the active workload's image by default; `image` overrides it for a cross-workload
-    op (the cg-meta probe always reads the graph in the PCG image). The dataset mount is
-    opt-in — only setup/mesh-meta read the file."""
+#: A task Job's label key; never `pipeline`, so layer listings, costs and pauses skip it.
+TASK_LABEL = "pipeline-task"
+
+
+def task_job_spec(
+    cfg, name: str, argv: list[str], dataset_configmap=None, image=None
+) -> client.V1Job:
+    """A one-off task (setup, mesh-meta, a probe) as a single-pod Job on a spot node.
+
+    It runs the workload's image unless `image` pins another; a preemption reruns the pod,
+    any other failure fails the Job, and the dataset mount is opt-in."""
     mounts = [_secrets_mount()]
     volumes = [_secrets_volume(cfg)]
     if dataset_configmap:
@@ -416,7 +436,7 @@ def oneshot_pod_spec(
             ),
         )
     container = client.V1Container(
-        name="util",
+        name="task",
         image=image or cfg.image(),
         command=argv,
         env=extra_env(cfg),
@@ -424,17 +444,28 @@ def oneshot_pod_spec(
         resources=client.V1ResourceRequirements(requests=UTIL_REQUESTS),
         volume_mounts=mounts,
     )
-    return client.V1Pod(
-        api_version="v1",
-        kind="Pod",
-        metadata=client.V1ObjectMeta(name=name, labels={"pipeline": "util"}),
-        spec=client.V1PodSpec(
-            restart_policy="Never",
-            service_account_name=cfg.workload_identity.service_account,
-            node_selector=SPOT_SELECTOR,
-            tolerations=_spot_tolerations(),
-            containers=[container],
-            volumes=volumes,
+    labels = {TASK_LABEL: name, "graph": cfg.graph_id}
+    return client.V1Job(
+        api_version="batch/v1",
+        kind="Job",
+        metadata=client.V1ObjectMeta(name=task_name(cfg, name), labels=labels),
+        spec=client.V1JobSpec(
+            completions=1,
+            parallelism=1,
+            backoff_limit=0,
+            ttl_seconds_after_finished=TASK_TTL_SECONDS,
+            pod_failure_policy=client.V1PodFailurePolicy(rules=[IGNORE_PREEMPTION]),
+            template=client.V1PodTemplateSpec(
+                metadata=client.V1ObjectMeta(labels=labels),
+                spec=client.V1PodSpec(
+                    restart_policy="Never",
+                    service_account_name=cfg.workload_identity.service_account,
+                    node_selector=SPOT_SELECTOR,
+                    tolerations=_spot_tolerations(),
+                    containers=[container],
+                    volumes=volumes,
+                ),
+            ),
         ),
     )
 

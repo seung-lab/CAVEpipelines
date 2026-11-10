@@ -5,6 +5,7 @@ import dataclasses
 import json
 import math
 import os
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
@@ -68,14 +69,45 @@ def _apply_dataset(cfg, name) -> str:
     A running pod's mount would lag the kubelet sync by 60-90s, so only a new pod reads
     it fresh; the key is the contract's dataset file, which PCG_DATASET defaults to."""
     cm = manifest.dataset_configmap_name(cfg.graph_id)
-    kube.apply_configmap(
-        cfg.namespace,
-        cm,
-        {STANDARD.dataset_file: yaml.safe_dump(cfg.dataset)},
-        {"pipeline": "dataset", "graph": cfg.graph_id},
-    )
+    _apply_graph_configmap(cfg, cm, {STANDARD.dataset_file: yaml.safe_dump(cfg.dataset)})
     note(f"{name}: dataset configmap '{cm}' applied")
     return cm
+
+
+def _apply_graph_configmap(cfg, name: str, data: dict[str, str]) -> None:
+    labels = manifest.graph_configmap_labels(cfg.graph_id)
+    kube.apply_configmap(cfg.namespace, name, data, labels)
+
+
+def cave_token(path) -> str:
+    """The token a CAVE secret file holds, the file deploy mounts into every pod."""
+    with open(path) as f:
+        return json.load(f)["token"]
+
+
+def apply_l2cache_info(cfg) -> None:
+    """Save the l2cache volume's graphene info in the ConfigMap its Jobs mount.
+
+    Read here once, with the CAVE token the pods hold, so no worker asks the server; read
+    again on every setup, so an info changed after ingest needs no other upkeep. A volume
+    on any other scheme reads its info from storage and saves none."""
+    url = manifest.l2cache_info_url(cfg)
+    if not url:
+        return
+    secret = cfg.secret_file("cave-secret.json")
+    if not secret:
+        raise SystemExit(f"l2cache setup: no CAVE token under secrets/ to read {url}")
+    token = cave_token(secret)
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as resp:
+            info = resp.read().decode()
+        json.loads(info)  # an error page must never reach the workers as their info
+    except (OSError, ValueError) as exc:  # OSError holds URLError and a read's timeout
+        raise SystemExit(f"l2cache setup: cannot read {url}: {exc}") from exc
+    name = manifest.l2cache_info_configmap_name(cfg.graph_id)
+    _apply_graph_configmap(cfg, name, {manifest.L2CACHE_INFO_KEY: info})
+    note(f"setup: l2cache info configmap '{name}' applied")
 
 
 def _counts_cache(cfg) -> str:

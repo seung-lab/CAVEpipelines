@@ -6,7 +6,6 @@ inheriting it. Rendering (container command, job labels) stays in `manifest`; th
 imports only `util`/`note`, so `manifest` stays free of a `manifest -> stages` import cycle.
 """
 
-import json
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -132,6 +131,8 @@ class L2Cache(BaseStage):
                 cave[2],
             ]
         note(util.run_task(cfg, "setup", argv) or "l2cache setup done")
+        # after the task, whose CAVE registration can be what makes the info readable
+        util.apply_l2cache_info(cfg)
 
     def top_layer(self, cfg, counts) -> int:
         return 2
@@ -160,8 +161,9 @@ class CaveRegister(BaseStage):
         # best-effort: post and log the response; never block the deploy (on failure,
         # register manually). token from the deploy secrets dir (the cave-secret file).
         try:
-            secret = Path(secrets_dir) / cfg.secret_files["cave-secret.json"]
-            token = json.loads(secret.read_text())["token"]
+            token = util.cave_token(
+                Path(secrets_dir) / cfg.secret_files["cave-secret.json"]
+            )
             req = urllib.request.Request(
                 url, method="POST", headers={"Authorization": f"Bearer {token}"}
             )

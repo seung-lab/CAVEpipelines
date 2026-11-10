@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 from kubernetes.client import ApiException
 
-from cave_pipeline import cli, ops
+from cave_pipeline import cli, manifest, ops
 
 
 def test_meshing_submit_requires_mesh_meta(monkeypatch, cfg):
@@ -101,6 +101,23 @@ def test_sample_refuses_to_replace_a_real_job(monkeypatch, cfg, make_job):
     monkeypatch.setattr(cli.kube, "recreate_job", lambda ns, s: recreated.append(s))
     ops.sample(cfg, 2, 5)
     assert recreated[0].metadata.annotations["sample"] == "true"  # gate marker
+
+
+def test_l2cache_sample_waits_for_setup_to_save_the_info(monkeypatch, cfg):
+    """Without it every pod would start, fail on the absent file and spend its retries."""
+    cfg.workload = "l2cache"
+    cv = "graphene://https://h/segmentation/table/g"
+    cfg.dataset["l2cache_config"] = {"table_id": "l2cache_g", "cv_path": cv}
+    saved, recreated = [], []
+    monkeypatch.setattr(cli.kube, "list_configmaps", lambda ns, selector: saved)
+    monkeypatch.setattr(ops, "_read_job", lambda c, layer: None)
+    monkeypatch.setattr(cli.kube, "recreate_job", lambda ns, s: recreated.append(s))
+    with pytest.raises(SystemExit, match="pipeline setup"):
+        ops.sample(cfg, 2, 5)
+    name = manifest.l2cache_info_configmap_name(cfg.graph_id)
+    saved.append(SimpleNamespace(metadata=SimpleNamespace(name=name)))
+    ops.sample(cfg, 2, 5)
+    assert len(recreated) == 1
 
 
 def test_submit_sizes_job_and_ramps_to_pmax(monkeypatch, cfg, no_cost_sample, no_sleep):

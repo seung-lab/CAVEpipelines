@@ -137,10 +137,17 @@ class Config:
         """This graph's worker key on disk, or "" when it is not there.
 
         The same file `secret_files` mounts into every pod, so the driver and its pods are one
-        identity. Terraform writes it and `terraform destroy` revokes it. Resolved beside
-        `config_dir` rather than the cwd: a driver outlives the shell that started it.
+        identity. Terraform writes it and `terraform destroy` revokes it.
         """
-        name = self.secret_files.get("google-secret.json", "")
+        return self.secret_file("google-secret.json")
+
+    def secret_file(self, key: str) -> str:
+        """The local file `secret_files[key]` names, or "" when it is not there.
+
+        Resolved beside `config_dir` rather than the cwd: a driver outlives the shell that
+        started it.
+        """
+        name = self.secret_files.get(key, "")
         if not name:
             return ""
         # config_dir nests per dataset (config/, config/wclee/), so the repo root is however

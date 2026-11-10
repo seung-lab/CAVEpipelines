@@ -1,11 +1,14 @@
+import http.server
 import textwrap
+import threading
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 from rich.text import Text
 
-from cave_pipeline import cgcache, stages, util
+from cave_pipeline import cgcache, manifest, stages, util
 
 
 def test_ceil_div_completions():
@@ -547,6 +550,76 @@ def test_l2cache_setup_runs_in_its_image_even_with_a_util_pod(monkeypatch, cfg):
     stages.STAGES["l2cache"].setup(cfg)
     assert seen["job"].spec.template.spec.containers[0].image == cfg.images.l2cache
     assert seen["job"].metadata.name == "l2cache-setup"
+
+
+INFO = b'{"data_dir": "gs://b/ws"}'
+
+
+class _InfoServer(http.server.BaseHTTPRequestHandler):
+    """A graphene server answering every GET with `body`, recording what it was asked."""
+
+    asked: ClassVar[list[tuple[str, str]]] = []
+    body: ClassVar[bytes] = INFO
+
+    def do_GET(self):
+        self.asked.append((self.path, self.headers["Authorization"]))
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(self.body)))
+        self.end_headers()
+        self.wfile.write(self.body)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture
+def info_server(monkeypatch, cfg, tmp_path):
+    """An l2cache cfg whose graphene server is `_InfoServer`, holding the pods' token;
+    yields the ConfigMap setup applies, its fields None until it does."""
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _InfoServer)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    (tmp_path / "secrets").mkdir()
+    (tmp_path / "secrets" / "cave.json").write_text('{"token": "abc"}')
+    cfg.config_dir = str(tmp_path / "config")  # secrets/ resolves beside it
+    cfg.secret_files = {"cave-secret.json": "cave.json"}
+    cfg.workload = "l2cache"
+    host = f"127.0.0.1:{server.server_port}"
+    cfg.dataset["l2cache_config"] = {
+        "table_id": "l2cache_g",
+        "cv_path": f"graphene://middleauth+http://{host}/segmentation/table/g",
+    }
+    applied = SimpleNamespace(name=None, data=None, labels=None)
+
+    def apply(namespace, name, data, labels):
+        applied.name, applied.data, applied.labels = name, data, labels
+
+    monkeypatch.setattr(util.kube, "apply_configmap", apply)
+    _capture_task(monkeypatch)
+    _InfoServer.asked, _InfoServer.body = [], INFO
+    yield applied
+    server.shutdown()
+    server.server_close()
+
+
+def test_l2cache_setup_saves_the_info_its_jobs_mount(cfg, info_server):
+    stages.STAGES["l2cache"].setup(cfg)
+    assert _InfoServer.asked == [("/segmentation/table/g/info", "Bearer abc")]
+    assert info_server.data == {manifest.L2CACHE_INFO_KEY: INFO.decode()}
+    key, value = manifest.GRAPH_CONFIGMAP_SELECTOR.split("=")
+    assert info_server.labels[key] == value  # the selector undeploy deletes by
+    pod = manifest.job_spec(cfg, 2, 10, 10, 1).spec.template.spec
+    volume = next(v for v in pod.volumes if v.config_map)
+    assert volume.config_map.name == info_server.name
+    env = {e.name: e.value for e in pod.containers[0].env}
+    assert env["L2CACHE_CV_INFO"] == manifest.L2CACHE_INFO_PATH
+
+
+def test_l2cache_setup_never_saves_a_page_that_is_not_json(cfg, info_server):
+    """A sign-in or error page served with 200 must never become every pod's info."""
+    _InfoServer.body = b"<html>sign in</html>"
+    with pytest.raises(SystemExit, match="cannot read"):
+        stages.STAGES["l2cache"].setup(cfg)
+    assert info_server.name is None
 
 
 def test_runs_table_lists_newest_first_and_filters_by_graph(cfg, seed_cost, render):

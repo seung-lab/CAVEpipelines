@@ -3,6 +3,7 @@ helm values (dicts, rendered to YAML by helm — not client objects)."""
 
 import hashlib
 import re
+from urllib.parse import urlsplit
 
 from kubernetes import client
 
@@ -155,15 +156,34 @@ def job_env(job) -> dict:
     return {e.name: e.value for e in env if e.value is not None}
 
 
-def dataset_configmap_name(graph_id: str) -> str:
+#: The label each of a graph's ConfigMaps carries, and undeploy's selector for it.
+GRAPH_CONFIGMAP_LABEL = ("pipeline", "dataset")
+GRAPH_CONFIGMAP_SELECTOR = "=".join(GRAPH_CONFIGMAP_LABEL)
+
+
+def graph_configmap_labels(graph_id: str) -> dict[str, str]:
+    return dict([GRAPH_CONFIGMAP_LABEL], graph=graph_id)
+
+
+def _graph_configmap_name(kind: str, graph_id: str) -> str:
     """DNS-safe per-graph ConfigMap name; the raw id lives in the `graph` label."""
+    prefix = f"pcg-{kind}-"
     safe = re.sub(r"-+", "-", re.sub(r"[^a-z0-9-]", "-", graph_id.lower())).strip("-")
-    budget = 63 - len("pcg-dataset-") - 7  # keep room for the "-xxxxxx" disambiguator
+    budget = 63 - len(prefix) - 7  # keep room for the "-xxxxxx" disambiguator
     changed = safe != graph_id or len(safe) > budget
     safe = safe[:budget].rstrip("-")
     if changed:  # sanitized or truncated ids could collide without the hash
         safe = f"{safe}-{hashlib.sha1(graph_id.encode()).hexdigest()[:6]}"
-    return f"pcg-dataset-{safe}"
+    return f"{prefix}{safe}"
+
+
+def dataset_configmap_name(graph_id: str) -> str:
+    return _graph_configmap_name("dataset", graph_id)
+
+
+def l2cache_info_configmap_name(graph_id: str) -> str:
+    """The ConfigMap holding the graph's saved graphene info, which l2cache Jobs mount."""
+    return _graph_configmap_name("l2cache-info", graph_id)
 
 
 def command_for(cfg):
@@ -214,6 +234,49 @@ def extra_env(cfg):
     ]
 
 
+#: Where an l2cache pod reads the graphene info setup saved, and the ConfigMap key for it.
+L2CACHE_INFO_DIR = "/etc/l2cache"
+L2CACHE_INFO_KEY = "info.json"
+L2CACHE_INFO_PATH = f"{L2CACHE_INFO_DIR}/{L2CACHE_INFO_KEY}"
+
+
+#: The graphene paths CloudVolume documents, `table`, `api/v<N>` and legacy `<N>`; each
+#: serves its info at `/<modality>/table/<id>/info`.
+GRAPHENE_PATH = re.compile(r"/(\w+)/(?:table|api/v[\d.]+|[\d.]+)/([\w.-]+)/?")
+
+
+def l2cache_info_url(cfg) -> str:
+    """The PCG server's info URL for the l2cache volume, or "" for a volume on any other
+    scheme, whose info no PCG server serves.
+
+    A graphene path outside `GRAPHENE_PATH` stops here, where every pod's CloudVolume
+    would otherwise misread it."""
+    cv = (cfg.dataset.get("l2cache_config") or {}).get("cv_path") or ""
+    if not cv.startswith("graphene://"):
+        return ""
+    url = urlsplit(cv.removeprefix("graphene://").replace("middleauth+", ""))
+    path = GRAPHENE_PATH.fullmatch(url.path)
+    if url.scheme not in ("http", "https") or not url.netloc or not path:
+        raise SystemExit(
+            f"l2cache_config.cv_path {cv!r} is not a graphene path CloudVolume reads"
+        )
+    modality, table = path.groups()
+    return f"{url.scheme}://{url.netloc}/{modality}/table/{table}/info"
+
+
+def l2cache_info_volume(cfg) -> client.V1Volume | None:
+    """The saved graphene info an l2cache Job mounts, so no pod asks the server for it.
+
+    Optional: a pod missing it fails on the absent file, where a required volume would
+    hold every pod in ContainerCreating, billed and silent."""
+    if cfg.workload != "l2cache" or not l2cache_info_url(cfg):
+        return None
+    source = client.V1ConfigMapVolumeSource(
+        name=l2cache_info_configmap_name(cfg.graph_id), optional=True
+    )
+    return client.V1Volume(name="l2cache-info", config_map=source)
+
+
 def _l2cache_env(cfg):
     """The l2cache worker's config from ``l2cache_config`` (graphene cv + cache table);
     the snapshot timestamp is read worker-side off the cache table (recorded at setup,
@@ -224,6 +287,7 @@ def _l2cache_env(cfg):
     pairs = {
         "L2CACHE_CV_PATH": lc.get("cv_path"),
         "L2CACHE_TABLE_ID": lc.get("table_id"),
+        "L2CACHE_CV_INFO": L2CACHE_INFO_PATH if l2cache_info_volume(cfg) else None,
     }
     return [client.V1EnvVar(name=k, value=str(v)) for k, v in pairs.items() if v]
 
@@ -267,6 +331,15 @@ def job_spec(
 
     requests = layer_requests(cfg.job, layer)
     names = STANDARD.worker_env
+    mounts, volumes = [_secrets_mount()], [_secrets_volume(cfg)]
+    info = l2cache_info_volume(cfg)
+    if info:
+        mounts.append(
+            client.V1VolumeMount(
+                name=info.name, mount_path=L2CACHE_INFO_DIR, read_only=True
+            )
+        )
+        volumes.append(info)
     container = client.V1Container(
         name=cfg.workload.replace("_", "-"),
         image=cfg.image(),
@@ -290,7 +363,7 @@ def job_spec(
         # a node's spare cores for nothing. The pod-billed classes admit a template without
         # limits — only a class naming a machineFamily requires them.
         resources=client.V1ResourceRequirements(requests=requests),
-        volume_mounts=[_secrets_mount()],
+        volume_mounts=mounts,
     )
     template = client.V1PodTemplateSpec(
         metadata=client.V1ObjectMeta(labels={"pipeline": cfg.workload}),
@@ -300,7 +373,7 @@ def job_spec(
             node_selector=node_selector,
             tolerations=_spot_tolerations(),
             containers=[container],
-            volumes=[_secrets_volume(cfg)],
+            volumes=volumes,
             termination_grace_period_seconds=GRACE_SECONDS,
         ),
     )

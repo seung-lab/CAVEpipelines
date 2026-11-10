@@ -329,16 +329,41 @@ def test_command_for_routes_per_workload(cfg):
 
 def test_l2cache_job_injects_cache_config_env(cfg, container_env):
     cfg.dataset["l2cache_config"] = {
-        "cv_path": "graphene://h/segmentation/table/g",
+        "cv_path": "graphene://https://h/segmentation/table/g",
         "table_id": "l2cache_g",
     }
     cfg.workload = "l2cache"
     env = container_env(_job(cfg))
     assert env["PCG_LAYER"] == "2"  # l2cache runs on the L2 grid
-    assert env["L2CACHE_CV_PATH"] == "graphene://h/segmentation/table/g"
+    assert env["L2CACHE_CV_PATH"] == "graphene://https://h/segmentation/table/g"
     assert env["L2CACHE_TABLE_ID"] == "l2cache_g"
     cfg.workload = "ingest"  # the cache config is scoped to the l2cache workload only
     assert "L2CACHE_CV_PATH" not in container_env(_job(cfg))
+
+
+def test_l2cache_job_on_a_storage_volume_mounts_no_saved_info(cfg, container_env):
+    """Setup saves only a graphene server's info; a gs:// volume's pods read their own."""
+    cfg.dataset["l2cache_config"] = {"cv_path": "gs://b/ws", "table_id": "l2cache_g"}
+    cfg.workload = "l2cache"
+    job = _job(cfg)
+    assert "L2CACHE_CV_INFO" not in container_env(job)
+    assert all("configMap" not in volume for volume in _pod_spec(job)["volumes"])
+
+
+@pytest.mark.parametrize("path", ["table/g", "api/v1/g", "1.0/g"])
+def test_l2cache_info_url_reads_each_path_cloudvolume_documents(cfg, path):
+    """CloudVolume reads every version's info from the `table` route."""
+    cv = f"graphene://middleauth+https://h/segmentation/{path}"
+    cfg.dataset["l2cache_config"] = {"cv_path": cv}
+    assert manifest.l2cache_info_url(cfg) == "https://h/segmentation/table/g/info"
+
+
+def test_l2cache_info_url_stops_a_path_cloudvolume_misreads(cfg):
+    """CloudVolume reads this one's table id as `table`, so it must never reach a pod."""
+    cv = "graphene://https://h/segmentation/api/v1/table/g"
+    cfg.dataset["l2cache_config"] = {"cv_path": cv}
+    with pytest.raises(SystemExit, match="not a graphene path"):
+        manifest.l2cache_info_url(cfg)
 
 
 def test_env_injected_into_job_and_task(cfg, container_env):

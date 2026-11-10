@@ -93,7 +93,7 @@ def test_setup_l2cache_creates_table_and_registers_cave(monkeypatch, cfg):
     cfg.workload = "l2cache"
     cfg.dataset["l2cache_config"] = {
         "table_id": "l2cache_g",
-        "cv_path": "graphene://h/seg/table/g",
+        "cv_path": "gs://b/ws",
         "cave_host": "https://cave.example",
         "cave_dataset": "ds",
         "cave_service": "pychunkedgraph",
@@ -106,7 +106,7 @@ def test_setup_l2cache_creates_table_and_registers_cave(monkeypatch, cfg):
         "pcgl2cache.pipeline.l2cache.setup",
         "l2cache_g",
         cfg.graph_id,
-        "graphene://h/seg/table/g",
+        "gs://b/ws",
         "--cave-host",
         "https://cave.example",
         "--cave-dataset",
@@ -120,7 +120,7 @@ def test_setup_l2cache_skips_cave_when_unconfigured(monkeypatch, cfg):
     cfg.workload = "l2cache"  # public CV needs no CAVE registration
     cfg.dataset["l2cache_config"] = {
         "table_id": "g",
-        "cv_path": "graphene://h/seg/table/g",
+        "cv_path": "gs://b/ws",
     }
     seen = _capture_run_task(monkeypatch)
     run_cmd(cli.setup, [], cfg)

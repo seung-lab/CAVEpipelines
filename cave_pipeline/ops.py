@@ -110,9 +110,9 @@ def undeploy(cfg) -> None:
     for job in kube.list_jobs(cfg.namespace):
         kube.delete_job(cfg.namespace, job.metadata.name)
         note(f"deleted job {job.metadata.name}")
-    for cm in kube.list_configmaps(cfg.namespace, "pipeline=dataset"):
+    for cm in kube.list_configmaps(cfg.namespace, manifest.GRAPH_CONFIGMAP_SELECTOR):
         kube.delete_configmap(cfg.namespace, cm.metadata.name)
-        note(f"deleted dataset configmap {cm.metadata.name}")
+        note(f"deleted configmap {cm.metadata.name}")
     res = subprocess.run(  # noqa: PLW1510 - returncode handled below
         ["helm", "uninstall", "pcg", "-n", cfg.namespace], capture_output=True, text=True
     )
@@ -218,6 +218,19 @@ def require_config_unchanged(cfg) -> None:
     )
 
 
+def require_l2cache_info(cfg) -> None:
+    """Refuse an l2cache Job before setup has saved its graphene info.
+
+    The volume is optional, so each pod would otherwise start and fail on the absent file,
+    spending its retries."""
+    volume = manifest.l2cache_info_volume(cfg)
+    if not volume:
+        return
+    saved = kube.list_configmaps(cfg.namespace, manifest.GRAPH_CONFIGMAP_SELECTOR)
+    if volume.config_map.name not in {cm.metadata.name for cm in saved}:
+        raise SystemExit("l2cache has no saved graphene info; run `pipeline setup` first")
+
+
 def submit(cfg, layer, force=False) -> None:
     """Create one layer's Indexed Job (completions from cg.meta) and ramp parallelism."""
     note(f"submit L{layer} ({cfg.workload})")
@@ -230,6 +243,7 @@ def submit(cfg, layer, force=False) -> None:
         # without it workers silently default mip=0; check at the leaf layer a run starts
         # from — `<=` so a manual `submit 2` is still guarded when start_layer is higher
         raise SystemExit("meshing has no mesh metadata; run `pipeline mesh-meta` first")
+    require_l2cache_info(cfg)
     require_prev_complete(cfg, layer, force=force)
     existing = _read_job(cfg, layer)
     if existing:  # re-submitting replaces a job; never silently absorb another graph's
@@ -333,6 +347,7 @@ def reconcile(cfg) -> None:
 
 def sample(cfg, layer, count) -> None:
     """Run `count` scattered chunks of the layer (one per pod) to size CPU/memory."""
+    require_l2cache_info(cfg)
     existing = _read_job(cfg, layer)
     if existing:
         check_graph_owner(cfg, existing)
